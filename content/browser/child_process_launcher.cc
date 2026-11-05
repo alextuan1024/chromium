@@ -163,12 +163,11 @@ ChildProcessLauncher::~ChildProcessLauncher() {
 void ChildProcessLauncher::SetRenderProcessPriority(
     const RenderProcessPriority& priority) {
   CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M160);
-  base::Process to_pass = process_.process.Duplicate();
   GetProcessLauncherTaskRunner()->PostTask(
       FROM_HERE,
       base::BindOnce(
           &ChildProcessLauncherHelper::SetRenderProcessPriorityOnLauncherThread,
-          helper_, std::move(to_pass), priority, base::TimeTicks::Now()));
+          helper_, priority, base::TimeTicks::Now()));
 }
 #else   // !BUILDFLAG(IS_ANDROID)
 void ChildProcessLauncher::SetProcessPriority(
@@ -252,12 +251,11 @@ void ChildProcessLauncher::OnReceivedTaskPort(
 void ChildProcessLauncher::SetProcessPriorityImpl(
     base::Process::Priority priority) {
   priority_ = priority;
-  base::Process to_pass = process_.process.Duplicate();
   GetProcessLauncherTaskRunner()->PostTask(
       FROM_HERE,
       base::BindOnce(
           &ChildProcessLauncherHelper::SetProcessPriorityOnLauncherThread,
-          helper_, std::move(to_pass), priority));
+          helper_, priority));
 }
 #endif
 
@@ -309,6 +307,13 @@ ChildProcessTerminationInfo ChildProcessLauncher::GetChildTerminationInfo(
   // close the handle here.
   if (termination_info_.status != base::TERMINATION_STATUS_STILL_RUNNING) {
     process_.process.Close();
+    // Release the launcher thread's copy of the handle as well, so that it
+    // doesn't keep the process object alive now that the child has exited.
+    GetProcessLauncherTaskRunner()->PostTask(
+        FROM_HERE,
+        base::BindOnce(
+            &ChildProcessLauncherHelper::CloseProcessOnLauncherThread,
+            helper_));
   }
 
   return termination_info_;
@@ -333,10 +338,9 @@ ChildProcessLauncher::GetEffectiveChildBindingState() {
 }
 
 void ChildProcessLauncher::DumpProcessStack() {
-  base::Process to_pass = process_.process.Duplicate();
   GetProcessLauncherTaskRunner()->PostTask(
-      FROM_HERE, base::BindOnce(&ChildProcessLauncherHelper::DumpProcessStack,
-                                helper_, std::move(to_pass)));
+      FROM_HERE,
+      base::BindOnce(&ChildProcessLauncherHelper::DumpProcessStack, helper_));
 }
 
 void ChildProcessLauncher::OnSpareRendererPriorityGraduated(bool is_alive) {
@@ -360,6 +364,7 @@ RenderProcessPriority::RenderProcessPriority(bool visible,
                                              bool boost_for_pending_views,
                                              bool boost_for_loading,
                                              bool boost_for_discard,
+                                             bool boost_for_background_execution,
 #if BUILDFLAG(IS_ANDROID)
                                              bool is_spare_renderer,
                                              ChildProcessImportance importance
@@ -373,6 +378,7 @@ RenderProcessPriority::RenderProcessPriority(bool visible,
       has_media_stream(has_media_stream),
       has_immersive_xr_session(has_immersive_xr_session),
       has_foreground_service_worker(has_foreground_service_worker),
+      boost_for_background_execution(boost_for_background_execution),
       frame_depth(frame_depth),
       intersects_viewport(intersects_viewport),
       boost_for_pending_views(boost_for_pending_views),
@@ -411,6 +417,7 @@ bool RenderProcessPriority::is_background() const {
     // background priority and the worker can starve and miss its start
     // timeout (crbug.com/484218883).
     if (boost_for_loading || boost_for_discard ||
+        boost_for_background_execution ||
         has_foreground_service_worker) {
       return false;
     }
@@ -420,6 +427,7 @@ bool RenderProcessPriority::is_background() const {
 #endif
   return !visible && !has_media_stream && !has_immersive_xr_session &&
          !boost_for_pending_views && !has_foreground_service_worker &&
+         !boost_for_background_execution &&
          !boost_for_loading && !boost_for_discard;
 }
 
@@ -438,6 +446,7 @@ base::Process::Priority RenderProcessPriority::GetProcessPriority() const {
     // priority, or it can starve and miss its start timeout
     // (crbug.com/484218883).
     if (boost_for_loading || boost_for_discard ||
+        boost_for_background_execution ||
         has_foreground_service_worker) {
       return base::Process::Priority::kUserBlocking;
     }

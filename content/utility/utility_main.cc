@@ -36,6 +36,7 @@
 #include "content/public/utility/content_utility_client.h"
 #include "content/utility/on_device_model/on_device_model_sandbox_init.h"
 #include "content/utility/utility_thread_impl.h"
+#include "device/vr/buildflags/buildflags.h"
 #include "printing/buildflags/buildflags.h"
 #include "sandbox/policy/mojom/sandbox.mojom.h"
 #include "sandbox/policy/sandbox.h"
@@ -90,6 +91,10 @@
 #endif
 
 #endif  // BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS)
+
+#if BUILDFLAG(IS_LINUX) && BUILDFLAG(ENABLE_VR)
+#include "content/services/isolated_xr_device/xr_sandbox_hook_linux.h"
+#endif  // BUILDFLAG(IS_LINUX) && BUILDFLAG(ENABLE_VR)
 
 #if BUILDFLAG(IS_CHROMEOS)
 #include "chromeos/ash/services/ime/ime_sandbox_hook.h"
@@ -325,6 +330,10 @@ int UtilityMain(MainFunctionParams parameters) {
   auto sandbox_type =
       sandbox::policy::SandboxTypeFromCommandLine(*parameters.command_line);
   sandbox::policy::SandboxLinux::Options sandbox_options;
+  // Set a default before the switch below, so that per-sandbox code (e.g.
+  // on_device_model::AddSandboxLinuxOptions) can refine it.
+  sandbox_options.use_amd_specific_policies =
+      ShouldUseAmdGpuPolicy(sandbox_type);
   sandbox::policy::SandboxLinux::PreSandboxHook pre_sandbox_hook;
   switch (sandbox_type) {
     case sandbox::mojom::Sandbox::kNetwork:
@@ -347,8 +356,15 @@ int UtilityMain(MainFunctionParams parameters) {
       break;
     case sandbox::mojom::Sandbox::kSpeechRecognition:
       pre_sandbox_hook =
-          base::BindOnce(&speech::SpeechRecognitionPreSandboxHook);
+          base::BindOnce(&speech::SpeechRecognitionPreSandboxHook,
+                         parameters.command_line->GetSwitchValuePath(
+                             speech::GetSodaBinaryPathSwitch()));
       break;
+#if BUILDFLAG(IS_LINUX) && BUILDFLAG(ENABLE_VR)
+    case sandbox::mojom::Sandbox::kXrCompositing:
+      pre_sandbox_hook = base::BindOnce(&vr::XrPreSandboxHook);
+      break;
+#endif  // BUILDFLAG(IS_LINUX) && BUILDFLAG(ENABLE_VR)
 #if BUILDFLAG(ENABLE_ON_DEVICE_TRANSLATION) && \
     (BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS))
     case sandbox::mojom::Sandbox::kOnDeviceTranslation:
@@ -398,8 +414,6 @@ int UtilityMain(MainFunctionParams parameters) {
   }
   if (!sandbox::policy::IsUnsandboxedSandboxType(sandbox_type) &&
       (parameters.zygote_child || !pre_sandbox_hook.is_null())) {
-    sandbox_options.use_amd_specific_policies =
-        ShouldUseAmdGpuPolicy(sandbox_type);
     sandbox::policy::Sandbox::Initialize(
         sandbox_type, std::move(pre_sandbox_hook), sandbox_options);
   }

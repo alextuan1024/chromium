@@ -27,8 +27,8 @@ public class GlicUtils {
      * Returns whether the current device form factor should use the Glic side panel rather than the
      * bottom sheet.
      *
-     * <p>Desktop always uses the side panel. Tablets only use it when {@code GlicAndroidTablet} is
-     * enabled. Phones never use it.
+     * <p>Desktop always uses the side panel when the side panel framework is enabled. Tablets only
+     * use it when {@code GlicAndroidTablet} is enabled. Phones never use it.
      *
      * @param context An Android context used to determine the form factor. Must be an Activity, or
      *     a context wrapping one, since only those are meaningfully associated with a display. See
@@ -39,6 +39,9 @@ public class GlicUtils {
         if (sIsSidePanelFormFactorForTesting != null) {
             return sIsSidePanelFormFactorForTesting;
         }
+        if (!AndroidSidePanelEnabledFn.isEnabled()) {
+            return false;
+        }
         if (DeviceInfo.isDesktop()) {
             return true;
         }
@@ -48,20 +51,23 @@ public class GlicUtils {
 
     /** Sets whether the Glic side panel form factor is supported for testing. */
     public static void setIsSidePanelFormFactorForTesting(@Nullable Boolean isFormFactorSupported) {
+        Boolean oldValue = sIsSidePanelFormFactorForTesting;
         sIsSidePanelFormFactorForTesting = isFormFactorSupported;
-        ResettersForTesting.register(() -> sIsSidePanelFormFactorForTesting = null);
+        ResettersForTesting.register(() -> sIsSidePanelFormFactorForTesting = oldValue);
     }
 
     /**
      * Returns whether the Glic button is supported on the tab strip for the given profile.
      *
+     * @param context An Android context used to determine the form factor. See {@link
+     *     #isSidePanelFormFactor(Context)} for the requirements on this context.
      * @param profile The {@link Profile} to check.
      * @return True if the button is supported on the tab strip.
      */
-    public static boolean isTabStripGlicSupported(@Nullable Profile profile) {
+    public static boolean isTabStripGlicSupported(Context context, @Nullable Profile profile) {
         return profile != null
                 && GlicEnabling.isEnabledForProfile(profile)
-                && AndroidSidePanelEnabledFn.isEnabled();
+                && isSidePanelFormFactor(context);
     }
 
     /**

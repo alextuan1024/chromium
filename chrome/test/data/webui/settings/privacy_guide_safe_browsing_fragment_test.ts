@@ -38,6 +38,8 @@ suite('SafeBrowsingFragment', function() {
 
     fragment = document.createElement('privacy-guide-safe-browsing-fragment');
     document.body.appendChild(fragment);
+    // Wait for the radio group to initialize its selection from PrefService.
+    await microtasksFinished();
   });
 
   async function assertSafeBrowsingMetrics({
@@ -53,11 +55,11 @@ suite('SafeBrowsingFragment', function() {
         SafeBrowsingSetting.ENHANCED :
         SafeBrowsingSetting.STANDARD;
     prefService.setPrefValue('generated.safe_browsing', safeBrowsingStartState);
+    await microtasksFinished();
 
     // The fragment is informed that it becomes visible by a receiving
     // a view-enter-start event.
-    fragment.dispatchEvent(
-        new CustomEvent('view-enter-start', {bubbles: true, composed: true}));
+    fragment.fire('view-enter-start');
 
     if (changeSetting) {
       const radio = fragment.shadowRoot.querySelector<HTMLElement>(
@@ -77,8 +79,7 @@ suite('SafeBrowsingFragment', function() {
 
     // The fragment is informed that it becomes invisible by
     // receiving a view-enter-finish event.
-    fragment.dispatchEvent(
-        new CustomEvent('view-exit-finish', {bubbles: true, composed: true}));
+    fragment.fire('view-exit-finish');
 
     const result = await testMetricsBrowserProxy.whenCalled(
         'recordPrivacyGuideSettingsStatesHistogram');
@@ -99,6 +100,7 @@ suite('SafeBrowsingFragment', function() {
     assertTrue(!!group);
     enhancedProtection.click();
     await eventToPromise('change', group);
+    await microtasksFinished();
     // The updated description item container should be visible.
     assertTrue(isChildVisible(fragment, '#updatedDescItemContainer'));
   });

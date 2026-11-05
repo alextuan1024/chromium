@@ -10,7 +10,7 @@
 #include "chrome/browser/app_mode/app_mode_utils.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "content/public/browser/navigation_controller.h"
-#include "ui/base/window_open_disposition.h"
+#include "ui/base/mojom/window_open_disposition.mojom-shared.h"
 #if BUILDFLAG(IS_MAC)
 #include "chrome/browser/global_keyboard_shortcuts_mac.h"
 #endif
@@ -26,13 +26,12 @@
 #include "chrome/browser/ui/browser_window/public/browser_window_features.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/browser_window_state.h"
-#include "chrome/browser/ui/browser_window_theme_observer.h"
+#include "chrome/browser/ui/browser_window_theme_observer/browser_window_theme_observer.h"
 #include "chrome/browser/ui/exclusive_access/exclusive_access_manager.h"
 #include "chrome/browser/ui/exclusive_access/fullscreen_controller.h"
 #include "chrome/browser/ui/find_bar/find_bar.h"
 #include "chrome/browser/ui/interaction/browser_elements.h"
 #include "chrome/browser/ui/side_panel/side_panel_ui_base.h"
-#include "chrome/browser/ui/tabs/public/tab_features.h"
 #include "chrome/browser/ui/unload_controller.h"
 #include "chrome/browser/ui/views/find_bar_host.h"
 #include "chrome/browser/ui/views/find_bar_owner.h"
@@ -621,7 +620,7 @@ bool WebUIBrowserWindow::GetAcceleratorForCommandId(
 
 void WebUIBrowserWindow::OnWidgetBoundsChanged(views::Widget* widget,
                                                const gfx::Rect& new_bounds) {
-  DCHECK_EQ(widget, widget_.get());
+  CHECK_EQ(widget, widget_.get(), base::NotFatalUntil::M162);
   if (modal_dialog_host_) {
     modal_dialog_host_->NotifyPositionRequiresUpdate();
   }
@@ -810,6 +809,8 @@ void WebUIBrowserWindow::OnActiveTabChanged(content::WebContents* old_contents,
   // State of extensions depends on what's active --- e.g. some may be disabled
   // on some URLs.
   extensions_container_->NotifyOfAllActions();
+
+  UpdateTitleBar();
 }
 
 void WebUIBrowserWindow::OnTabDetached(content::WebContents* contents,
@@ -863,6 +864,10 @@ ui::AcceleratorProvider* WebUIBrowserWindow::GetAcceleratorProvider() {
   return this;
 }
 
+PinnedToolbarActions* WebUIBrowserWindow::GetPinnedToolbarActions() {
+  return nullptr;
+}
+
 void WebUIBrowserWindow::SetFocusToLocationBar(bool is_user_initiated) {
   if (webui_browser::mojom::Page* page = GetWebUIBrowserUI()->page()) {
     page->SetFocusToLocationBar(is_user_initiated);
@@ -906,7 +911,7 @@ void WebUIBrowserWindow::TabDraggingStatusChanged(bool is_dragging) {
 }
 
 void WebUIBrowserWindow::LinkOpeningFromGesture(
-    WindowOpenDisposition disposition) {
+    ui::mojom::WindowOpenDisposition disposition) {
   NOTIMPLEMENTED_LOG_ONCE();
 }
 
@@ -1001,7 +1006,7 @@ void WebUIBrowserWindow::ZoomChangedForActiveTab(bool can_show_bubble) {
     return;
   }
 
-  auto* zoom_view_controller = tab->GetTabFeatures()->zoom_view_controller();
+  auto* zoom_view_controller = zoom::ZoomViewController::From(tab);
   if (!zoom_view_controller) {
     return;
   }
@@ -1075,7 +1080,8 @@ WebUIBrowserWindow::PreHandleKeyboardEvent(
   // command id from |accelerator_table_|, it must be a keydown event. This
   // DCHECK ensures we won't accidentally return NOT_HANDLED for a later added
   // RELEASED accelerator in BrowserView.
-  DCHECK_EQ(event.GetType(), blink::WebInputEvent::Type::kRawKeyDown);
+  CHECK_EQ(event.GetType(), blink::WebInputEvent::Type::kRawKeyDown,
+           base::NotFatalUntil::M162);
   // |accelerator| is a non-reserved browser shortcut (e.g. Ctrl+f).
   return content::KeyboardEventProcessingResult::NOT_HANDLED_IS_SHORTCUT;
 }
@@ -1109,14 +1115,6 @@ WebUIBrowserWindow::GetWebContentsModalDialogHostFor(
 
 void WebUIBrowserWindow::ShowAvatarBubbleFromAvatarButton(
     bool is_source_accelerator) {
-  NOTIMPLEMENTED_LOG_ONCE();
-}
-
-void WebUIBrowserWindow::MaybeShowProfileSwitchIPH() {
-  NOTIMPLEMENTED_LOG_ONCE();
-}
-
-void WebUIBrowserWindow::MaybeShowSupervisedUserProfileSignInIPH() {
   NOTIMPLEMENTED_LOG_ONCE();
 }
 

@@ -97,6 +97,12 @@ TEST_F(OmniboxTextUtilTest, TestStripSchemasUnsafeForPaste) {
   }
 }
 
+TEST_F(OmniboxTextUtilTest, FormatAdditionalText) {
+  EXPECT_EQ(u"", omnibox::FormatAdditionalText(u""));
+  EXPECT_EQ(u" - example.com/page",
+            omnibox::FormatAdditionalText(u"example.com/page"));
+}
+
 TEST_F(OmniboxTextUtilTest, SanitizeTextForPaste) {
   const struct {
     std::u16string input;
@@ -300,7 +306,7 @@ TEST_F(OmniboxTextUtilTest, AdjustTextForCopy) {
                                    input[i].input != input[i].url_for_display);
 
     AutocompleteMatch match;
-    match.type = AutocompleteMatchType::NAVSUGGEST;
+    match.type = omnibox::AutocompleteMatchType::kNavsuggest;
     match.destination_url = GURL(input[i].match_destination_url);
 
     EXPECT_CALL(*client(), GetContextualTasksInnerFrameURL())

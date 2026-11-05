@@ -46,6 +46,7 @@ import org.chromium.chrome.browser.omnibox.R;
 import org.chromium.chrome.browser.omnibox.UrlBarEditingTextStateProvider;
 import org.chromium.chrome.browser.omnibox.styles.OmniboxDrawableState;
 import org.chromium.chrome.browser.omnibox.styles.OmniboxImageSupplier;
+import org.chromium.chrome.browser.omnibox.styles.OmniboxResourceProvider;
 import org.chromium.chrome.browser.omnibox.suggestions.AutocompleteUIContext;
 import org.chromium.chrome.browser.omnibox.suggestions.SuggestionHost;
 import org.chromium.chrome.browser.omnibox.suggestions.action.OmniboxActionInSuggest;
@@ -53,6 +54,7 @@ import org.chromium.chrome.browser.omnibox.suggestions.base.BaseSuggestionViewPr
 import org.chromium.chrome.browser.omnibox.suggestions.basic.BasicSuggestionProcessor.BookmarkState;
 import org.chromium.chrome.browser.share.ShareDelegate;
 import org.chromium.chrome.browser.tab.Tab;
+import org.chromium.chrome.browser.ui.theme.BrandedColorScheme;
 import org.chromium.components.metrics.OmniboxEventProtosIntDef.PageClassification;
 import org.chromium.components.omnibox.AutocompleteInput;
 import org.chromium.components.omnibox.AutocompleteMatch;
@@ -60,7 +62,7 @@ import org.chromium.components.omnibox.AutocompleteMatchBuilder;
 import org.chromium.components.omnibox.OmniboxCapabilities;
 import org.chromium.components.omnibox.OmniboxFeatureList;
 import org.chromium.components.omnibox.OmniboxSuggestionType;
-import org.chromium.components.omnibox.SuggestTemplateInfoProto.SuggestTemplateInfo;
+import org.chromium.components.omnibox.SuggestTemplateInfoProtoIntDef.ActionType;
 import org.chromium.components.omnibox.action.ActionPresentationMode;
 import org.chromium.components.omnibox.action.OmniboxAction;
 import org.chromium.components.omnibox.action.OmniboxActionDelegate;
@@ -132,6 +134,7 @@ public class BaseSuggestionProcessorUnitTest {
     private TestBaseSuggestionProcessor mProcessor;
     private AutocompleteMatch mSuggestion;
     private PropertyModel mModel;
+    private OmniboxResourceProvider mResourceProvider;
     private AutocompleteInput mInput;
     SettableNonNullObservableSupplier<Integer> mControlsPositionSupplier =
             ObservableSuppliers.createNonNull(ControlsPosition.TOP);
@@ -139,9 +142,11 @@ public class BaseSuggestionProcessorUnitTest {
     @Before
     public void setUp() {
         mContext = ContextUtils.getApplicationContext();
+        mResourceProvider = new OmniboxResourceProvider(mContext, BrandedColorScheme.APP_DEFAULT);
         mUiContext =
                 new AutocompleteUIContext(
                         mContext,
+                        mResourceProvider,
                         mSuggestionHost,
                         mTextProvider,
                         mImageSupplier,
@@ -492,7 +497,7 @@ public class BaseSuggestionProcessorUnitTest {
                                     0,
                                     "hint",
                                     "accessibility",
-                                    SuggestTemplateInfo.TemplateAction.ActionType.REVIEWS_VALUE,
+                                    ActionType.REVIEWS,
                                     "https://google.com",
                                     /* tabId= */ 0,
                                     ActionPresentationMode.CHIP)));
@@ -512,7 +517,7 @@ public class BaseSuggestionProcessorUnitTest {
                                     0,
                                     "hint",
                                     "accessibility",
-                                    SuggestTemplateInfo.TemplateAction.ActionType.REVIEWS_VALUE,
+                                    ActionType.REVIEWS,
                                     "https://google.com",
                                     /* tabId= */ 0,
                                     ActionPresentationMode.CHIP),
@@ -520,7 +525,7 @@ public class BaseSuggestionProcessorUnitTest {
                                     0,
                                     "hint2",
                                     "accessibility2",
-                                    SuggestTemplateInfo.TemplateAction.ActionType.CHROME_AIM_VALUE,
+                                    ActionType.CHROME_AIM,
                                     "https://google.com",
                                     /* tabId= */ 0,
                                     ActionPresentationMode.BUTTON),
@@ -528,7 +533,7 @@ public class BaseSuggestionProcessorUnitTest {
                                     0,
                                     "hint3",
                                     "accessibility3",
-                                    SuggestTemplateInfo.TemplateAction.ActionType.CHROME_AIM_VALUE,
+                                    ActionType.CHROME_AIM,
                                     "https://google.com",
                                     /* tabId= */ 0,
                                     ActionPresentationMode.BUTTON)));
@@ -560,7 +565,7 @@ public class BaseSuggestionProcessorUnitTest {
                                 0,
                                 "hint",
                                 "accessibility",
-                                SuggestTemplateInfo.TemplateAction.ActionType.REVIEWS_VALUE,
+                                ActionType.REVIEWS,
                                 "https://google.com",
                                 /* tabId= */ 0,
                                 ActionPresentationMode.BUTTON)));
@@ -584,7 +589,7 @@ public class BaseSuggestionProcessorUnitTest {
                                 0,
                                 "hint",
                                 "accessibility",
-                                SuggestTemplateInfo.TemplateAction.ActionType.REVIEWS_VALUE,
+                                ActionType.REVIEWS,
                                 "https://google.com",
                                 /* tabId= */ 0,
                                 ActionPresentationMode.BUTTON)));
@@ -607,12 +612,12 @@ public class BaseSuggestionProcessorUnitTest {
                                 0,
                                 "hint",
                                 "accessibility",
-                                SuggestTemplateInfo.TemplateAction.ActionType.REVIEWS_VALUE,
+                                ActionType.REVIEWS,
                                 "https://google.com",
                                 /* tabId= */ 0,
                                 ActionPresentationMode.CHIP)));
 
-        var chips = mModel.get(ActionChipsProperties.ACTION_CHIPS);
+        var chips = mModel.get(BaseSuggestionViewProperties.ACTION_CHIPS);
         assertEquals(null, chips);
     }
 
@@ -630,12 +635,12 @@ public class BaseSuggestionProcessorUnitTest {
                                 0,
                                 "hint",
                                 "accessibility",
-                                SuggestTemplateInfo.TemplateAction.ActionType.REVIEWS_VALUE,
+                                ActionType.REVIEWS,
                                 "https://google.com",
                                 /* tabId= */ 0,
                                 ActionPresentationMode.CHIP)));
 
-        var chips = mModel.get(ActionChipsProperties.ACTION_CHIPS);
+        var chips = mModel.get(BaseSuggestionViewProperties.ACTION_CHIPS);
         assertEquals(null, chips);
     }
 
@@ -650,8 +655,7 @@ public class BaseSuggestionProcessorUnitTest {
                                 0,
                                 "hint",
                                 "accessibility",
-                                SuggestTemplateInfo.TemplateAction.ActionType
-                                        .CHROME_TAB_SWITCH_VALUE,
+                                ActionType.CHROME_TAB_SWITCH,
                                 "https://google.com",
                                 /* tabId= */ 0,
                                 ActionPresentationMode.BUTTON)));

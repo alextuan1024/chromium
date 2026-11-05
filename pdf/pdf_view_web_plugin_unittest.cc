@@ -15,6 +15,7 @@
 #include <vector>
 
 #include "base/containers/span.h"
+#include "base/i18n/language_tag.h"
 #include "base/location.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
@@ -914,6 +915,42 @@ TEST_F(PdfViewWebPluginTest, DocumentLoadProgressMultipleSmall) {
   plugin_->DocumentLoadProgress(4, 100);
 }
 
+TEST_F(PdfViewWebPluginTest, DocumentLoadProgressZeroDocSize) {
+  // 0 or 1 available bytes correspond to 0% progress, which is too small of a
+  // change to send a progress message.
+  EXPECT_CALL(*client_ptr_, PostMessage).Times(0);
+  plugin_->DocumentLoadProgress(0, 0);
+  plugin_->DocumentLoadProgress(1, 0);
+  testing::Mock::VerifyAndClearExpectations(client_ptr_);
+
+  // When `doc_size` is 0, progress scales logarithmically up to 100M bytes.
+  {
+    InSequence sequence;
+    EXPECT_CALL(*client_ptr_, PostMessage(base::test::IsJson(R"({
+      "type": "loadProgress",
+      "progress": 12.5,
+    })")));
+    EXPECT_CALL(*client_ptr_, PostMessage(base::test::IsJson(R"({
+      "type": "loadProgress",
+      "progress": 25.0,
+    })")));
+    EXPECT_CALL(*client_ptr_, PostMessage(base::test::IsJson(R"({
+      "type": "loadProgress",
+      "progress": 50.0,
+    })")));
+  }
+  plugin_->DocumentLoadProgress(10, 0);
+  plugin_->DocumentLoadProgress(100, 0);
+  plugin_->DocumentLoadProgress(10'000, 0);
+  testing::Mock::VerifyAndClearExpectations(client_ptr_);
+
+  // 100% progress (at or above 100M bytes) is not sent here because
+  // HandleViewportMessage() sends it.
+  EXPECT_CALL(*client_ptr_, PostMessage).Times(0);
+  plugin_->DocumentLoadProgress(100'000'000, 0);
+  plugin_->DocumentLoadProgress(200'000'000, 0);
+}
+
 TEST_F(PdfViewWebPluginTest, EnableAccessibilityBeforeDocumentLoadComplete) {
   EXPECT_CALL(*accessibility_data_handler_ptr_, SetAccessibilityDocInfo)
       .Times(0);
@@ -1418,10 +1455,6 @@ TEST_F(PdfViewWebPluginTest, OnPaintWithMultiplePaintRects) {
 
   EXPECT_EQ(gfx::Rect(20, 20, 10, 10), ready[2].rect());
   EXPECT_FALSE(ready[2].flush_now());
-
-  // All the requested paints should share the same `SkImage`.
-  EXPECT_NE(ready[0].image(), ready[1].image());
-  EXPECT_EQ(ready[1].image(), ready[2].image());
 }
 
 TEST_F(PdfViewWebPluginTest, UpdateLayerTransformWithIdentity) {
@@ -1625,7 +1658,7 @@ TEST_F(PdfViewWebPluginTest, HandleInputEvent) {
             static_cast<const blink::WebMouseEvent&>(event);
         EXPECT_EQ(blink::WebInputEvent::Type::kMouseDown,
                   mouse_event.GetType());
-        EXPECT_EQ(gfx::PointF(10.0f, 40.0f), mouse_event.PositionInWidget());
+        EXPECT_EQ(gfx::PointF(0.0f, 20.0f), mouse_event.PositionInWidget());
         return true;
       });
 
@@ -1729,8 +1762,11 @@ TEST_F(PdfViewWebPluginTest, SelectionChanged) {
                                           gfx::PointF(52.0f, 60.0f), 80));
   EXPECT_CALL(*accessibility_data_handler_ptr_, SetAccessibilityViewportInfo)
       .WillOnce(SaveArg<0>(&viewport_info));
-  plugin_->SelectionChanged({-10, -20, 30, 40}, {50, 60, 70, 80});
+  EXPECT_CALL(*client_ptr_, UpdateSelectionBounds);
+  plugin_->SelectionChanged({-10, -20, 30, 40}, {50, 60, 70, 80},
+                            {-10, -20, 130, 160});
 
+  EXPECT_EQ(gfx::Rect(-8, -20, 130, 160), plugin_->GetPluginSelectionBounds());
   EXPECT_EQ(gfx::Point(), viewport_info.scroll);
   pdf_receiver_.FlushForTesting();
 }
@@ -1746,8 +1782,11 @@ TEST_F(PdfViewWebPluginTest, SelectionChangedNegativeOrigin) {
                                           gfx::PointF(52.0f, 60.0f), 80));
   EXPECT_CALL(*accessibility_data_handler_ptr_, SetAccessibilityViewportInfo)
       .WillOnce(SaveArg<0>(&viewport_info));
-  plugin_->SelectionChanged({-10, -20, 30, 40}, {50, 60, 70, 80});
+  EXPECT_CALL(*client_ptr_, UpdateSelectionBounds);
+  plugin_->SelectionChanged({-10, -20, 30, 40}, {50, 60, 70, 80},
+                            {-10, -20, 130, 160});
 
+  EXPECT_EQ(gfx::Rect(-8, -20, 130, 160), plugin_->GetPluginSelectionBounds());
   EXPECT_EQ(gfx::Point(), viewport_info.scroll);
   pdf_receiver_.FlushForTesting();
 }
@@ -1763,8 +1802,11 @@ TEST_F(PdfViewWebPluginTest, SelectionChangedScaled) {
                                           gfx::PointF(52.0f, 60.0f), 80));
   EXPECT_CALL(*accessibility_data_handler_ptr_, SetAccessibilityViewportInfo)
       .WillOnce(SaveArg<0>(&viewport_info));
-  plugin_->SelectionChanged({-20, -40, 60, 80}, {100, 120, 140, 160});
+  EXPECT_CALL(*client_ptr_, UpdateSelectionBounds);
+  plugin_->SelectionChanged({-20, -40, 60, 80}, {100, 120, 140, 160},
+                            {-20, -40, 260, 320});
 
+  EXPECT_EQ(gfx::Rect(-16, -40, 260, 320), plugin_->GetPluginSelectionBounds());
   EXPECT_EQ(gfx::Point(), viewport_info.scroll);
   pdf_receiver_.FlushForTesting();
 }
@@ -1941,6 +1983,20 @@ TEST_F(PdfViewWebPluginTest, CaretChange) {
       /*device_scale=*/2.0f, /*window_rect=*/gfx::Rect(12, 24, 36, 48));
   plugin_->CaretChanged(gfx::Rect(10, 20, 30, 40));
   EXPECT_EQ(gfx::Rect(28, 20, 30, 40), plugin_->GetPluginCaretBounds());
+}
+
+TEST_F(PdfViewWebPluginTest, SelectionBounds) {
+  EXPECT_CALL(*engine_ptr_, ZoomUpdated(2.0f));
+  UpdatePluginGeometry(
+      /*device_scale=*/2.0f, /*window_rect=*/gfx::Rect(12, 24, 36, 48));
+  EXPECT_CALL(*client_ptr_, UpdateSelectionBounds);
+  plugin_->SelectionChanged(gfx::Rect(15, 20, 5, 10), gfx::Rect(25, 40, 5, 10),
+                            gfx::Rect(10, 20, 30, 40));
+  EXPECT_EQ(gfx::Rect(28, 20, 30, 40), plugin_->GetPluginSelectionBounds());
+
+  EXPECT_CALL(*client_ptr_, UpdateSelectionBounds);
+  plugin_->SelectionChanged(gfx::Rect(), gfx::Rect(), gfx::Rect());
+  EXPECT_EQ(gfx::Rect(), plugin_->GetPluginSelectionBounds());
 }
 
 TEST_F(PdfViewWebPluginTest, EnteredEditMode) {
@@ -2233,6 +2289,7 @@ class PdfViewWebPluginWithDocInfoTest
                                             &metadata().creation_date));
       ASSERT_TRUE(base::Time::FromUTCString("2021-06-04 15:16:17",
                                             &metadata().mod_date));
+      metadata().language_tag = base::i18n::GetKnownLanguageTag("en-US");
     }
 
     // Note: In the metadata message `creation_date` and `mod_date` are
@@ -2315,6 +2372,13 @@ TEST_P(PdfViewWebPluginWithDocInfoTest, OnDocumentLoadComplete) {
   EXPECT_CALL(*client_ptr_, PostMessage(Eq(std::ref(expect_bookmarks))));
   EXPECT_CALL(*client_ptr_, PostMessage(Eq(std::ref(expect_metadata))));
   plugin_->DocumentLoadComplete();
+}
+
+TEST_P(PdfViewWebPluginWithDocInfoTest, GetAccessibilityDocInfo) {
+  std::unique_ptr<AccessibilityDocInfo> doc_info =
+      plugin_->GetAccessibilityDocInfoForTesting();
+  ASSERT_TRUE(doc_info);
+  EXPECT_EQ("en-US", doc_info->language);
 }
 
 INSTANTIATE_TEST_SUITE_P(All, PdfViewWebPluginWithDocInfoTest, testing::Bool());
@@ -2619,6 +2683,8 @@ TEST_F(PdfViewWebPluginInk2SaveInBlocksTest, AnnotationInEditModeMetrics) {
   EXPECT_TRUE(plugin_->IsSaveDataBufferEmptyForTesting());
   pdf_receiver_.FlushForTesting();
 
+  histograms.ExpectUniqueSample("PDF.Ink2SaveHasStrokes", false, 1);
+  histograms.ExpectUniqueSample("PDF.Ink2SaveHasTextAnnotations", false, 1);
   histograms.ExpectTotalCount("PDF.Ink2TextAnnotationAddedCountOnSave", 0);
   histograms.ExpectTotalCount("PDF.Ink2TextAnnotationRemovedCountOnSave", 0);
 }
@@ -2651,6 +2717,8 @@ TEST_F(PdfViewWebPluginInk2SaveInBlocksTest, AnnotationInEditModeMetricsAdded) {
   EXPECT_TRUE(plugin_->IsSaveDataBufferEmptyForTesting());
   pdf_receiver_.FlushForTesting();
 
+  histograms.ExpectUniqueSample("PDF.Ink2SaveHasStrokes", false, 1);
+  histograms.ExpectUniqueSample("PDF.Ink2SaveHasTextAnnotations", true, 1);
   histograms.ExpectUniqueSample("PDF.Ink2TextAnnotationAddedCountOnSave", 1, 1);
   histograms.ExpectTotalCount("PDF.Ink2TextAnnotationRemovedCountOnSave", 0);
 }
@@ -2669,15 +2737,11 @@ TEST_F(PdfViewWebPluginInk2SaveInBlocksTest,
 
   plugin_->EnteredEditMode();
 
-  base::DictValue finish_data =
-      SampleFinishTextAnnotationData(/*frontend_id=*/0, FontId(123),
-                                     /*page_index=*/0, /*pdf_zoom=*/1.0);
-  finish_data.Set("text", "");
-
   EXPECT_CALL(*engine_ptr_, UpdateTextActiveAndInvalidate(_, false));
   EXPECT_CALL(*engine_ptr_, RequestThumbnail(_, _, _));
 
-  plugin_->OnMessage(CreateFinishTextAnnotationMessage(std::move(finish_data)));
+  plugin_->OnMessage(
+      CreateDeleteTextAnnotationMessage(/*frontend_id=*/0, /*page_index=*/0));
 
   base::span data(TestPDFiumEngine::kSaveData);
   ExpectResponse(data, 0, data.size(), "token-1");
@@ -2688,6 +2752,8 @@ TEST_F(PdfViewWebPluginInk2SaveInBlocksTest,
   EXPECT_TRUE(plugin_->IsSaveDataBufferEmptyForTesting());
   pdf_receiver_.FlushForTesting();
 
+  histograms.ExpectUniqueSample("PDF.Ink2SaveHasStrokes", false, 1);
+  histograms.ExpectUniqueSample("PDF.Ink2SaveHasTextAnnotations", false, 1);
   histograms.ExpectTotalCount("PDF.Ink2TextAnnotationAddedCountOnSave", 0);
   histograms.ExpectUniqueSample("PDF.Ink2TextAnnotationRemovedCountOnSave", 1,
                                 1);
@@ -2890,6 +2956,8 @@ TEST_F(PdfViewWebPluginSaveInBlocksToGoogleDriveTest,
   FreeHandler(handler);
   EXPECT_EQ(plugin_->GetSaveToDriveBufferHandlerReceiverSizeForTesting(), 0u);
 
+  histograms.ExpectUniqueSample("PDF.Ink2SaveHasStrokes", false, 1);
+  histograms.ExpectUniqueSample("PDF.Ink2SaveHasTextAnnotations", false, 1);
   histograms.ExpectTotalCount("PDF.Ink2TextAnnotationAddedCountOnSave", 0);
   histograms.ExpectTotalCount("PDF.Ink2TextAnnotationRemovedCountOnSave", 0);
 }
@@ -2923,6 +2991,8 @@ TEST_F(PdfViewWebPluginSaveInBlocksToGoogleDriveTest,
   FreeHandler(handler);
   EXPECT_EQ(plugin_->GetSaveToDriveBufferHandlerReceiverSizeForTesting(), 0u);
 
+  histograms.ExpectUniqueSample("PDF.Ink2SaveHasStrokes", false, 1);
+  histograms.ExpectUniqueSample("PDF.Ink2SaveHasTextAnnotations", true, 1);
   histograms.ExpectUniqueSample("PDF.Ink2TextAnnotationAddedCountOnSave", 1, 1);
   histograms.ExpectTotalCount("PDF.Ink2TextAnnotationRemovedCountOnSave", 0);
 }
@@ -2941,15 +3011,11 @@ TEST_F(PdfViewWebPluginSaveInBlocksToGoogleDriveTest,
 
   plugin_->EnteredEditMode();
 
-  base::DictValue finish_data =
-      SampleFinishTextAnnotationData(/*frontend_id=*/0, FontId(123),
-                                     /*page_index=*/0, /*pdf_zoom=*/1.0);
-  finish_data.Set("text", "");
-
   EXPECT_CALL(*engine_ptr_, UpdateTextActiveAndInvalidate(_, false));
   EXPECT_CALL(*engine_ptr_, RequestThumbnail(_, _, _));
 
-  plugin_->OnMessage(CreateFinishTextAnnotationMessage(std::move(finish_data)));
+  plugin_->OnMessage(
+      CreateDeleteTextAnnotationMessage(/*frontend_id=*/0, /*page_index=*/0));
 
   base::HistogramTester histograms;
   base::span<const uint8_t> data(TestPDFiumEngine::kSaveData);
@@ -2960,6 +3026,8 @@ TEST_F(PdfViewWebPluginSaveInBlocksToGoogleDriveTest,
   FreeHandler(handler);
   EXPECT_EQ(plugin_->GetSaveToDriveBufferHandlerReceiverSizeForTesting(), 0u);
 
+  histograms.ExpectUniqueSample("PDF.Ink2SaveHasStrokes", false, 1);
+  histograms.ExpectUniqueSample("PDF.Ink2SaveHasTextAnnotations", false, 1);
   histograms.ExpectTotalCount("PDF.Ink2TextAnnotationAddedCountOnSave", 0);
   histograms.ExpectUniqueSample("PDF.Ink2TextAnnotationRemovedCountOnSave", 1,
                                 1);
@@ -3258,6 +3326,34 @@ TEST_F(PdfViewWebPluginPrintPreviewTest, DocumentLoadComplete) {
   EXPECT_EQ(PdfViewWebPlugin::DocumentLoadState::kComplete,
             plugin_->document_load_state_for_testing());
   pdf_receiver_.FlushForTesting();
+}
+
+TEST_F(PdfViewWebPluginPrintPreviewTest,
+       AccessibilityReloadedAfterResetPrintPreviewModeMessage) {
+  plugin_->EnableAccessibility();
+  OnMessageWithEngineUpdate(GenerateResetPrintPreviewModeMessage(
+      /*id=*/kTestId, /*page_number=*/-1, /*grayscale=*/false,
+      /*page_count=*/0));
+  EXPECT_CALL(*accessibility_data_handler_ptr_, SetAccessibilityDocInfo);
+  plugin_->DocumentLoadComplete();
+  testing::Mock::VerifyAndClearExpectations(accessibility_data_handler_ptr_);
+
+  OnMessageWithEngineUpdate(GenerateResetPrintPreviewModeMessage(
+      /*id=*/kTestId, /*page_number=*/-1, /*grayscale=*/false,
+      /*page_count=*/0));
+
+  // Layout changes while the new document is loading must not load
+  // accessibility.
+  EXPECT_CALL(*accessibility_data_handler_ptr_, SetAccessibilityDocInfo)
+      .Times(0);
+  DocumentLayout layout;
+  layout.ComputeLayout({gfx::Size(100, 200)});
+  ASSERT_TRUE(layout.dirty());
+  plugin_->ProposeDocumentLayout(layout);
+  testing::Mock::VerifyAndClearExpectations(accessibility_data_handler_ptr_);
+
+  EXPECT_CALL(*accessibility_data_handler_ptr_, SetAccessibilityDocInfo);
+  plugin_->DocumentLoadComplete();
 }
 
 TEST_F(PdfViewWebPluginPrintPreviewTest,
@@ -4044,7 +4140,8 @@ TEST_P(PdfViewWebPluginInkTextHighlightTest, SelectionDoesNotChange) {
 
   EXPECT_CALL(pdf_host_, SelectionChanged(_, _, _, _)).Times(0);
 
-  plugin_->SelectionChanged({-10, -20, 30, 40}, {50, 60, 70, 80});
+  plugin_->SelectionChanged({-10, -20, 30, 40}, {50, 60, 70, 80},
+                            {-10, -20, 130, 160});
   pdf_receiver_.FlushForTesting();
 }
 
@@ -4253,6 +4350,8 @@ TEST_F(PdfViewWebPluginInk2SaveTest, AnnotationInEditModeMetrics) {
     "token": "annotation-in-edit-mode",
   })"));
 
+  histograms.ExpectUniqueSample("PDF.Ink2SaveHasStrokes", false, 1);
+  histograms.ExpectUniqueSample("PDF.Ink2SaveHasTextAnnotations", false, 1);
   histograms.ExpectTotalCount("PDF.Ink2TextAnnotationAddedCountOnSave", 0);
   histograms.ExpectTotalCount("PDF.Ink2TextAnnotationRemovedCountOnSave", 0);
 }
@@ -4294,6 +4393,8 @@ TEST_F(PdfViewWebPluginInk2SaveTest, AnnotationInEditModeMetricsAdded) {
     "token": "annotation-in-edit-mode",
   })"));
 
+  histograms.ExpectUniqueSample("PDF.Ink2SaveHasStrokes", false, 1);
+  histograms.ExpectUniqueSample("PDF.Ink2SaveHasTextAnnotations", true, 1);
   histograms.ExpectUniqueSample("PDF.Ink2TextAnnotationAddedCountOnSave", 1, 1);
   histograms.ExpectTotalCount("PDF.Ink2TextAnnotationRemovedCountOnSave", 0);
 }
@@ -4311,15 +4412,11 @@ TEST_F(PdfViewWebPluginInk2SaveTest, AnnotationInEditModeMetricsRemoved) {
 
   plugin_->EnteredEditMode();
 
-  base::DictValue finish_data =
-      SampleFinishTextAnnotationData(/*frontend_id=*/0, FontId(123),
-                                     /*page_index=*/0, /*pdf_zoom=*/1.0);
-  finish_data.Set("text", "");
-
   EXPECT_CALL(*engine_ptr_, UpdateTextActiveAndInvalidate(_, false));
   EXPECT_CALL(*engine_ptr_, RequestThumbnail(_, _, _));
 
-  plugin_->OnMessage(CreateFinishTextAnnotationMessage(std::move(finish_data)));
+  plugin_->OnMessage(
+      CreateDeleteTextAnnotationMessage(/*frontend_id=*/0, /*page_index=*/0));
 
   pdf_receiver_.FlushForTesting();
 
@@ -4339,6 +4436,8 @@ TEST_F(PdfViewWebPluginInk2SaveTest, AnnotationInEditModeMetricsRemoved) {
     "token": "annotation-in-edit-mode",
   })"));
 
+  histograms.ExpectUniqueSample("PDF.Ink2SaveHasStrokes", false, 1);
+  histograms.ExpectUniqueSample("PDF.Ink2SaveHasTextAnnotations", false, 1);
   histograms.ExpectTotalCount("PDF.Ink2TextAnnotationAddedCountOnSave", 0);
   histograms.ExpectUniqueSample("PDF.Ink2TextAnnotationRemovedCountOnSave", 1,
                                 1);

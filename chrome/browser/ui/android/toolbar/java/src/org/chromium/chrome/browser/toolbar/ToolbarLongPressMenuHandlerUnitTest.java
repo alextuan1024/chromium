@@ -8,16 +8,13 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
-import static org.mockito.ArgumentMatchers.any;
+import static org.junit.Assert.assertTrue;
 import static org.mockito.ArgumentMatchers.anyBoolean;
-import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.clearInvocations;
 import static org.mockito.Mockito.doAnswer;
-import static org.mockito.Mockito.doNothing;
 import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.spy;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -28,10 +25,7 @@ import android.content.ClipboardManager;
 import android.content.pm.PackageManager;
 import android.content.res.Configuration;
 import android.graphics.Rect;
-import android.view.View;
-import android.view.ViewGroup;
-
-import androidx.test.ext.junit.rules.ActivityScenarioRule;
+import android.widget.PopupWindow;
 
 import org.junit.After;
 import org.junit.Before;
@@ -52,7 +46,7 @@ import org.chromium.base.supplier.ObservableSuppliers;
 import org.chromium.base.supplier.SettableNonNullObservableSupplier;
 import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.base.test.util.Features.DisableFeatures;
-import org.chromium.base.test.util.Features.EnableFeatures;
+import org.chromium.base.test.util.HistogramWatcher;
 import org.chromium.base.test.util.Restriction;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.feature_engagement.TrackerFactory;
@@ -66,22 +60,21 @@ import org.chromium.chrome.browser.preferences.Pref;
 import org.chromium.chrome.browser.prefs.LocalStatePrefs;
 import org.chromium.chrome.browser.prefs.LocalStatePrefsJni;
 import org.chromium.chrome.browser.profiles.Profile;
+import org.chromium.chrome.browser.toolbar.ToolbarLongPressMenuHandler.MenuItemType;
 import org.chromium.chrome.browser.toolbar.ToolbarPositionController.ToolbarPositionAndSource;
 import org.chromium.chrome.browser.toolbar.settings.AddressBarPreference;
+import org.chromium.chrome.browser.ui.bottombar.BottomBarMetrics.IphEvent;
 import org.chromium.components.feature_engagement.EventConstants;
 import org.chromium.components.feature_engagement.Tracker;
 import org.chromium.components.prefs.PrefService;
 import org.chromium.ui.base.Clipboard;
 import org.chromium.ui.base.ClipboardImpl;
 import org.chromium.ui.base.DeviceFormFactor;
-import org.chromium.ui.base.TestActivity;
 import org.chromium.ui.base.WindowAndroid;
 import org.chromium.ui.display.DisplayAndroid;
 import org.chromium.ui.listmenu.BasicListMenu;
 import org.chromium.ui.listmenu.ListMenuItemProperties;
 import org.chromium.ui.modelutil.MVCListAdapter.ModelList;
-import org.chromium.ui.widget.ChromePopupWindow;
-import org.chromium.ui.widget.UiWidgetFactory;
 import org.chromium.ui.widget.ViewRectProvider;
 import org.chromium.url.GURL;
 import org.chromium.url.JUnitTestGURLs;
@@ -91,10 +84,7 @@ import java.util.function.BooleanSupplier;
 
 /** Unit tests for {@link ToolbarLongPressMenuHandler}. */
 @RunWith(BaseRobolectricTestRunner.class)
-@DisableFeatures({
-    ChromeFeatureList.CROSS_DEVICE_PREF_TRACKER_EXTRA_LOGS,
-    ChromeFeatureList.SEND_TAB_TO_SELF_EXTRA_ENTRY_POINTS
-})
+@DisableFeatures(ChromeFeatureList.CROSS_DEVICE_PREF_TRACKER_EXTRA_LOGS)
 public final class ToolbarLongPressMenuHandlerUnitTest {
     private static final int URLBAR_LEFT = 100;
     private static final int URLBAR_TOP = 20;
@@ -104,21 +94,13 @@ public final class ToolbarLongPressMenuHandlerUnitTest {
     private static final int LONG_PRESS_MENU_HEIGHT = 30;
     @Rule public MockitoRule mockitoRule = MockitoJUnit.rule();
 
-    @Rule
-    public ActivityScenarioRule<TestActivity> mActivityScenarioRule =
-            new ActivityScenarioRule<>(TestActivity.class);
-
-    @Mock private UrlBar mUrlBar;
-    @Mock private ViewGroup mContentViewGroup;
     @Mock private BasicListMenu mBasicListMenu;
     @Mock private ViewRectProvider mViewRectProvider;
-    @Mock UiWidgetFactory mMockUiWidgetFactory;
     @Mock Profile mProfile;
     @Mock Tracker mTracker;
     @Mock private WindowAndroid mWindowAndroid;
     @Mock private ActivityLifecycleDispatcher mActivityLifecycleDispatcher;
     @Mock private DisplayAndroid mDisplayAndroid;
-    private ChromePopupWindow mSpyPopupWindow;
     @Mock LocalStatePrefs.Natives mLocalStatePrefsNatives;
     @Mock PrefService mLocalPrefService;
 
@@ -126,6 +108,7 @@ public final class ToolbarLongPressMenuHandlerUnitTest {
     private SettableNonNullObservableSupplier<Profile> mProfileSupplier;
 
     private Activity mActivity;
+    private UrlBar mUrlBar;
     private boolean mShouldSuppress;
     private final BooleanSupplier mSuppressSupplier = () -> mShouldSuppress;
     private SharedPreferencesManager mSharedPreferencesManager;
@@ -134,12 +117,13 @@ public final class ToolbarLongPressMenuHandlerUnitTest {
 
     @Before
     public void setUp() throws Exception {
-        mActivity = Robolectric.buildActivity(Activity.class).get();
+        mActivity = Robolectric.buildActivity(Activity.class).setup().get();
         ShadowPackageManager shadowPackageManager = Shadows.shadowOf(mActivity.getPackageManager());
         shadowPackageManager.setSystemFeature(PackageManager.FEATURE_SENSOR_HINGE_ANGLE, false);
 
-        UrlBar urlBar = new UrlBarApi26(mActivity, null);
-        mUrlBar = spy(urlBar);
+        // Attach the URL bar so that the popup window can be shown anchored to it.
+        mUrlBar = new UrlBarApi26(mActivity, /* attrs= */ null);
+        mActivity.setContentView(mUrlBar);
 
         mProfileSupplier = ObservableSuppliers.createNonNull(mProfile);
 
@@ -196,13 +180,6 @@ public final class ToolbarLongPressMenuHandlerUnitTest {
     @After
     public void tearDown() throws Exception {
         mSharedPreferencesManager.removeKey(ChromePreferenceKeys.TOOLBAR_TOP_ANCHORED);
-        UiWidgetFactory.setInstance(null);
-    }
-
-    @Test
-    @Config(qualifiers = "ldltr-sw600dp")
-    public void testNoListenerOnTablet() {
-        assertNull(mToolbarLongPressMenuHandler.getOnLongClickListener());
     }
 
     @Test
@@ -215,26 +192,12 @@ public final class ToolbarLongPressMenuHandlerUnitTest {
     @Test
     @Restriction({DeviceFormFactor.PHONE})
     public void testDisplayLongpressMenu() {
-        // Spy the popupwindow
-        mSpyPopupWindow = spy(UiWidgetFactory.getInstance().createPopupWindow(mActivity));
-        UiWidgetFactory.setInstance(mMockUiWidgetFactory);
-        when(mMockUiWidgetFactory.createPopupWindow(any())).thenReturn(mSpyPopupWindow);
-
-        // Making sure the popupwindow is big enough to display.
-        doReturn(true).when(mUrlBar).isAttachedToWindow();
-        doReturn(mContentViewGroup).when(mSpyPopupWindow).getContentView();
-        doReturn(100).when(mContentViewGroup).getMeasuredWidth();
-        doReturn(100).when(mContentViewGroup).getMeasuredHeight();
-        doNothing()
-                .when(mSpyPopupWindow)
-                .showAtLocation(any(View.class), anyInt(), anyInt(), anyInt());
-
         mToolbarLongPressMenuHandler.getOnLongClickListener().onLongClick(mUrlBar);
-        verify(mSpyPopupWindow).showAtLocation(any(View.class), anyInt(), anyInt(), anyInt());
+        PopupWindow popupWindow = mToolbarLongPressMenuHandler.getPopupWindowForTesting();
+        assertNotNull(popupWindow);
+        assertTrue(popupWindow.isShowing());
 
         verify(mTracker).notifyEvent(EventConstants.BOTTOM_TOOLBAR_MENU_TRIGGERED);
-
-        assertNotNull(mToolbarLongPressMenuHandler.getPopupWindowForTesting());
     }
 
     @Test
@@ -255,14 +218,13 @@ public final class ToolbarLongPressMenuHandlerUnitTest {
                 R.string.toolbar_move_to_the_bottom,
                 list.get(0).model.get(ListMenuItemProperties.TITLE_ID));
         assertEquals(
-                ToolbarLongPressMenuHandler.MenuItemType.MOVE_ADDRESS_BAR_TO,
+                MenuItemType.MOVE_ADDRESS_BAR_TO,
                 list.get(0).model.get(ListMenuItemProperties.MENU_ITEM_ID));
 
         assertEquals(
                 R.string.toolbar_copy_link, list.get(1).model.get(ListMenuItemProperties.TITLE_ID));
         assertEquals(
-                ToolbarLongPressMenuHandler.MenuItemType.COPY_LINK,
-                list.get(1).model.get(ListMenuItemProperties.MENU_ITEM_ID));
+                MenuItemType.COPY_LINK, list.get(1).model.get(ListMenuItemProperties.MENU_ITEM_ID));
     }
 
     @Test
@@ -274,28 +236,25 @@ public final class ToolbarLongPressMenuHandlerUnitTest {
                 R.string.toolbar_move_to_the_top,
                 list.get(0).model.get(ListMenuItemProperties.TITLE_ID));
         assertEquals(
-                ToolbarLongPressMenuHandler.MenuItemType.MOVE_ADDRESS_BAR_TO,
+                MenuItemType.MOVE_ADDRESS_BAR_TO,
                 list.get(0).model.get(ListMenuItemProperties.MENU_ITEM_ID));
 
         assertEquals(
                 R.string.toolbar_copy_link, list.get(1).model.get(ListMenuItemProperties.TITLE_ID));
         assertEquals(
-                ToolbarLongPressMenuHandler.MenuItemType.COPY_LINK,
-                list.get(1).model.get(ListMenuItemProperties.MENU_ITEM_ID));
+                MenuItemType.COPY_LINK, list.get(1).model.get(ListMenuItemProperties.MENU_ITEM_ID));
     }
 
     @Test
     public void testPreferenceKeyMigration() {
         mSharedPreferencesManager.writeBoolean(ChromePreferenceKeys.TOOLBAR_TOP_ANCHORED, true);
-        mToolbarLongPressMenuHandler.handleMenuClick(
-                ToolbarLongPressMenuHandler.MenuItemType.MOVE_ADDRESS_BAR_TO);
+        mToolbarLongPressMenuHandler.handleMenuClick(MenuItemType.MOVE_ADDRESS_BAR_TO);
         assertEquals(
                 ToolbarPositionAndSource.BOTTOM_LONG_PRESS,
                 mSharedPreferencesManager.readInt(ChromePreferenceKeys.TOOLBAR_TOP_ANCHORED));
 
         mSharedPreferencesManager.writeBoolean(ChromePreferenceKeys.TOOLBAR_TOP_ANCHORED, false);
-        mToolbarLongPressMenuHandler.handleMenuClick(
-                ToolbarLongPressMenuHandler.MenuItemType.MOVE_ADDRESS_BAR_TO);
+        mToolbarLongPressMenuHandler.handleMenuClick(MenuItemType.MOVE_ADDRESS_BAR_TO);
         assertEquals(
                 ToolbarPositionAndSource.TOP_LONG_PRESS,
                 mSharedPreferencesManager.readInt(ChromePreferenceKeys.TOOLBAR_TOP_ANCHORED));
@@ -305,8 +264,7 @@ public final class ToolbarLongPressMenuHandlerUnitTest {
     public void testHandleMoveAddressBarTo() {
         AddressBarPreference.setToolbarPositionAndSource(ToolbarPositionAndSource.TOP_LONG_PRESS);
         clearInvocations(mLocalPrefService);
-        mToolbarLongPressMenuHandler.handleMenuClick(
-                ToolbarLongPressMenuHandler.MenuItemType.MOVE_ADDRESS_BAR_TO);
+        mToolbarLongPressMenuHandler.handleMenuClick(MenuItemType.MOVE_ADDRESS_BAR_TO);
         assertEquals(
                 ToolbarPositionAndSource.BOTTOM_LONG_PRESS,
                 mSharedPreferencesManager.readInt(ChromePreferenceKeys.TOOLBAR_TOP_ANCHORED));
@@ -314,8 +272,7 @@ public final class ToolbarLongPressMenuHandlerUnitTest {
 
         AddressBarPreference.setToolbarPositionAndSource(ToolbarPositionAndSource.TOP_SETTINGS);
         clearInvocations(mLocalPrefService);
-        mToolbarLongPressMenuHandler.handleMenuClick(
-                ToolbarLongPressMenuHandler.MenuItemType.MOVE_ADDRESS_BAR_TO);
+        mToolbarLongPressMenuHandler.handleMenuClick(MenuItemType.MOVE_ADDRESS_BAR_TO);
         assertEquals(
                 ToolbarPositionAndSource.BOTTOM_LONG_PRESS,
                 mSharedPreferencesManager.readInt(ChromePreferenceKeys.TOOLBAR_TOP_ANCHORED));
@@ -324,8 +281,7 @@ public final class ToolbarLongPressMenuHandlerUnitTest {
         AddressBarPreference.setToolbarPositionAndSource(
                 ToolbarPositionAndSource.BOTTOM_LONG_PRESS);
         clearInvocations(mLocalPrefService);
-        mToolbarLongPressMenuHandler.handleMenuClick(
-                ToolbarLongPressMenuHandler.MenuItemType.MOVE_ADDRESS_BAR_TO);
+        mToolbarLongPressMenuHandler.handleMenuClick(MenuItemType.MOVE_ADDRESS_BAR_TO);
         assertEquals(
                 ToolbarPositionAndSource.TOP_LONG_PRESS,
                 mSharedPreferencesManager.readInt(ChromePreferenceKeys.TOOLBAR_TOP_ANCHORED));
@@ -333,12 +289,50 @@ public final class ToolbarLongPressMenuHandlerUnitTest {
 
         AddressBarPreference.setToolbarPositionAndSource(ToolbarPositionAndSource.BOTTOM_SETTINGS);
         clearInvocations(mLocalPrefService);
-        mToolbarLongPressMenuHandler.handleMenuClick(
-                ToolbarLongPressMenuHandler.MenuItemType.MOVE_ADDRESS_BAR_TO);
+        mToolbarLongPressMenuHandler.handleMenuClick(MenuItemType.MOVE_ADDRESS_BAR_TO);
         assertEquals(
                 ToolbarPositionAndSource.TOP_LONG_PRESS,
                 mSharedPreferencesManager.readInt(ChromePreferenceKeys.TOOLBAR_TOP_ANCHORED));
         verify(mLocalPrefService, times(1)).setBoolean(Pref.IS_OMNIBOX_IN_BOTTOM_POSITION, false);
+    }
+
+    @Test
+    public void testHandleMoveAddressBarTo_RecordsMetricWhenAddressBarIphShown() {
+        AddressBarPreference.setToolbarPositionAndSource(ToolbarPositionAndSource.TOP_SETTINGS);
+        mToolbarLongPressMenuHandler.onBottomBarAddressBarIphShown();
+
+        HistogramWatcher watcher =
+                HistogramWatcher.newSingleRecordWatcher(
+                        "Android.BottomBar.IPH.AddressBar.Event", IphEvent.MOVED_TO_BOTTOM);
+        mToolbarLongPressMenuHandler.handleMenuClick(MenuItemType.MOVE_ADDRESS_BAR_TO);
+        watcher.assertExpected();
+    }
+
+    @Test
+    public void testHandleMoveAddressBarTo_RecordsMetricOnlyOncePerIphShown() {
+        AddressBarPreference.setToolbarPositionAndSource(ToolbarPositionAndSource.TOP_SETTINGS);
+        mToolbarLongPressMenuHandler.onBottomBarAddressBarIphShown();
+        mToolbarLongPressMenuHandler.handleMenuClick(MenuItemType.MOVE_ADDRESS_BAR_TO);
+        mToolbarLongPressMenuHandler.handleMenuClick(MenuItemType.MOVE_ADDRESS_BAR_TO);
+
+        HistogramWatcher noRecordWatcher =
+                HistogramWatcher.newBuilder()
+                        .expectNoRecords("Android.BottomBar.IPH.AddressBar.Event")
+                        .build();
+        mToolbarLongPressMenuHandler.handleMenuClick(MenuItemType.MOVE_ADDRESS_BAR_TO);
+        noRecordWatcher.assertExpected();
+    }
+
+    @Test
+    public void testHandleMoveAddressBarTo_DoesNotRecordMetricWhenAddressBarIphNotShown() {
+        AddressBarPreference.setToolbarPositionAndSource(ToolbarPositionAndSource.TOP_SETTINGS);
+
+        HistogramWatcher watcher =
+                HistogramWatcher.newBuilder()
+                        .expectNoRecords("Android.BottomBar.IPH.AddressBar.Event")
+                        .build();
+        mToolbarLongPressMenuHandler.handleMenuClick(MenuItemType.MOVE_ADDRESS_BAR_TO);
+        watcher.assertExpected();
     }
 
     @Test
@@ -348,8 +342,7 @@ public final class ToolbarLongPressMenuHandlerUnitTest {
         ((ClipboardImpl) clipboard).overrideClipboardManagerForTesting(clipboardManager);
         mUrl = JUnitTestGURLs.URL_1;
 
-        mToolbarLongPressMenuHandler.handleMenuClick(
-                ToolbarLongPressMenuHandler.MenuItemType.COPY_LINK);
+        mToolbarLongPressMenuHandler.handleMenuClick(MenuItemType.COPY_LINK);
 
         ArgumentCaptor<ClipData> clipCaptor = ArgumentCaptor.forClass(ClipData.class);
         verify(clipboardManager).setPrimaryClip(clipCaptor.capture());
@@ -363,8 +356,7 @@ public final class ToolbarLongPressMenuHandlerUnitTest {
         ClipboardManager clipboardManager = mock(ClipboardManager.class);
         ((ClipboardImpl) clipboard).overrideClipboardManagerForTesting(clipboardManager);
         mUrl = null;
-        mToolbarLongPressMenuHandler.handleMenuClick(
-                ToolbarLongPressMenuHandler.MenuItemType.COPY_LINK);
+        mToolbarLongPressMenuHandler.handleMenuClick(MenuItemType.COPY_LINK);
 
         ArgumentCaptor<ClipData> clipCaptor = ArgumentCaptor.forClass(ClipData.class);
         verify(clipboardManager).setPrimaryClip(clipCaptor.capture());
@@ -482,29 +474,15 @@ public final class ToolbarLongPressMenuHandlerUnitTest {
 
     @Test
     public void testScreenDpChange_onConfigurationChanged() {
-        // Spy the popupwindow
-        mSpyPopupWindow = spy(UiWidgetFactory.getInstance().createPopupWindow(mActivity));
-        UiWidgetFactory.setInstance(mMockUiWidgetFactory);
-        when(mMockUiWidgetFactory.createPopupWindow(any())).thenReturn(mSpyPopupWindow);
-
-        // Making sure the popupwindow is big enough to display.
-        doReturn(true).when(mUrlBar).isAttachedToWindow();
-        doReturn(mContentViewGroup).when(mSpyPopupWindow).getContentView();
-        doReturn(100).when(mContentViewGroup).getMeasuredWidth();
-        doReturn(100).when(mContentViewGroup).getMeasuredHeight();
-        doNothing()
-                .when(mSpyPopupWindow)
-                .showAtLocation(any(View.class), anyInt(), anyInt(), anyInt());
-
         mToolbarLongPressMenuHandler.getOnLongClickListener().onLongClick(mUrlBar);
-        verify(mSpyPopupWindow).showAtLocation(any(View.class), anyInt(), anyInt(), anyInt());
+        PopupWindow popupWindow = mToolbarLongPressMenuHandler.getPopupWindowForTesting();
+        assertNotNull(popupWindow);
+        assertTrue(popupWindow.isShowing());
 
         verify(mTracker).notifyEvent(EventConstants.BOTTOM_TOOLBAR_MENU_TRIGGERED);
 
-        assertNotNull(mToolbarLongPressMenuHandler.getPopupWindowForTesting());
-
         // Store the initial width of the popup for later verification.
-        int initialMenuWidth = mToolbarLongPressMenuHandler.getPopupWindowForTesting().getWidth();
+        int initialMenuWidth = popupWindow.getWidth();
 
         // Act: Simulate a configuration change with a smaller screen width.
         // This simulates a screen rotation or window resizing, where the screen width is reduced.
@@ -522,8 +500,7 @@ public final class ToolbarLongPressMenuHandlerUnitTest {
         assertFalse(mToolbarLongPressMenuHandler.getPopupWindowForTesting().isShowing());
 
         mToolbarLongPressMenuHandler.getOnLongClickListener().onLongClick(mUrlBar);
-        verify(mSpyPopupWindow, times(2))
-                .showAtLocation(any(View.class), anyInt(), anyInt(), anyInt());
+        assertTrue(mToolbarLongPressMenuHandler.getPopupWindowForTesting().isShowing());
 
         // This ensures the popup doesn't exceed the screen's bounds after a configuration change.
         assertEquals(
@@ -534,29 +511,18 @@ public final class ToolbarLongPressMenuHandlerUnitTest {
     @Test
     @Restriction({DeviceFormFactor.PHONE})
     public void testDestroy_dismissesPopupMenu() {
-        mSpyPopupWindow = spy(UiWidgetFactory.getInstance().createPopupWindow(mActivity));
-        UiWidgetFactory.setInstance(mMockUiWidgetFactory);
-        when(mMockUiWidgetFactory.createPopupWindow(any())).thenReturn(mSpyPopupWindow);
-
-        doReturn(true).when(mUrlBar).isAttachedToWindow();
-        doReturn(mContentViewGroup).when(mSpyPopupWindow).getContentView();
-        doReturn(100).when(mContentViewGroup).getMeasuredWidth();
-        doReturn(100).when(mContentViewGroup).getMeasuredHeight();
-        doNothing()
-                .when(mSpyPopupWindow)
-                .showAtLocation(any(View.class), anyInt(), anyInt(), anyInt());
-
         mToolbarLongPressMenuHandler.getOnLongClickListener().onLongClick(mUrlBar);
-        assertNotNull(mToolbarLongPressMenuHandler.getPopupWindowForTesting());
+        PopupWindow popupWindow = mToolbarLongPressMenuHandler.getPopupWindowForTesting();
+        assertNotNull(popupWindow);
+        assertTrue(popupWindow.isShowing());
 
         mToolbarLongPressMenuHandler.destroy();
-        assertFalse(mToolbarLongPressMenuHandler.getPopupWindowForTesting().isShowing());
+        assertFalse(popupWindow.isShowing());
         verify(mActivityLifecycleDispatcher).unregister(mToolbarLongPressMenuHandler);
     }
 
     @Test
     @Restriction({DeviceFormFactor.PHONE})
-    @EnableFeatures(ChromeFeatureList.SEND_TAB_TO_SELF_EXTRA_ENTRY_POINTS)
     public void testBuildMenuItemsWithSendTabToSelf() {
         mUrl = JUnitTestGURLs.URL_1;
         ModelList list = mToolbarLongPressMenuHandler.buildMenuItems(true);
@@ -566,25 +532,24 @@ public final class ToolbarLongPressMenuHandlerUnitTest {
                 R.string.toolbar_move_to_the_bottom,
                 list.get(0).model.get(ListMenuItemProperties.TITLE_ID));
         assertEquals(
-                ToolbarLongPressMenuHandler.MenuItemType.MOVE_ADDRESS_BAR_TO,
+                MenuItemType.MOVE_ADDRESS_BAR_TO,
                 list.get(0).model.get(ListMenuItemProperties.MENU_ITEM_ID));
 
         assertEquals(
                 R.string.toolbar_copy_link, list.get(1).model.get(ListMenuItemProperties.TITLE_ID));
         assertEquals(
-                ToolbarLongPressMenuHandler.MenuItemType.COPY_LINK,
-                list.get(1).model.get(ListMenuItemProperties.MENU_ITEM_ID));
+                MenuItemType.COPY_LINK, list.get(1).model.get(ListMenuItemProperties.MENU_ITEM_ID));
 
         assertEquals(
-                R.string.menu_send_to_devices, list.get(2).model.get(ListMenuItemProperties.TITLE_ID));
+                R.string.menu_send_to_devices,
+                list.get(2).model.get(ListMenuItemProperties.TITLE_ID));
         assertEquals(
-                ToolbarLongPressMenuHandler.MenuItemType.SEND_TAB_TO_SELF,
+                MenuItemType.SEND_TAB_TO_SELF,
                 list.get(2).model.get(ListMenuItemProperties.MENU_ITEM_ID));
     }
 
     @Test
     @Restriction({DeviceFormFactor.PHONE})
-    @EnableFeatures(ChromeFeatureList.SEND_TAB_TO_SELF_EXTRA_ENTRY_POINTS)
     public void testBuildMenuItemsWithSendTabToSelf_nullUrl() {
         mUrl = null;
         ModelList list = mToolbarLongPressMenuHandler.buildMenuItems(true);
@@ -599,7 +564,6 @@ public final class ToolbarLongPressMenuHandlerUnitTest {
 
     @Test
     @Restriction({DeviceFormFactor.PHONE})
-    @EnableFeatures(ChromeFeatureList.SEND_TAB_TO_SELF_EXTRA_ENTRY_POINTS)
     public void testBuildMenuItemsWithSendTabToSelf_unavailable() {
         ToolbarLongPressMenuHandler handler =
                 new ToolbarLongPressMenuHandler(
@@ -640,13 +604,12 @@ public final class ToolbarLongPressMenuHandlerUnitTest {
                         () -> mViewRectProvider,
                         url -> true,
                         onSendTabToSelfClicked);
-        handler.handleMenuClick(ToolbarLongPressMenuHandler.MenuItemType.SEND_TAB_TO_SELF);
+        handler.handleMenuClick(MenuItemType.SEND_TAB_TO_SELF);
         verify(onSendTabToSelfClicked).run();
     }
 
     @Test
     @Config(qualifiers = "ldltr-sw600dp")
-    @EnableFeatures(ChromeFeatureList.SEND_TAB_TO_SELF_EXTRA_ENTRY_POINTS)
     public void testBuildMenuItemsOnTablet() {
         mUrl = JUnitTestGURLs.URL_1;
         assertNotNull(mToolbarLongPressMenuHandler.getOnLongClickListener());
@@ -654,10 +617,9 @@ public final class ToolbarLongPressMenuHandlerUnitTest {
         ModelList list = mToolbarLongPressMenuHandler.buildMenuItems(/* onTop= */ true);
         assertEquals(2, list.size());
         assertEquals(
-                ToolbarLongPressMenuHandler.MenuItemType.COPY_LINK,
-                list.get(0).model.get(ListMenuItemProperties.MENU_ITEM_ID));
+                MenuItemType.COPY_LINK, list.get(0).model.get(ListMenuItemProperties.MENU_ITEM_ID));
         assertEquals(
-                ToolbarLongPressMenuHandler.MenuItemType.SEND_TAB_TO_SELF,
+                MenuItemType.SEND_TAB_TO_SELF,
                 list.get(1).model.get(ListMenuItemProperties.MENU_ITEM_ID));
     }
 }

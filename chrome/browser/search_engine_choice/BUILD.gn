@@ -37,8 +37,6 @@ source_set("impl") {
     "search_engine_choice_service_factory.cc",
   ]
 
-  public_deps = [ "//chrome/browser:browser_public_dependencies" ]
-
   deps = [
     ":search_engine_choice",
     "//chrome/browser:browser_process",
@@ -113,7 +111,8 @@ if (!is_android) {
         "//chrome/browser/profiles:misc",
         "//chrome/browser/profiles/keep_alive",
         "//chrome/browser/search_engines",
-        "//chrome/browser/ui",
+        "//chrome/browser/ui:browser_commands",
+        "//chrome/browser/ui:browser_tabstrip",
         "//chrome/browser/ui/browser_window",
         "//chrome/browser/ui/signin",
         "//chrome/browser/web_applications",
@@ -121,7 +120,6 @@ if (!is_android) {
         "//chrome/common",
         "//chrome/common:non_code_constants",
         "//chrome/test:test_support",
-        "//chrome/test:test_support_ui",
         "//components/keep_alive_registry",
         "//components/keyed_service/content",
         "//components/keyed_service/core",
@@ -160,9 +158,11 @@ if (!is_android) {
           "//chrome/browser/preloading",
           "//chrome/browser/profiles:profile",
           "//chrome/browser/search_engines",
-          "//chrome/browser/ui",
           "//chrome/browser/ui:browser_element_identifiers",
-          "//chrome/test:test_support_ui",
+          "//chrome/browser/ui/omnibox",
+          "//chrome/common",
+          "//chrome/test/base:ui_test_utils",
+          "//chrome/test/interaction",
           "//components/country_codes",
           "//components/regional_capabilities",
           "//components/search_engines",
@@ -171,10 +171,6 @@ if (!is_android) {
           "//testing/gtest",
           "//ui/base",
         ]
-
-        # TODO(crbug.com/40031409): Fix code that adds exit-time destructors and
-        # enable the diagnostic by removing this line.
-        configs += [ "//build/config/compiler:no_exit_time_destructors" ]
       }
     }
   }
@@ -191,6 +187,7 @@ if (!is_android) {
       "//chrome/browser/search_engines",
       "//chrome/test:test_support",
       "//chrome/test/base:browser_test_waiters",
+      "//chrome/test/base:testing_browser_process",
       "//components/country_codes",
       "//components/metrics",
       "//components/regional_capabilities",

@@ -29,7 +29,6 @@
 #include "chrome/browser/ui/views/dictation/dictation_bubble_ui.h"
 #include "chrome/browser/ui/views/dictation/dictation_overlay_view.h"
 #include "chrome/browser/ui/views/dictation/ui_state.h"
-#include "chrome/browser/ui/views/dictation/waveform_view.h"
 #include "chrome/browser/ui/views/dictation/waveform_view_button.h"
 #include "chrome/common/extensions/api/dictation_private.h"
 #include "chrome/test/base/chrome_test_utils.h"
@@ -142,7 +141,7 @@ class DictationSessionUiImplBrowserTest
   auto StartDictationStream(DictationStreamStartTrigger trigger) {
     return Do([this, trigger]() {
       dictation_service().session_controller()->StartDictationStream(
-          DefaultInPageTarget(web_contents()), trigger);
+          DefaultInPageTarget(web_contents()), trigger, base::TimeTicks::Now());
     });
   }
 
@@ -159,8 +158,8 @@ class DictationSessionUiImplBrowserTest
 
   auto CheckElementWithinBounds(ui::ElementIdentifier element_id,
                                 const gfx::Rect& target_bounds) {
-    return InAnyContext(
-        CheckElement(element_id, [&target_bounds](ui::TrackedElement* el) {
+    return InAnyContext(CheckElement(
+        element_id, [this, &target_bounds](ui::TrackedElement* el) {
           const views::View* const view = AsView(el);
           const gfx::Rect view_bounds = view->GetBoundsInScreen();
           return target_bounds.Contains(view_bounds.origin());
@@ -447,8 +446,9 @@ IN_PROC_BROWSER_TEST_P(DictationSessionUiImplBrowserTest,
   // clang-format on
 }
 
+// TODO(b/581316985): Reenable this
 IN_PROC_BROWSER_TEST_P(DictationSessionUiImplBrowserTest,
-                       BackgroundTabActivationEndsSession) {
+                       DISABLED_BackgroundTabActivationEndsSession) {
   // Add a second tab with the first tab in the foreground.
   ASSERT_TRUE(AddTabAtIndex(1, GURL("about:blank"), ui::PAGE_TRANSITION_TYPED));
   browser()->GetTabStripModel()->ActivateTabAt(0);
@@ -475,7 +475,7 @@ IN_PROC_BROWSER_TEST_P(DictationSessionUiImplBrowserTest,
     CheckHasSession(true),
     CheckResult(GetSessionState(), SessionState::kFinalizing),
 
-    // Once the finalization completes the sesison should be ended.
+    // Once the finalization completes the session should be ended.
     ExtensionAPISetStreamState(ExtensionStreamState::kComplete),
     WaitForSessionState(SessionState::kInactive),
     CheckHasSession(false),
@@ -846,6 +846,26 @@ IN_PROC_BROWSER_TEST_P(DictationSessionUiImplBrowserTest,
                              target_bounds),
     ToggleFullscreen(),
     LookupTargetElementBounds(kWebContentsElementId, "#text_id", target_bounds),
+    CheckElementWithinBounds(DictationOverlayView::kViewElementIdForTesting,
+                             target_bounds)
+  );
+  // clang-format on
+}
+
+IN_PROC_BROWSER_TEST_P(DictationSessionUiImplBrowserTest,
+                       OverlayPositionUsesEditContextSelectionBounds) {
+  DEFINE_LOCAL_ELEMENT_IDENTIFIER_VALUE(kWebContentsElementId);
+  const GURL url =
+      embedded_test_server()->GetURL("/dictation/edit_context_selection.html");
+  gfx::Rect target_bounds;
+
+  // clang-format off
+  RunTestSequence(
+    InstrumentTab(kWebContentsElementId),
+    NavigateWebContents(kWebContentsElementId, url),
+    StartSessionWithTarget(kWebContentsElementId, "#canvas"),
+    InAnyContext(WaitForShow(DictationOverlayView::kViewElementIdForTesting)),
+    LookupTargetElementBounds(kWebContentsElementId, "#canvas", target_bounds),
     CheckElementWithinBounds(DictationOverlayView::kViewElementIdForTesting,
                              target_bounds)
   );

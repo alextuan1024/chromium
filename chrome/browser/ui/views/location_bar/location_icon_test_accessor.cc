@@ -7,9 +7,11 @@
 #include "base/strings/stringprintf.h"
 #include "base/strings/utf_string_conversions.h"
 #include "chrome/browser/ui/browser_element_identifiers.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/bubble_anchor_util.h"
 #include "chrome/browser/ui/interaction/browser_elements.h"
 #include "chrome/browser/ui/page_info/page_info_dialog.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/views/frame/toolbar_button_provider.h"
 #include "chrome/browser/ui/views/location_bar/location_bar_view.h"
@@ -18,6 +20,7 @@
 #include "chrome/browser/ui/views/toolbar/webui_toolbar_web_view.h"
 #include "content/public/test/browser_test_utils.h"
 #include "ui/events/test/test_event.h"
+#include "ui/views/controls/webview/webview.h"
 
 namespace {
 
@@ -50,7 +53,7 @@ LocationIconTestAccessor::LocationIconTestAccessor(
 
 LocationIconTestAccessor::~LocationIconTestAccessor() = default;
 
-LocationIconView* LocationIconTestAccessor::GetLocationIconView() {
+LocationIconView* LocationIconTestAccessor::GetLocationIconView() const {
   if (!browser_) {
     return nullptr;
   }
@@ -65,8 +68,14 @@ LocationIconView* LocationIconTestAccessor::GetLocationIconView() {
 }
 
 bool LocationIconTestAccessor::IsBubbleShowing() const {
-  return PageInfoBubbleViewBase::GetShownBubbleType() !=
-         PageInfoBubbleViewBase::BUBBLE_NONE;
+  if (auto* icon_view = GetLocationIconView()) {
+    return icon_view->IsBubbleShowing();
+  }
+  if (!browser_ || !browser_->GetTabStripModel()) {
+    return false;
+  }
+  return PageInfoBubbleViewBase::IsShowing(
+      browser_->GetTabStripModel()->GetActiveWebContents());
 }
 
 // Returns true if the icon is visible.
@@ -86,7 +95,7 @@ bool LocationIconTestAccessor::IsShowingText() {
   if (auto* view = GetLocationIconView()) {
     return view->GetShowText();
   }
-  auto result = EvaluateWebUI(GetWebContents(), "(el) => el.hasText");
+  auto result = EvaluateWebUI(GetToolbarWebContents(), "(el) => el.hasText");
   return result.is_bool() && result.ExtractBool();
 }
 
@@ -96,7 +105,7 @@ std::u16string LocationIconTestAccessor::GetText() {
   }
   // This isn't using .displayText since that can get latched with old
   // values for animation reasons.
-  auto result = EvaluateWebUI(GetWebContents(), "(el) => el.state.text");
+  auto result = EvaluateWebUI(GetToolbarWebContents(), "(el) => el.state.text");
   if (result.is_string()) {
     return base::UTF8ToUTF16(result.ExtractString());
   }
@@ -138,7 +147,7 @@ void LocationIconTestAccessor::Click() {
   }
 }
 
-content::WebContents* LocationIconTestAccessor::GetWebContents() {
+content::WebContents* LocationIconTestAccessor::GetToolbarWebContents() const {
   if (!browser_) {
     return nullptr;
   }

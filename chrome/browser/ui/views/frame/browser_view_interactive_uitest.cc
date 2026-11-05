@@ -21,6 +21,7 @@
 #include "chrome/browser/ui/ui_features.h"
 #include "chrome/browser/ui/views/frame/top_container_view.h"
 #include "chrome/browser/ui/views/location_bar/location_bar_view.h"
+#include "chrome/browser/ui/views/tab_modal_confirm_dialog_views.h"
 #include "chrome/browser/ui/views/tabs/tab_strip.h"
 #include "chrome/browser/ui/views/toolbar/toolbar_view.h"
 #include "chrome/grit/branded_strings.h"
@@ -35,10 +36,10 @@
 #include "content/public/test/browser_test.h"
 #include "content/public/test/test_navigation_observer.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "ui/base/mojom/window_open_disposition.mojom-shared.h"
 #include "ui/base/ozone_buildflags.h"
 #include "ui/base/page_transition_types.h"
 #include "ui/base/ui_base_features.h"
-#include "ui/base/window_open_disposition.h"
 #include "ui/ozone/public/ozone_platform.h"
 #include "ui/views/bubble/bubble_dialog_delegate_view.h"
 #include "ui/views/bubble/bubble_dialog_model_host.h"
@@ -51,11 +52,15 @@
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/browser_commands_mac.h"
 #include "chrome/test/base/interactive_test_utils.h"
+#include "ui/base/test/scoped_fake_nswindow_fullscreen.h"
 #endif
 
 #if BUILDFLAG(IS_CHROMEOS)
+#include "ash/constants/ash_features.h"
 #include "ash/wm/window_pin_util.h"
 #include "chrome/browser/ash/boca/on_task/on_task_locked_controller.h"
+#include "chrome/browser/ui/chromeos/locked_state/locked_state_controller.h"
+#include "chrome/common/chrome_features.h"
 #endif
 
 using views::FocusManager;
@@ -119,6 +124,9 @@ IN_PROC_BROWSER_TEST_F(BrowserViewTest, FullscreenClearsFocus) {
 // MacOS at this point in time.
 #if BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_MAC)
 IN_PROC_BROWSER_TEST_F(BrowserViewTest, ImmersiveFullscreenViewTreeOrder) {
+#if BUILDFLAG(IS_MAC)
+  ui::test::ScopedFakeNSWindowFullscreen fake_fullscreen;
+#endif
   auto* const immersive_mode_controller =
       ImmersiveModeController::From(browser());
   ASSERT_TRUE(immersive_mode_controller);
@@ -146,6 +154,7 @@ IN_PROC_BROWSER_TEST_F(BrowserViewTest, ImmersiveFullscreenViewTreeOrder) {
 }
 #endif
 
+#if BUILDFLAG(IS_MAC)
 // Test that holding Esc correctly exits fullscreen when focus is on the native
 // browser UI.
 IN_PROC_BROWSER_TEST_F(BrowserViewTest,
@@ -209,6 +218,7 @@ IN_PROC_BROWSER_TEST_F(BrowserViewTest,
 
   EXPECT_TRUE(browser_view()->IsFullscreen());
 }
+#endif  // BUILDFLAG(IS_MAC)
 
 // Test whether the top view including toolbar and tab strip shows up or hides
 // correctly in browser fullscreen mode.
@@ -461,7 +471,8 @@ IN_PROC_BROWSER_TEST_F(BrowserViewTest, WindowActivatedAccessibleEvent) {
 
   // Create a new browser window and wait for event again.
   ui_test_utils::NavigateToURLWithDisposition(
-      browser(), GURL(url::kAboutBlankURL), WindowOpenDisposition::NEW_WINDOW,
+      browser(), GURL(url::kAboutBlankURL),
+      ui::mojom::WindowOpenDisposition::kNewWindow,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_BROWSER);
   if (ax_observer_.GetCount(ax::mojom::Event::kWindowActivated) == 1) {
     ax_observer_.WaitForEvent(ax::mojom::Event::kWindowActivated);
@@ -569,26 +580,6 @@ IN_PROC_BROWSER_TEST_F(BrowserViewFullscreenTest, MAYBE_Fullscreen) {
   }
 }
 
-class BrowserViewLoadingAnimationTest
-    : public BrowserViewTest,
-      public testing::WithParamInterface<bool> {
- public:
-  BrowserViewLoadingAnimationTest() {
-    if (GetParam()) {
-      feature_list_.InitAndEnableFeature(features::kCompositorLoadingThrobber);
-    } else {
-      feature_list_.InitAndDisableFeature(features::kCompositorLoadingThrobber);
-    }
-  }
-
- private:
-  base::test::ScopedFeatureList feature_list_;
-};
-
-INSTANTIATE_TEST_SUITE_P(CompositorDrivenThrobber,
-                         BrowserViewLoadingAnimationTest,
-                         testing::Bool());
-
 // TODO(b/342017720): Re-enable on Mac
 #if BUILDFLAG(IS_MAC)
 #define MAYBE_LoadingAnimationChangeOnMinimizeAndRestore \
@@ -597,7 +588,7 @@ INSTANTIATE_TEST_SUITE_P(CompositorDrivenThrobber,
 #define MAYBE_LoadingAnimationChangeOnMinimizeAndRestore \
   LoadingAnimationChangeOnMinimizeAndRestore
 #endif  // BUILDFLAG(IS_MAC)
-IN_PROC_BROWSER_TEST_P(BrowserViewLoadingAnimationTest,
+IN_PROC_BROWSER_TEST_F(BrowserViewTest,
                        MAYBE_LoadingAnimationChangeOnMinimizeAndRestore) {
   auto* contents = browser()->GetTabStripModel()->GetActiveWebContents();
   content::TestNavigationObserver navigation_watcher(
@@ -659,12 +650,33 @@ class TestTabModalConfirmDialogDelegate : public TabModalConfirmDialogDelegate {
   std::u16string GetDialogMessage() override { return std::u16string(); }
 };
 
+class BrowserViewDesktopWidgetDisabledTest : public BrowserViewTest {
+ public:
+  BrowserViewDesktopWidgetDisabledTest() {
+    feature_list_.InitAndDisableFeature(features::kTabModalUsesDesktopWidget);
+  }
+
+ private:
+  base::test::ScopedFeatureList feature_list_;
+};
+
+class BrowserViewDesktopWidgetEnabledTest : public BrowserViewTest {
+ public:
+  BrowserViewDesktopWidgetEnabledTest() {
+    feature_list_.InitAndEnableFeature(features::kTabModalUsesDesktopWidget);
+  }
+
+ private:
+  base::test::ScopedFeatureList feature_list_;
+};
+
 }  // namespace
 
 // Open a tab-modal dialog and check that the accessible window title is the
 // title of the dialog. The accessible window title is based on the focused
 // dialog and this dependency on focus is why this is an interactive ui test.
-IN_PROC_BROWSER_TEST_F(BrowserViewTest, GetAccessibleTabModalDialogTitle) {
+IN_PROC_BROWSER_TEST_F(BrowserViewDesktopWidgetDisabledTest,
+                       GetAccessibleTabModalDialogTitle) {
   std::u16string window_title =
       u"about:blank - " + l10n_util::GetStringUTF16(IDS_PRODUCT_NAME);
   EXPECT_TRUE(base::StartsWith(browser_view()->GetAccessibleWindowTitle(),
@@ -682,14 +694,84 @@ IN_PROC_BROWSER_TEST_F(BrowserViewTest, GetAccessibleTabModalDialogTitle) {
   EXPECT_TRUE(base::StartsWith(browser_view()->GetAccessibleWindowTitle(),
                                window_title, base::CompareCase::SENSITIVE));
 }
+
+IN_PROC_BROWSER_TEST_F(BrowserViewDesktopWidgetEnabledTest,
+                       GetAccessibleTabModalDialogTitle) {
+  std::u16string window_title =
+      u"about:blank - " + l10n_util::GetStringUTF16(IDS_PRODUCT_NAME);
+  EXPECT_TRUE(base::StartsWith(browser_view()->GetAccessibleWindowTitle(),
+                               window_title, base::CompareCase::SENSITIVE));
+
+  content::WebContents* contents = browser_view()->GetActiveWebContents();
+  auto delegate = std::make_unique<TestTabModalConfirmDialogDelegate>(contents);
+  TestTabModalConfirmDialogDelegate* delegate_observer = delegate.get();
+
+// When using desktop widgets, the dialog has its own window title. The
+// browser accessible window title should not be updated with the dialog
+// title.
+#if !BUILDFLAG(IS_CHROMEOS)
+  auto* dialog = static_cast<TabModalConfirmDialogViews*>(
+      TabModalConfirmDialog::Create(std::move(delegate), contents));
+  EXPECT_TRUE(base::StartsWith(browser_view()->GetAccessibleWindowTitle(),
+                               window_title, base::CompareCase::SENSITIVE));
+  EXPECT_EQ(dialog->GetWidget()->widget_delegate()->GetAccessibleWindowTitle(),
+            delegate_observer->GetTitle());
+#else
+  TabModalConfirmDialog::Create(std::move(delegate), contents);
+  // The desktop widget override is a no-op on ChromeOS. The browser
+  // accessibility title should be updated to the dialog title.
+  EXPECT_EQ(browser_view()->GetAccessibleWindowTitle(),
+            delegate_observer->GetTitle());
+#endif
+
+  delegate_observer->Close();
+
+  EXPECT_TRUE(base::StartsWith(browser_view()->GetAccessibleWindowTitle(),
+                               window_title, base::CompareCase::SENSITIVE));
+}
 #endif  // !BUILDFLAG(IS_MAC)
 
 #if BUILDFLAG(IS_CHROMEOS)
-using BrowserViewLockedFullscreenTestChromeOS = BrowserViewTest;
+// TODO(crbug.com/438540029): Rename this test suite to "TrustedPinned" to
+// disambiguate between LockedFullscreen (which is for extension API) and OnTask
+// locked (which is for class tools).
+class BrowserViewLockedFullscreenTestChromeOS
+    : public BrowserViewTest,
+      public testing::WithParamInterface<bool> {
+ public:
+  BrowserViewLockedFullscreenTestChromeOS() {
+    scoped_feature_list_.InitWithFeatureState(
+        features::kUseUnifiedLockedStateController,
+        is_unified_locked_state_controller_enabled_);
+  }
 
-IN_PROC_BROWSER_TEST_F(BrowserViewLockedFullscreenTestChromeOS,
+ protected:
+  void PinWindow(bool trusted, bool locked_for_on_task = false) {
+    if (trusted && is_unified_locked_state_controller_enabled_) {
+      auto* controller = chromeos::LockedStateController::From(browser());
+      ASSERT_TRUE(controller);
+      if (locked_for_on_task) {
+        controller->Lock(chromeos::LockedState::kOnTaskLocked);
+      } else {
+        controller->Lock(chromeos::LockedState::kExtensionLocked);
+      }
+    } else {
+      if (!is_unified_locked_state_controller_enabled_) {
+        ash::boca::OnTaskLockedController::From(browser())
+            ->set_locked_for_on_task(locked_for_on_task);
+      }
+      ash::PinWindow(browser()->GetWindow()->GetNativeWindow(), trusted);
+    }
+  }
+
+ private:
+  const bool is_unified_locked_state_controller_enabled_ = GetParam();
+  base::test::ScopedFeatureList scoped_feature_list_;
+};
+
+IN_PROC_BROWSER_TEST_P(BrowserViewLockedFullscreenTestChromeOS,
                        ShowExclusiveAccessBubbleWhenNotLocked) {
-  ash::PinWindow(browser()->GetWindow()->GetNativeWindow(), /*trusted=*/false);
+  PinWindow(/*trusted=*/false);
   ExclusiveAccessManager::From(browser())
       ->context()
       ->UpdateExclusiveAccessBubble(
@@ -707,9 +789,9 @@ IN_PROC_BROWSER_TEST_F(BrowserViewLockedFullscreenTestChromeOS,
                   ->IsExclusiveAccessBubbleDisplayed());
 }
 
-IN_PROC_BROWSER_TEST_F(BrowserViewLockedFullscreenTestChromeOS,
+IN_PROC_BROWSER_TEST_P(BrowserViewLockedFullscreenTestChromeOS,
                        HideExclusiveAccessBubbleWhenLocked) {
-  ash::PinWindow(browser()->GetWindow()->GetNativeWindow(), /*trusted=*/true);
+  PinWindow(/*trusted=*/true);
   ExclusiveAccessManager::From(browser())
       ->context()
       ->UpdateExclusiveAccessBubble(
@@ -725,25 +807,25 @@ IN_PROC_BROWSER_TEST_F(BrowserViewLockedFullscreenTestChromeOS,
                    ->IsExclusiveAccessBubbleDisplayed());
 }
 
-IN_PROC_BROWSER_TEST_F(BrowserViewLockedFullscreenTestChromeOS,
+IN_PROC_BROWSER_TEST_P(BrowserViewLockedFullscreenTestChromeOS,
                        EnableImmersiveModeWhenNotTrustedPinned) {
-  ash::PinWindow(browser()->GetWindow()->GetNativeWindow(), /*trusted=*/false);
+  PinWindow(/*trusted=*/false);
   EXPECT_TRUE(ImmersiveModeController::From(browser())->IsEnabled());
 }
 
-IN_PROC_BROWSER_TEST_F(BrowserViewLockedFullscreenTestChromeOS,
+IN_PROC_BROWSER_TEST_P(BrowserViewLockedFullscreenTestChromeOS,
                        DisableImmersiveModeWhenNotLockedForOnTask) {
-  ash::boca::OnTaskLockedController::From(browser())->set_locked_for_on_task(
-      false);
-  ash::PinWindow(browser()->GetWindow()->GetNativeWindow(), /*trusted=*/true);
+  PinWindow(/*trusted=*/true, /*locked_for_on_task=*/false);
   EXPECT_FALSE(ImmersiveModeController::From(browser())->IsEnabled());
 }
 
-IN_PROC_BROWSER_TEST_F(BrowserViewLockedFullscreenTestChromeOS,
+IN_PROC_BROWSER_TEST_P(BrowserViewLockedFullscreenTestChromeOS,
                        EnableImmersiveModeWhenLockedForOnTask) {
-  ash::boca::OnTaskLockedController::From(browser())->set_locked_for_on_task(
-      true);
-  ash::PinWindow(browser()->GetWindow()->GetNativeWindow(), /*trusted=*/true);
+  PinWindow(/*trusted=*/true, /*locked_for_on_task=*/true);
   EXPECT_TRUE(ImmersiveModeController::From(browser())->IsEnabled());
 }
+
+INSTANTIATE_TEST_SUITE_P(All,
+                         BrowserViewLockedFullscreenTestChromeOS,
+                         testing::Bool());
 #endif  // BUILDFLAG(IS_CHROMEOS)

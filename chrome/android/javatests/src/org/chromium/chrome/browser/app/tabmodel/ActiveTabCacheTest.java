@@ -16,6 +16,7 @@ import android.content.Context;
 import androidx.test.filters.MediumTest;
 
 import org.junit.After;
+import org.junit.Assume;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -25,12 +26,11 @@ import org.chromium.base.Holder;
 import org.chromium.base.ThreadUtils;
 import org.chromium.base.test.util.Batch;
 import org.chromium.base.test.util.CriteriaHelper;
-import org.chromium.base.test.util.DisabledTest;
-import org.chromium.base.test.util.Features.DisableFeatures;
+import org.chromium.build.BuildConfig;
 import org.chromium.chrome.browser.crypto.CipherFactory;
-import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.tab.StorageLoadedData.LoadedTabState;
 import org.chromium.chrome.browser.tab.Tab;
+import org.chromium.chrome.browser.url_constants.UrlConstantResolverFactory;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
 import org.chromium.chrome.test.transit.ChromeTransitTestRules;
 import org.chromium.chrome.test.transit.FreshCtaTransitTestRule;
@@ -43,8 +43,6 @@ import java.io.File;
 /** Integration tests for {@link ActiveTabCache}. */
 @RunWith(ChromeJUnit4ClassRunner.class)
 @Batch(Batch.PER_CLASS)
-// TODO(b/555414915): Update Android tests with WebUI NTP enabled on AL.
-@DisableFeatures(ChromeFeatureList.USE_WEB_UI_NTP_ANDROID)
 public class ActiveTabCacheTest {
     private static final String WINDOW_TAG = "WINDOW";
 
@@ -171,11 +169,9 @@ public class ActiveTabCacheTest {
 
     @Test
     @MediumTest
-    @DisabledTest(
-            message =
-                    "Test consistently fails on CI; to be fixed as part of"
-                            + " http://crbug.com/485907357")
     public void testSaveIncognito_NullCipherFactory_ThrowsException() {
+        Assume.assumeTrue(BuildConfig.ENABLE_ASSERTS);
+
         WebPageStation page = mActivityTestRule.startOnIncognitoBlankPage();
         Tab tab = page.getTab();
         initActiveTabCache(/* hasCipherFactory= */ false);
@@ -194,11 +190,9 @@ public class ActiveTabCacheTest {
 
     @Test
     @MediumTest
-    @DisabledTest(
-            message =
-                    "Test consistently fails on CI; to be fixed as part of"
-                            + " http://crbug.com/485907357")
     public void testRestoreIncognito_NullCipherFactory_ThrowsException() {
+        Assume.assumeTrue(BuildConfig.ENABLE_ASSERTS);
+
         WebPageStation page = mActivityTestRule.startOnIncognitoBlankPage();
         Tab tab = page.getTab();
         initActiveTabCache(/* hasCipherFactory= */ true);
@@ -344,7 +338,9 @@ public class ActiveTabCacheTest {
                             mActiveTabCache.getPreLoadedActiveTabOrLoad(/* incognito= */ false);
                     assertNotNull(tabState);
                     assertEquals(tab2.getId(), tabState.tabId);
-                    assertEquals(getOriginalNativeNtpUrl(), tabState.tabState.url.getSpec());
+                    assertEquals(
+                            UrlConstantResolverFactory.getOriginalResolver().getNtpUrl(),
+                            tabState.tabState.url.getSpec());
                 });
 
         ThreadUtils.runOnUiThreadBlocking(

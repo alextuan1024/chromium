@@ -12,6 +12,7 @@
 #include "base/android/scoped_java_ref.h"
 #include "chrome/browser/tab/storage_loaded_data.h"
 #include "chrome/browser/tab/storage_loading_context.h"
+#include "chrome/browser/tab/tab_group_collection_data.h"
 #include "third_party/jni_zero/jni_zero.h"
 
 namespace tabs {
@@ -25,10 +26,6 @@ class StorageLoadedDataAndroid {
 
   StorageLoadedDataAndroid(const StorageLoadedDataAndroid&) = delete;
   StorageLoadedDataAndroid& operator=(const StorageLoadedDataAndroid&) = delete;
-
-  // This C++ object is owned by the Java counterpart, and should be destroyed
-  // by it.
-  void Destroy(JNIEnv* env);
 
   void OnTabRejected(JNIEnv* env, int tab_android_id);
 
@@ -52,6 +49,10 @@ base::android::ScopedJavaLocalRef<jobject> CreateLoadedTabState(
 base::android::ScopedJavaLocalRef<jobject> CreateStorageLoadWarning(
     JNIEnv* env,
     const StorageLoadingContext::Warning& warning);
+
+base::android::ScopedJavaLocalRef<jobject> CreateTabGroupCollectionData(
+    JNIEnv* env,
+    const TabGroupCollectionData& data);
 
 }  // namespace tabs
 
@@ -79,6 +80,21 @@ ToJniType<tabs::StorageLoadingContext::Warning>(
   return tabs::CreateStorageLoadWarning(env, input);
 }
 
+template <>
+inline ScopedJavaLocalRef<jobject> ToJniType<tabs::TabGroupCollectionData>(
+    JNIEnv* env,
+    const tabs::TabGroupCollectionData& input) {
+  return tabs::CreateTabGroupCollectionData(env, input);
+}
+
+template <>
+inline ScopedJavaLocalRef<jobject>
+ToJniType<std::unique_ptr<tabs::TabGroupCollectionData>>(
+    JNIEnv* env,
+    const std::unique_ptr<tabs::TabGroupCollectionData>& input) {
+  return input ? ToJniType(env, *input) : nullptr;
+}
+
 // TODO(469809169): Rather than using a const_cast, declare the function as
 // tabs_pb::TabState&& and having our codegen use std::move().
 template <>
@@ -86,6 +102,18 @@ inline ScopedJavaLocalRef<jobject> ToJniType<tabs_pb::TabState>(
     JNIEnv* env,
     const tabs_pb::TabState& input) {
   return tabs::CreateLoadedTabState(env, const_cast<tabs_pb::TabState&>(input));
+}
+
+template <>
+inline tabs::StorageLoadedData* FromJniType<tabs::StorageLoadedData*>(
+    JNIEnv* env,
+    const JavaRef<jobject>& j_storage_loaded_data) {
+  if (!j_storage_loaded_data) {
+    return nullptr;
+  }
+  return tabs::StorageLoadedDataAndroid::FromJavaObject(env,
+                                                        j_storage_loaded_data)
+      ->GetData();
 }
 
 }  // namespace jni_zero

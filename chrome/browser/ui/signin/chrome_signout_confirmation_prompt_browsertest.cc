@@ -33,6 +33,7 @@
 #include "chrome/common/chrome_paths.h"
 #include "components/signin/public/identity_manager/identity_test_environment.h"
 #include "components/signin/public/identity_manager/identity_test_utils.h"
+#include "extensions/browser/install_verifier.h"
 #include "extensions/common/extension.h"
 #endif  // BUILDFLAG(ENABLE_EXTENSIONS)
 
@@ -103,6 +104,7 @@ class ChromeSignoutConfirmationPromptPixelTest
 
 IN_PROC_BROWSER_TEST_P(ChromeSignoutConfirmationPromptPixelTest,
                        InvokeUi_Default) {
+  set_baseline("8481376");
   ShowAndVerifyUi();
 }
 
@@ -150,6 +152,7 @@ class ChromeSignoutConfirmationPromptWithExtensionsPixelTest
   base::FilePath extension_data_dir() { return extension_data_dir_; }
 
  private:
+  extensions::ScopedInstallVerifierBypassForTest install_verifier_bypass_;
   // chrome/test/data/extensions/
   base::FilePath extension_data_dir_;
 };
@@ -173,6 +176,7 @@ IN_PROC_BROWSER_TEST_P(ChromeSignoutConfirmationPromptWithExtensionsPixelTest,
           extensions::AccountExtensionTracker::AccountExtensionType::
               kAccountInstalledSignedIn);
 
+  set_baseline("8481376");
   ShowAndVerifyUi();
 }
 

@@ -4,12 +4,18 @@
 
 #include "chrome/browser/ui/webui/organizer_panel/organizer_panel_ui.h"
 
+#include <optional>
+
 #include "base/check.h"
+#include "chrome/app/chrome_command_ids.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/ui/tabs/features.h"
+#include "chrome/browser/signin/identity_manager_factory.h"
+#include "chrome/browser/ui/tabs/organizer/organizer_panel_utils.h"
 #include "chrome/browser/ui/ui_features.h"
 #include "chrome/browser/ui/webui/favicon_source.h"
 #include "chrome/browser/ui/webui/metrics_reporter/metrics_reporter_service.h"
+#include "chrome/browser/ui/webui/organizer_panel/foreign_tabs_page_handler.h"
+#include "chrome/browser/ui/webui/organizer_panel/organizer_panel_page_handler.h"
 #include "chrome/browser/ui/webui/organizer_panel/tab_groups_organizer_page_handler.h"
 #include "chrome/browser/ui/webui/tab_search/search_handler.h"
 #include "chrome/browser/ui/webui/tab_search/tab_search_page_handler.h"
@@ -20,6 +26,9 @@
 #include "chrome/grit/organizer_panel_resources.h"
 #include "chrome/grit/organizer_panel_resources_map.h"
 #include "components/favicon_base/favicon_url_parser.h"
+#include "components/signin/public/base/consent_level.h"
+#include "components/signin/public/base/signin_buildflags.h"
+#include "components/signin/public/identity_manager/identity_manager.h"
 #include "components/strings/grit/components_strings.h"
 #include "content/public/browser/browser_context.h"
 #include "content/public/browser/url_data_source.h"
@@ -38,28 +47,74 @@ OrganizerPanelUIConfig::OrganizerPanelUIConfig()
     : DefaultTopChromeWebUIConfig(content::kChromeUIScheme,
                                   chrome::kChromeUIOrganizerPanelHost) {}
 
+bool OrganizerPanelUIConfig::IsWebUIEnabled(
+    content::BrowserContext* browser_context) {
+  return organizer_panel::IsOrganizerPanelFeatureEnabled();
+}
+
+bool OrganizerPanelUIConfig::IsPreloadable() {
+  return organizer_panel::IsOrganizerPanelFeatureEnabled() &&
+         !organizer_panel::IsShowExtensionsSidePanelUiInOrganizerPanelEnabled();
+}
+
+std::optional<int> OrganizerPanelUIConfig::GetCommandIdForTesting() {
+  return IDC_TAB_SEARCH;
+}
+
+std::optional<GURL> OrganizerPanelUIConfig::GetPreloadEngagementAliasURL()
+    const {
+  return GURL(chrome::kChromeUITabSearchURL);
+}
+
 OrganizerPanelUI::OrganizerPanelUI(content::WebUI* web_ui)
-    : TopChromeWebUIController(web_ui) {
+    : TopChromeWebUIController(web_ui,
+                               /*enable_chrome_send=*/false,
+                               /*enable_chrome_histograms=*/true) {
   Profile* profile = Profile::FromWebUI(web_ui);
   content::WebUIDataSource* source = content::WebUIDataSource::CreateAndAdd(
       profile, chrome::kChromeUIOrganizerPanelHost);
 
   static constexpr webui::LocalizedString kStrings[] = {
       {"clearSearch", IDS_CLEAR_SEARCH},
+      {"close", IDS_CLOSE},
       {"closeTab", IDS_TAB_SEARCH_CLOSE_TAB},
+      {"collapse", IDS_ORGANIZER_PANEL_COLLAPSE},
+      {"createTabGroup", IDS_ORGANIZER_PANEL_CREATE_TAB_GROUP},
+      {"currentlyPlaying", IDS_ORGANIZER_PANEL_CURRENTLY_PLAYING},
+      {"expand", IDS_ORGANIZER_PANEL_EXPAND},
+      {"noRecentlyClosedTabs", IDS_ORGANIZER_PANEL_NO_RECENTLY_CLOSED_TABS},
       {"noResults", IDS_ORGANIZER_PANEL_NO_RESULTS},
-      {"openTabs", IDS_TAB_SEARCH_OPEN_TABS},
       {"oneTab", IDS_TAB_SEARCH_ONE_TAB},
-      {"recentlyClosed", IDS_TAB_SEARCH_RECENTLY_CLOSED},
+      {"options", IDS_ORGANIZER_PANEL_OPTIONS},
+      {"recentlyClosed", IDS_ORGANIZER_PANEL_RECENTLY_CLOSED},
+      {"recentlyVisited", IDS_ORGANIZER_PANEL_RECENTLY_VISITED},
       {"searchTabs", IDS_TAB_SEARCH_SEARCH_TABS},
+      {"showAll", IDS_ORGANIZER_PANEL_SHOW_ALL},
+      {"showSome", IDS_ORGANIZER_PANEL_SHOW_SOME},
+      {"signInOnPhone", IDS_SEND_TAB_TO_SELF_SIGN_IN_ON_PHONE},
+      {"splitView", IDS_ORGANIZER_PANEL_SPLIT_VIEW},
       {"tabCount", IDS_TAB_SEARCH_TAB_COUNT},
+      {"tabGroupMoreOptions", IDS_TAB_GROUP_MORE_OPTIONS},
       {"tabGroups", IDS_ORGANIZER_PANEL_TAB_GROUPS},
+      {"tabsOnOtherDevices", IDS_ORGANIZER_PANEL_CROSS_DEVICE_TABS},
       {"title", IDS_ORGANIZER_PANEL},
   };
   source->AddLocalizedStrings(kStrings);
-  source->AddBoolean(
-      "cjkWordBoundaryEnabled",
-      base::FeatureList::IsEnabled(tabs::kTabSearchCjkWordBoundary));
+  source->AddBoolean("foreignTabsEnabled",
+                     organizer_panel::IsOrganizerPanelForeignTabsEnabled());
+  signin::IdentityManager* identity_manager =
+      IdentityManagerFactory::GetForProfile(profile);
+  source->AddBoolean("isUserSignedIn",
+                     identity_manager && identity_manager->HasPrimaryAccount(
+                                             signin::ConsentLevel::kSignin));
+  source->AddBoolean("diceSupportEnabled",
+#if BUILDFLAG(ENABLE_DICE_SUPPORT)
+                     true
+#else
+                     false
+#endif
+  );
+  source->AddBoolean("isIncognitoMode", profile->IsIncognitoProfile());
 
   ui::Accelerator accelerator(ui::VKEY_A,
                               ui::EF_SHIFT_DOWN | ui::EF_PLATFORM_ACCELERATOR);
@@ -84,6 +139,20 @@ OrganizerPanelUI::~OrganizerPanelUI() = default;
 WEB_UI_CONTROLLER_TYPE_IMPL(OrganizerPanelUI)
 
 void OrganizerPanelUI::BindInterface(
+    mojo::PendingReceiver<organizer_panel::mojom::ForeignTabsPageHandlerFactory>
+        receiver) {
+  foreign_tabs_page_factory_receiver_.reset();
+  foreign_tabs_page_factory_receiver_.Bind(std::move(receiver));
+}
+
+void OrganizerPanelUI::BindInterface(
+    mojo::PendingReceiver<organizer_panel::mojom::PageHandlerFactory>
+        receiver) {
+  organizer_panel_page_factory_receiver_.reset();
+  organizer_panel_page_factory_receiver_.Bind(std::move(receiver));
+}
+
+void OrganizerPanelUI::BindInterface(
     mojo::PendingReceiver<tab_search::mojom::PageHandlerFactory> receiver) {
   page_factory_receiver_.reset();
   page_factory_receiver_.Bind(std::move(receiver));
@@ -103,11 +172,36 @@ void OrganizerPanelUI::BindInterface(
 }
 
 void OrganizerPanelUI::CreatePageHandler(
+    mojo::PendingReceiver<organizer_panel::mojom::ForeignTabsPageHandler>
+        receiver) {
+  foreign_tabs_page_handler_ = std::make_unique<ForeignTabsPageHandler>(
+      std::move(receiver), web_ui()->GetWebContents());
+}
+
+void OrganizerPanelUI::CreatePageHandler(
+    mojo::PendingRemote<organizer_panel::mojom::Page> page,
+    mojo::PendingReceiver<organizer_panel::mojom::PageHandler> receiver) {
+  if (!page.is_valid() || !receiver.is_valid()) {
+    organizer_panel_page_factory_receiver_.ReportBadMessage(
+        "Invalid page pending remote or receiver in CreatePageHandler");
+    return;
+  }
+  organizer_panel_page_handler_ = std::make_unique<OrganizerPanelPageHandler>(
+      std::move(receiver), std::move(page), web_ui()->GetWebContents());
+}
+
+void OrganizerPanelUI::CreatePageHandler(
+    mojo::PendingRemote<organizer_panel::mojom::TabGroupsOrganizerPage> page,
     mojo::PendingReceiver<organizer_panel::mojom::TabGroupsOrganizerPageHandler>
         receiver) {
+  if (!page.is_valid() || !receiver.is_valid()) {
+    tab_groups_page_factory_receiver_.ReportBadMessage(
+        "Invalid page pending remote or receiver in CreatePageHandler");
+    return;
+  }
   tab_groups_organizer_page_handler_ =
       std::make_unique<TabGroupsOrganizerPageHandler>(
-          std::move(receiver), Profile::FromWebUI(web_ui()));
+          std::move(receiver), std::move(page), web_ui()->GetWebContents());
 }
 
 void OrganizerPanelUI::CreatePageHandler(

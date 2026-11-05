@@ -10,19 +10,23 @@ import '/strings.m.js';
 import '//resources/cr_components/composebox/composebox_voice_search.js';
 import '//resources/cr_components/most_visited/most_visited.js';
 import '//resources/cr_components/search/animated_glow.js';
+import '//resources/cr_elements/cr_icon/cr_icon.js';
+import '//resources/cr_elements/icons.html.js';
 
-import {TabUploadOrigin} from '//resources/cr_components/composebox/common.js';
+import {ColorChangeUpdater} from '//resources/cr_components/color_change_listener/colors_css_updater.js';
 import type {ComposeboxState} from '//resources/cr_components/composebox/common.js';
 import type {ComposeboxVoiceSearchElement, VoicePermissionPromptState} from '//resources/cr_components/composebox/composebox_voice_search.js';
-import type {MostVisitedElement} from '//resources/cr_components/most_visited/most_visited.js';
 import {browserProxyFactory} from '//resources/cr_components/most_visited/most_visited.mojom-webui.js';
 import type {MostVisitedInfo} from '//resources/cr_components/most_visited/most_visited.mojom-webui.js';
 import type {SearchAnimatedGlowElement} from '//resources/cr_components/search/animated_glow.js';
 import {SearchboxBrowserProxy} from '//resources/cr_components/searchbox/searchbox_browser_proxy.js';
+import {I18nMixinLit} from '//resources/cr_elements/i18n_mixin_lit.js';
 import {EventTracker} from '//resources/js/event_tracker.js';
 import {loadTimeData} from '//resources/js/load_time_data.js';
+import {getDeepActiveElement} from '//resources/js/util.js';
 import {CrLitElement} from '//resources/lit/v3_0/lit.rollup.js';
-import {FreStage} from '//resources/mojo/components/omnibox/browser/searchbox.mojom-webui.js';
+import type {PropertyValues} from '//resources/lit/v3_0/lit.rollup.js';
+import {FreStage, TabAttachmentSource} from '//resources/mojo/components/omnibox/browser/searchbox.mojom-webui.js';
 import type {FreState, PageCallbackRouter} from '//resources/mojo/components/omnibox/browser/searchbox.mojom-webui.js';
 import {ModelMode, ToolMode} from '//resources/mojo/components/omnibox/composebox/composebox_query.mojom-webui.js';
 
@@ -38,22 +42,24 @@ import type {ComposeboxInitialState} from './omnibox_everywhere.mojom-webui.js';
 const PERMISSION_PROMPT_CSS_CLASS = 'permission-prompt-showing';
 const VOICE_IDLE_TIMEOUT_MS = 8000;
 const VOICE_QUERY_LENGTH_LIMIT = 120;
+// Duration after a window activation focus event during which a click is
+// still treated as part of the activation gesture. The activating click
+// reaches the renderer shortly after the focus event that precedes it, so
+// this only needs to absorb that delay while staying well below the
+// timescale of a deliberate follow-up interaction.
+const ACTIVATION_CLICK_WINDOW_MS = 300;
 
 export interface OmniboxEverywhereAppElement {
   $: {
     content: HTMLElement,
     dialogAnchor: HTMLElement,
-    searchbox: OmniboxEverywhereOmniboxElement,
-    composebox: OmniboxEverywhereComposeboxElement,
-    mostVisited: MostVisitedElement,
-    voiceSearchDialog: HTMLDialogElement,
-    voiceSearchCardContainer: HTMLElement,
-    voiceSearchGlow: SearchAnimatedGlowElement,
-    voiceSearch: ComposeboxVoiceSearchElement,
   };
 }
 
-export class OmniboxEverywhereAppElement extends CrLitElement {
+const OmniboxEverywhereAppElementBase = I18nMixinLit(CrLitElement);
+
+export class OmniboxEverywhereAppElement extends
+    OmniboxEverywhereAppElementBase {
   static get is() {
     return 'omnibox-everywhere-app';
   }
@@ -82,10 +88,6 @@ export class OmniboxEverywhereAppElement extends CrLitElement {
 
   static override get properties() {
     return {
-      omniboxPopupDebugEnabled_: {
-        type: Boolean,
-        reflect: true,
-      },
       isComposeboxMode_: {type: Boolean},
       searchboxLayoutMode_: {type: String},
       caretAnimationsEnabled_: {type: Boolean},
@@ -93,7 +95,6 @@ export class OmniboxEverywhereAppElement extends CrLitElement {
       usePecApi_: {type: Boolean},
       isOblongShape_: {type: Boolean},
       contextManagementInComposeboxEnabled_: {type: Boolean},
-      composeboxState_: {type: Object},
       showVoiceSearchOverlay_: {
         type: Boolean,
         reflect: true,
@@ -112,21 +113,38 @@ export class OmniboxEverywhereAppElement extends CrLitElement {
         reflect: true,
         attribute: 'small-loomnibox',
       },
+      dynamicSizing_: {
+        type: Boolean,
+        reflect: true,
+        attribute: 'dynamic-sizing',
+      },
+      dynamicSizingWidth_: {
+        type: Number,
+        reflect: true,
+        attribute: 'dynamic-sizing-width',
+      },
+      smallFont_: {
+        type: Boolean,
+        reflect: true,
+        attribute: 'small-font',
+      },
       hideTitle_: {type: Boolean},
       freStage_: {type: Number},
       hotkeyTokens_: {type: Array},
+      isHotkeyDropdownOpen_: {type: Boolean},
       isActive_: {
         type: Boolean,
         reflect: true,
         attribute: 'is-active',
       },
+      isPendingScreenshot_: {type: Boolean},
     };
   }
 
-  protected accessor omniboxPopupDebugEnabled_ =
-      loadTimeData.getBoolean('omniboxPopupDebugEnabled');
+  protected accessor isHotkeyDropdownOpen_: boolean = false;
   protected accessor isActive_: boolean = true;
   protected accessor isComposeboxMode_: boolean = false;
+  protected accessor isPendingScreenshot_: boolean = false;
   protected accessor searchboxLayoutMode_: string =
       loadTimeData.getString('searchboxLayoutMode');
   protected accessor caretAnimationsEnabled_: boolean =
@@ -139,7 +157,6 @@ export class OmniboxEverywhereAppElement extends CrLitElement {
       loadTimeData.getBoolean('contextButtonShapeIsOblong');
   protected accessor contextManagementInComposeboxEnabled_: boolean =
       loadTimeData.getBoolean('contextManagementInComposeboxEnabled');
-  protected accessor composeboxState_: ComposeboxState|null = null;
   protected accessor showVoiceSearchOverlay_: boolean = false;
   protected accessor hasVoiceSearchError_: boolean = false;
   protected accessor voiceSearchTranscript_: string = '';
@@ -153,6 +170,11 @@ export class OmniboxEverywhereAppElement extends CrLitElement {
       loadTimeData.getBoolean('omniboxEverywhereMostVisitedEnabled');
   protected accessor smallLoomnibox_: boolean =
       loadTimeData.getBoolean('smallLoomnibox');
+  protected accessor dynamicSizing_: boolean =
+      loadTimeData.getBoolean('dynamicSizing');
+  protected accessor dynamicSizingWidth_: number =
+      loadTimeData.getInteger('dynamicSizingWidth');
+  protected accessor smallFont_: boolean = loadTimeData.getBoolean('smallFont');
   protected accessor hideTitle_: boolean =
       loadTimeData.getBoolean('omniboxEverywhereMostVisitedHideTitle');
   protected accessor hasMostVisitedTiles_: boolean = false;
@@ -164,24 +186,31 @@ export class OmniboxEverywhereAppElement extends CrLitElement {
       loadTimeData.valueExists('initialHotkeyTokens') ?
       loadTimeData.getValue('initialHotkeyTokens') :
       [];
+
+  private isPersistentMode_: boolean =
+      loadTimeData.getBoolean('isPersistentMode');
+  private screenshotOriginWasSearchbox_: boolean = false;
   private eventTracker_ = new EventTracker();
   private mostVisitedListenerId_: number|null = null;
   private searchboxListenerIds_: number[] = [];
   private omniboxEverywhereListenerIds_: number[] = [];
+  private wasJustActivated_ = false;
+  private activationTimeoutId_: number|null = null;
+
+  constructor() {
+    super();
+    ColorChangeUpdater.forDocument().start();
+  }
 
   override connectedCallback() {
     super.connectedCallback();
-    this.isActive_ = document.hasFocus();
-    this.eventTracker_.add(window, 'focus', () => {
-      this.isActive_ = true;
-      this.focusActiveInput_();
-    });
-    this.eventTracker_.add(window, 'blur', () => {
-      this.isActive_ = false;
-    });
+    ColorChangeUpdater.forDocument().refreshColorsCss();
+    this.isActive_ = !this.isPersistentMode_ || document.hasFocus();
+    this.eventTracker_.add(window, 'focus', this.onWindowFocus_.bind(this));
+    this.eventTracker_.add(window, 'blur', this.onWindowBlur_.bind(this));
+    this.eventTracker_.add(window, 'click', this.onAppClick_.bind(this));
     this.eventTracker_.add(
-        document.documentElement, 'visibilitychange',
-        this.onVisibilitychange_.bind(this));
+        document, 'visibilitychange', this.onVisibilitychange_.bind(this));
     this.eventTracker_.add(
         window, 'keydown', (e: KeyboardEvent) => this.onKeyDown_(e));
     this.setupListeners_();
@@ -190,19 +219,31 @@ export class OmniboxEverywhereAppElement extends CrLitElement {
 
   override disconnectedCallback() {
     super.disconnectedCallback();
+    this.clearActivationTimeout_();
     this.eventTracker_.removeAll();
     this.removeListeners_();
+  }
+
+  override willUpdate(changedProperties: PropertyValues<this>) {
+    super.willUpdate(changedProperties);
+    if (this.dynamicSizing_) {
+      // In persistent mode, rest in the small 480px state (4 MVT tiles) when
+      // inactive, and expand both the searchbox and MVT row (5 tiles) when
+      // focused.
+      this.smallLoomnibox_ = this.isPersistentMode_ && !this.isActive_;
+    }
   }
 
   private setupListeners_() {
     const onOpenComposebox = (initialState: ComposeboxInitialState|null) => {
       const state: Partial<ComposeboxState> = {};
+      let isPendingScreenshot = false;
       if (initialState) {
         if (initialState.tab) {
           state.files = [{
             ...initialState.tab,
             delayUpload: false,
-            origin: TabUploadOrigin.CONTEXT_MENU,
+            origin: TabAttachmentSource.kContextMenu,
           }];
         }
         if (initialState.fileToken && initialState.fileInfo) {
@@ -219,13 +260,28 @@ export class OmniboxEverywhereAppElement extends CrLitElement {
             initialState.model !== ModelMode.kUnspecified) {
           state.model = initialState.model;
         }
+        if (initialState.isPendingScreenshot) {
+          isPendingScreenshot = true;
+        }
       }
-      this.openComposebox(state);
+      this.openComposebox(state, isPendingScreenshot);
     };
 
     const onContextMenuClosed = () => {
       this.composebox?.onContextMenuClosed();
       this.searchbox?.onContextMenuClosed();
+    };
+
+    const onScreenshotCaptureCancelled = async () => {
+      this.isPendingScreenshot_ = false;
+      if (this.screenshotOriginWasSearchbox_) {
+        this.screenshotOriginWasSearchbox_ = false;
+        this.setIsComposebox_(false);
+        await this.updateComplete;
+        this.searchbox?.focusInput?.();
+        return;
+      }
+      this.composebox?.onScreenshotCaptureCancelled();
     };
 
     this.searchboxListenerIds_.push(
@@ -263,6 +319,10 @@ export class OmniboxEverywhereAppElement extends CrLitElement {
             onOpenComposebox),
         omniboxEverywhereCallbackRouter.onContextMenuClosed.addListener(
             onContextMenuClosed),
+        omniboxEverywhereCallbackRouter.onOverflowMenuClosed.addListener(
+            () => this.searchbox?.onOverflowMenuClosed()),
+        omniboxEverywhereCallbackRouter.onScreenshotCaptureCancelled
+            .addListener(onScreenshotCaptureCancelled),
     );
   }
 
@@ -292,8 +352,14 @@ export class OmniboxEverywhereAppElement extends CrLitElement {
    * 1. Native Views/C++ via Mojo callback (openComposebox listener).
    * 2. WebUI internal action handlers and DOM custom events.
    */
-  async openComposebox(state?: Partial<ComposeboxState>) {
+  async openComposebox(
+      state?: Partial<ComposeboxState>, isPendingScreenshot: boolean = false) {
     if (this.isComposeboxMode_) {
+      this.isPendingScreenshot_ = isPendingScreenshot;
+      this.screenshotOriginWasSearchbox_ = false;
+      if (this.composebox) {
+        this.composebox.isPendingScreenshot = isPendingScreenshot;
+      }
       if (!this.composebox || !state) {
         return;
       }
@@ -319,13 +385,13 @@ export class OmniboxEverywhereAppElement extends CrLitElement {
     // (e.g. when clicking a tool or attaching a tab from the '+' context menu).
     const text = this.searchbox ? this.searchbox.getInputText?.() || '' : '';
     // Calls setActiveToolMode(initialMode) directly without passing mode down
-    // through composeboxState_. This prevents
+    // through composebox.state. This prevents
     // ComposeboxEmbedderMixin.updateState() from mistakenly calling
     // handleToolClick() and toggling off the active tool mode.
     const {mode: initialMode = ToolMode.kUnspecified, ...stateForComposebox} =
         state ?? {};
 
-    this.composeboxState_ = {
+    const composeboxState: ComposeboxState = {
       text,
       files: [],
       mode: ToolMode.kUnspecified,
@@ -337,11 +403,24 @@ export class OmniboxEverywhereAppElement extends CrLitElement {
       SearchboxBrowserProxy.getInstance().handler.setActiveToolMode(
           initialMode, false);
     }
+    // Set isPendingScreenshot_ for this transition into Composebox mode so that
+    // the newly mounted composebox element receives the property binding and
+    // suppresses suggestions / glow animation until capture completes.
+    this.isPendingScreenshot_ = isPendingScreenshot;
+    this.screenshotOriginWasSearchbox_ = isPendingScreenshot;
+    // Clear any active autocomplete suggestion matches on the omnibox searchbox
+    // so stale dropdown results do not linger or flash when switching modes or
+    // if the user subsequently exits Composebox back to Omnibox.
+    this.searchbox?.clearAutocompleteMatches?.();
     this.setIsComposebox_(true);
     await this.updateComplete;
     if (this.composebox) {
+      this.composebox.state = composeboxState;
       this.composebox.focusInput();
-      this.composebox.playGlowAnimation();
+      if (!isPendingScreenshot) {
+        this.composebox.playGlowAnimation();
+        this.composebox.queryAutocomplete(/*clearMatches=*/ true);
+      }
     }
   }
 
@@ -374,6 +453,16 @@ export class OmniboxEverywhereAppElement extends CrLitElement {
     return this.freStage_ === FreStage.kShortcutSetupChin ?
         FreChinMode.SHORTCUT_SETUP :
         FreChinMode.SHORTCUT_REMINDER;
+  }
+
+  protected getMaxMostVisitedTiles_(): number {
+    return this.smallLoomnibox_ ? 4 : 5;
+  }
+
+  protected onMostVisitedCloseClick_() {
+    this.hasMostVisitedTiles_ = false;
+    OmniboxEverywhereBrowserProxyImpl.getInstance()
+        .handler.onDismissMostVisited();
   }
 
   private setIsComposebox_(isComposebox: boolean) {
@@ -423,28 +512,47 @@ export class OmniboxEverywhereAppElement extends CrLitElement {
     freElement.addEventListener('animationcancel', onAnimationDone);
   }
 
-  protected onFreShowHotkeyDropdown_(e: CustomEvent<ShowHotkeyDropdownDetail>) {
-    SearchboxBrowserProxy.getInstance().handler.showHotkeyDropdown(e.detail);
+  protected async onFreShowHotkeyDropdown_(
+      e: CustomEvent<ShowHotkeyDropdownDetail>) {
+    if (this.isHotkeyDropdownOpen_) {
+      return;
+    }
+    this.isHotkeyDropdownOpen_ = true;
+    try {
+      await SearchboxBrowserProxy.getInstance().handler.showHotkeyDropdown(
+          e.detail);
+    } finally {
+      this.isHotkeyDropdownOpen_ = false;
+      // Defer to a macrotask so in-flight window focus/blur events settle
+      // before sampling document focus.
+      setTimeout(() => {
+        if (this.isConnected && !this.isHotkeyDropdownOpen_) {
+          this.isActive_ = !this.isPersistentMode_ || document.hasFocus();
+        }
+      }, 0);
+    }
   }
 
   protected onFreOpenSettings_() {
     SearchboxBrowserProxy.getInstance().handler.openHotkeySettings();
   }
   protected async onOpenComposebox_(e: CustomEvent<ComposeboxState>) {
-    this.composeboxState_ = e.detail;
+    this.screenshotOriginWasSearchbox_ = false;
     this.setIsComposebox_(true);
     await this.updateComplete;
     const composebox =
         this.shadowRoot?.querySelector<OmniboxEverywhereComposeboxElement>(
             'omnibox-everywhere-composebox');
     if (composebox) {
+      composebox.state = e.detail;
       composebox.focusInput();
       composebox.playGlowAnimation();
     }
   }
 
   protected async onCloseComposebox_() {
-    this.composeboxState_ = null;
+    this.isPendingScreenshot_ = false;
+    this.screenshotOriginWasSearchbox_ = false;
     this.setIsComposebox_(false);
     await this.updateComplete;
     this.focusActiveInput_();
@@ -471,15 +579,12 @@ export class OmniboxEverywhereAppElement extends CrLitElement {
       const searchbox =
           this.shadowRoot?.querySelector<OmniboxEverywhereOmniboxElement>(
               'omnibox-everywhere-omnibox');
-      if (searchbox) {
-        const inputElement = searchbox.getInputElement();
-        if (inputElement && inputElement.getInputValue()) {
-          inputElement.setInputText('');
-          searchbox.clearAutocompleteMatches();
-          searchbox.focusInput();
-          e.preventDefault();
-          return;
-        }
+      if (searchbox && searchbox.getInputText()) {
+        searchbox.setInputText('');
+        searchbox.clearAutocompleteMatches();
+        searchbox.focusInput();
+        e.preventDefault();
+        return;
       }
     }
 
@@ -488,8 +593,9 @@ export class OmniboxEverywhereAppElement extends CrLitElement {
   }
 
   protected async onComposeboxSubmit_() {
-    this.composeboxState_ = null;
     this.isComposeboxMode_ = false;
+    this.isPendingScreenshot_ = false;
+    this.screenshotOriginWasSearchbox_ = false;
     await this.updateComplete;
     this.focusActiveInput_();
   }
@@ -513,6 +619,49 @@ export class OmniboxEverywhereAppElement extends CrLitElement {
       this.composebox?.focusInput();
     } else {
       this.searchbox?.focusInput();
+    }
+  }
+
+  private onWindowFocus_() {
+    this.isActive_ = true;
+    this.focusActiveInput_();
+    this.wasJustActivated_ = true;
+    if (this.activationTimeoutId_ !== null) {
+      clearTimeout(this.activationTimeoutId_);
+    }
+    this.activationTimeoutId_ = setTimeout(() => {
+      this.wasJustActivated_ = false;
+      this.activationTimeoutId_ = null;
+    }, ACTIVATION_CLICK_WINDOW_MS);
+  }
+
+  private onWindowBlur_() {
+    if (this.isHotkeyDropdownOpen_) {
+      return;
+    }
+    if (this.isPersistentMode_) {
+      this.isActive_ = false;
+    }
+    this.clearActivationTimeout_();
+  }
+
+  private onAppClick_() {
+    if (!this.wasJustActivated_) {
+      return;
+    }
+    this.clearActivationTimeout_();
+    // Only restore focus if the click left nothing focused. If it landed on
+    // a focusable control, that control should keep focus.
+    if (getDeepActiveElement() === document.body) {
+      this.focusActiveInput_();
+    }
+  }
+
+  private clearActivationTimeout_() {
+    this.wasJustActivated_ = false;
+    if (this.activationTimeoutId_ !== null) {
+      clearTimeout(this.activationTimeoutId_);
+      this.activationTimeoutId_ = null;
     }
   }
 
@@ -559,6 +708,7 @@ export class OmniboxEverywhereAppElement extends CrLitElement {
 
   protected onVoicePermissionChanged_(
       e: CustomEvent<VoicePermissionPromptState>) {
+    e.preventDefault();
     if (e.detail.isOpened) {
       this.voiceSearchListening_ = false;
     } else {
@@ -640,7 +790,9 @@ export class OmniboxEverywhereAppElement extends CrLitElement {
     }
 
     if (this.isComposeboxMode_) {
-      const composebox = this.$.composebox;
+      const composebox =
+          this.shadowRoot.querySelector<OmniboxEverywhereComposeboxElement>(
+              '#composebox');
       if (composebox) {
         composebox.setInputText(trimmedQuery);
         if (submit) {
@@ -655,7 +807,9 @@ export class OmniboxEverywhereAppElement extends CrLitElement {
         }
       }
     } else {
-      const searchbox = this.$.searchbox;
+      const searchbox =
+          this.shadowRoot.querySelector<OmniboxEverywhereOmniboxElement>(
+              '#searchbox');
       if (searchbox) {
         searchbox.setInputText(trimmedQuery);
         if (submit) {

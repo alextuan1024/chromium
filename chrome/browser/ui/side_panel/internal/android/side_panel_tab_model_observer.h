@@ -34,7 +34,7 @@ class SidePanelTabModelObserver final : public TabModelObserver {
   //
   // TODO(crbug.com/561680098): Replace OnFinishingTabClosure() and
   // OnFinishingMultipleTabClosure() with OnTabCloseCommitted().
-  void DidSelectTab(TabAndroid* tab, TabModel::TabSelectionType type) override;
+  void DidSelectTab(TabAndroid* tab) override;
   void DidRemoveTabForClosure(TabAndroid* tab) override;
   void OnFinishingTabClosure(TabAndroid* tab,
                              TabModel::TabClosingSource source) override;
@@ -55,9 +55,8 @@ class SidePanelTabModelObserver final : public TabModelObserver {
 
   // `TabHandle` for the current active tab.
   //
-  // We need to cache the active tab handle because
-  // `TabModelObserver::DidSelectTab()` does not provide the previous active
-  // tab.
+  // Cached to detect whether `DidSelectTab()` is actually selecting a different
+  // tab (see `DidSelectTab()` implementation for details).
   //
   // Note:
   //

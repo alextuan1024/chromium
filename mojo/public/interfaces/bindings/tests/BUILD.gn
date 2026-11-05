@@ -56,6 +56,13 @@ mojom("test_deserializer_interface") {
   js_generate_struct_deserializers = true
 }
 
+mojom("test_jni_interfaces") {
+  testonly = true
+  generate_java = true
+  generate_jni = true
+  sources = [ "jni.test-mojom" ]
+}
+
 mojom("test_interfaces") {
   generate_blink = true
   testonly = true
@@ -363,15 +370,6 @@ mojom("test_struct_traits_interfaces") {
           cpp = "::std::unique_ptr<::mojo::test::UnionWithTraitsBase>"
           move_only = true
           nullable_is_same_type = true
-        },
-        {
-          mojom = "mojo.test.StructForceSerialize"
-          cpp = "::mojo::test::StructForceSerializeImpl"
-          force_serialize = true
-        },
-        {
-          mojom = "mojo.test.StructNestedForceSerialize"
-          cpp = "::mojo::test::StructNestedForceSerializeImpl"
         },
       ]
       traits_sources = [

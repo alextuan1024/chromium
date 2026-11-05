@@ -8,7 +8,7 @@
 #include "base/feature_list.h"
 #include "base/notreached.h"
 #include "base/strings/strcat.h"
-#include "components/optimization_guide/core/model_execution/feature_keys.h"
+#include "components/optimization_guide/core/feature_registry/feature_keys.h"
 #include "components/optimization_guide/core/optimization_guide_features.h"
 #include "components/optimization_guide/core/optimization_guide_proto_util.h"
 #include "components/optimization_guide/proto/model_execution.pb.h"
@@ -268,9 +268,6 @@ net::NetworkTrafficAnnotationTag GetNetworkTrafficAnnotation(
     case ModelBasedCapabilityKey::kIosSmartTabGrouping:
       // TODO(crbug.com/456457419): Add network traffic annotation.
       return MISSING_TRAFFIC_ANNOTATION;
-    case ModelBasedCapabilityKey::kHistorySearch:
-      // On-device only feature.
-      NOTREACHED();
     case ModelBasedCapabilityKey::kScamDetection:
       return net::DefineNetworkTrafficAnnotation(
           "scam_detection_model_execution",
@@ -568,6 +565,9 @@ net::NetworkTrafficAnnotationTag GetNetworkTrafficAnnotation(
             }
           }
         })");
+    case ModelBasedCapabilityKey::kSmartSelectionSuggestions:
+      // TODO(crbug.com/561489586): Add network traffic annotation.
+      return MISSING_TRAFFIC_ANNOTATION;
     case ModelBasedCapabilityKey::kTtc:
       return net::DefineNetworkTrafficAnnotation("ttc_model_execution", R"(
         semantics {
@@ -598,6 +598,9 @@ net::NetworkTrafficAnnotationTag GetNetworkTrafficAnnotation(
             "choose whether to interact with the feature when presented."
           chrome_policy {}
         })");
+    case ModelBasedCapabilityKey::kQuickAnswers:
+      // TODO(crbug.com/564999158): Add network traffic annotation.
+      return MISSING_TRAFFIC_ANNOTATION;
   }
 }
 
@@ -615,7 +618,6 @@ bool IsAccessTokenRequiredForFeature(ModelBasedCapabilityKey feature) {
     case ModelBasedCapabilityKey::kCompose:
     case ModelBasedCapabilityKey::kWallpaperSearch:
     case ModelBasedCapabilityKey::kTest:
-    case ModelBasedCapabilityKey::kHistorySearch:
     case ModelBasedCapabilityKey::kBlingPrototyping:
     case ModelBasedCapabilityKey::kEnhancedCalendar:
     case ModelBasedCapabilityKey::kZeroStateSuggestions:
@@ -631,7 +633,9 @@ bool IsAccessTokenRequiredForFeature(ModelBasedCapabilityKey feature) {
     case ModelBasedCapabilityKey::kContextHub:
     case ModelBasedCapabilityKey::kReadAloudSynthesize:
     case ModelBasedCapabilityKey::kReadAloudGenerateText:
+    case ModelBasedCapabilityKey::kSmartSelectionSuggestions:
     case ModelBasedCapabilityKey::kTtc:
+    case ModelBasedCapabilityKey::kQuickAnswers:
       return true;
     case ModelBasedCapabilityKey::kFormsClassifications:
       return !base::FeatureList::IsEnabled(

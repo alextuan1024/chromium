@@ -90,6 +90,9 @@
 #include "ui/events/keycodes/dom/dom_keyboard_layout_map.h"
 #include "ui/gfx/geometry/dip_util.h"
 #include "ui/gfx/geometry/rect.h"
+#include "ui/gfx/geometry/transform.h"
+#include "ui/gfx/geometry/transform_util.h"
+#include "ui/gfx/geometry/vector2d_f.h"
 #include "ui/gfx/mac/coordinate_conversion.h"
 #include "ui/gfx/native_ui_types.h"
 #include "ui/menus/cocoa/text_services_context_menu.h"
@@ -114,6 +117,11 @@ BASE_FEATURE(kDelayUpdateWindowsAfterTextInputStateChanged,
 // If enabled, throttles resize IPCs on Mac to prevent jank during window
 // resize.
 BASE_FEATURE(kThrottleResizeIpc, base::FEATURE_ENABLED_BY_DEFAULT);
+
+// If enabled, RenderWidgetHostViewMac::HasFocus() returns false if it is in
+// a non-key NSWindow. This aligns with Aura behavior. crbug.com/441089142.
+BASE_FEATURE(kRWHVMacHasFocusReturnsFalseForNonKeyWindow,
+             base::FEATURE_ENABLED_BY_DEFAULT);
 
 // Extract any events in `visible_time_request` that should go to the
 // DelegatedFrameHost and sends them to `delegated_frame_host`. Modifies
@@ -683,6 +691,15 @@ void RenderWidgetHostViewMac::Focus() {
 }
 
 bool RenderWidgetHostViewMac::HasFocus() {
+  if (has_focus_for_testing_.has_value()) {
+    return *has_focus_for_testing_;
+  }
+  if (base::FeatureList::IsEnabled(
+          kRWHVMacHasFocusReturnsFalseForNonKeyWindow)) {
+    // In headless mode the NSView is not in a NSWindow.
+    return is_first_responder_ && (IsHeadless() || is_window_key_);
+  }
+
   return is_first_responder_;
 }
 
@@ -784,13 +801,16 @@ void RenderWidgetHostViewMac::OnUpdateTextInputStateCalled(
 
   // Set the monitor state based on the text input focus state.
   const bool has_focus = HasFocus();
-  bool need_monitor_composition =
-      has_focus && state && state->type != ui::TEXT_INPUT_TYPE_NONE;
+  const bool is_active_view =
+      text_input_manager->GetActiveWidget() &&
+      text_input_manager->GetActiveWidget()->GetView() == updated_view;
+  bool need_monitor_composition = has_focus && is_active_view && state &&
+                                  state->type != ui::TEXT_INPUT_TYPE_NONE;
 
   widget_host->RequestCompositionUpdates(false /* immediate_request */,
                                          need_monitor_composition);
 
-  if (has_focus) {
+  if (has_focus && is_active_view) {
     SetTextInputActive(true);
 
     // Let AppKit cache the new input context to make IMEs happy.
@@ -885,8 +905,8 @@ void RenderWidgetHostViewMac::OnGestureEvent(
 
   if (ShouldRouteEvents()) {
     blink::WebGestureEvent gesture_event(web_gesture);
-    host()->delegate()->GetInputEventRouter()->RouteGestureEvent(
-        this, &gesture_event, latency_info);
+    host()->GetInputEventRouter()->RouteGestureEvent(this, &gesture_event,
+                                                     latency_info);
   } else {
     host()->GetRenderInputRouter()->ForwardGestureEventWithLatencyInfo(
         web_gesture, latency_info);
@@ -1176,9 +1196,10 @@ void RenderWidgetHostViewMac::SetSupportsAutoFill(bool supports) {
   ns_view_->SetSupportsAutoFill(supports);
 }
 
-void RenderWidgetHostViewMac::CopyFromSurface(
+void RenderWidgetHostViewMac::CopyFromSurfaceImpl(
     const gfx::Rect& src_subrect,
     const gfx::Size& dst_size,
+    bool is_copy_request_secure,
     base::TimeDelta timeout,
     base::OnceCallback<void(const content::CopyFromSurfaceResult&)> callback) {
   base::WeakPtr<RenderWidgetHostImpl> popup_host;
@@ -1194,10 +1215,9 @@ void RenderWidgetHostViewMac::CopyFromSurface(
   RenderWidgetHostViewBase::CopyMainAndPopupFromSurface(
       host()->GetWeakPtr(),
       browser_compositor_->GetDelegatedFrameHost()->GetWeakPtr(), popup_host,
-      popup_frame_host, src_subrect, dst_size, GetDeviceScaleFactor(), timeout,
-      std::move(callback));
+      popup_frame_host, src_subrect, dst_size, GetDeviceScaleFactor(),
+      is_copy_request_secure, timeout, std::move(callback));
 }
-
 
 ui::FilteredGestureProvider*
 RenderWidgetHostViewMac::GetFilteredGestureProviderForTesting() {
@@ -1667,13 +1687,11 @@ void RenderWidgetHostViewMac::ProcessAckedTouchEvent(
   if (destroy_pending()) {
     return;
   }
-  if (touch.event.touch_start_or_first_touch_move && event_consumed && host() &&
-      host()->delegate() && host()->delegate()->GetInputEventRouter()) {
-    host()
-        ->delegate()
-        ->GetInputEventRouter()
-        ->OnHandledTouchStartOrFirstTouchMove(
-            touch.event.unique_touch_event_id);
+  if (touch.event.touch_start_or_first_touch_move && event_consumed && host()) {
+    if (auto* router = host()->GetInputEventRouter()) {
+      router->OnHandledTouchStartOrFirstTouchMove(
+          touch.event.unique_touch_event_id);
+    }
   }
 }
 
@@ -1726,7 +1744,7 @@ bool RenderWidgetHostViewMac::ShouldRouteEvents() const {
     return false;
   }
 
-  return host()->delegate() && host()->delegate()->GetInputEventRouter();
+  return !!host()->GetInputEventRouter();
 }
 
 void RenderWidgetHostViewMac::SendTouchpadZoomEvent(
@@ -1736,8 +1754,8 @@ void RenderWidgetHostViewMac::SendTouchpadZoomEvent(
   }
   CHECK(event->IsTouchpadZoomEvent(), base::NotFatalUntil::M152);
   if (ShouldRouteEvents()) {
-    host()->delegate()->GetInputEventRouter()->RouteGestureEvent(
-        this, event, ui::LatencyInfo());
+    host()->GetInputEventRouter()->RouteGestureEvent(this, event,
+                                                     ui::LatencyInfo());
     return;
   }
   host()->ForwardGestureEvent(*event);
@@ -1756,8 +1774,8 @@ void RenderWidgetHostViewMac::InjectTouchEvent(
 
   if (ShouldRouteEvents()) {
     WebTouchEvent touch_event(event);
-    host()->delegate()->GetInputEventRouter()->RouteTouchEvent(
-        this, &touch_event, latency_info);
+    host()->GetInputEventRouter()->RouteTouchEvent(this, &touch_event,
+                                                   latency_info);
   } else {
     host()->GetRenderInputRouter()->ForwardTouchEventWithLatencyInfo(
         event, latency_info);
@@ -1813,8 +1831,13 @@ void RenderWidgetHostViewMac::SetActive(bool active) {
       host()->LostFocus();
     }
   }
-  if (HasFocus())
+  // Always deactivate text input when becoming inactive, so that Secure Event
+  // Input isn't left enabled for a focused password field in a window that is
+  // no longer key. Don't gate deactivation on HasFocus(), which already returns
+  // false once the window has resigned key. https://crbug.com/577708579
+  if (!active || HasFocus()) {
     SetTextInputActive(active);
+  }
   if (!active)
     UnlockPointer();
 }
@@ -2036,6 +2059,9 @@ void RenderWidgetHostViewMac::OnWindowIsKeyChanged(bool is_key) {
     return;
   is_window_key_ = is_key;
   accessibility_focus_overrider_.SetWindowIsKey(is_window_key_);
+  if (!is_window_key_) {
+    DismissUnboundedSurface();
+  }
   if (is_first_responder_)
     SetActive(is_key);
 }
@@ -2141,10 +2167,17 @@ void RenderWidgetHostViewMac::RouteOrProcessMouseEvent(
   ui::LatencyInfo latency_info;
   latency_info.AddLatencyNumber(ui::INPUT_EVENT_LATENCY_UI_COMPONENT);
   if (ShouldRouteEvents()) {
-    host()->delegate()->GetInputEventRouter()->RouteMouseEvent(this, &web_event,
-                                                               latency_info);
+    host()->GetInputEventRouter()->RouteMouseEvent(this, &web_event,
+                                                   latency_info);
   } else {
     ProcessMouseEvent(web_event, latency_info);
+  }
+
+  // The tooltip is browser-side state that only changes when the renderer
+  // sends a tooltip update, so it has to be cleared explicitly once the cursor
+  // leaves the view. Otherwise a visible tooltip outlives the hover.
+  if (web_event.GetType() == WebInputEvent::Type::kMouseLeave) {
+    SetTooltipText(std::u16string());
   }
 }
 
@@ -2165,8 +2198,8 @@ void RenderWidgetHostViewMac::RouteOrProcessTouchEvent(
   ui::LatencyInfo latency_info;
   latency_info.AddLatencyNumber(ui::INPUT_EVENT_LATENCY_UI_COMPONENT);
   if (ShouldRouteEvents()) {
-    host()->delegate()->GetInputEventRouter()->RouteTouchEvent(this, &web_event,
-                                                               latency_info);
+    host()->GetInputEventRouter()->RouteTouchEvent(this, &web_event,
+                                                   latency_info);
   } else {
     ProcessTouchEvent(web_event, latency_info);
   }
@@ -2189,8 +2222,8 @@ void RenderWidgetHostViewMac::RouteOrProcessWheelEvent(
     return;
   }
   if (ShouldRouteEvents()) {
-    host()->delegate()->GetInputEventRouter()->RouteMouseWheelEvent(
-        this, &web_event, latency_info);
+    host()->GetInputEventRouter()->RouteMouseWheelEvent(this, &web_event,
+                                                        latency_info);
   } else {
     ProcessMouseWheelEvent(web_event, latency_info);
   }
@@ -2306,9 +2339,9 @@ void RenderWidgetHostViewMac::LookUpDictionaryOverlayFromRange(
 
 void RenderWidgetHostViewMac::LookUpDictionaryOverlayAtPoint(
     const gfx::PointF& root_point_in_dips) {
-  if (!host() || !host()->delegate() ||
-      !host()->delegate()->GetInputEventRouter())
+  if (!host() || !host()->GetInputEventRouter()) {
     return;
+  }
 
   // With zoom-for-dsf, RenderWidgetHost coordinate system is physical points,
   // which means we have to scale the point by device scale factor.
@@ -2316,11 +2349,9 @@ void RenderWidgetHostViewMac::LookUpDictionaryOverlayAtPoint(
   root_point.Scale(GetDeviceScaleFactor());
 
   gfx::PointF transformed_point;
-  auto* view = host()
-                   ->delegate()
-                   ->GetInputEventRouter()
-                   ->GetRenderWidgetHostViewInputAtPoint(this, root_point,
-                                                         &transformed_point);
+  auto* view =
+      host()->GetInputEventRouter()->GetRenderWidgetHostViewInputAtPoint(
+          this, root_point, &transformed_point);
   if (!view) {
     return;
   }
@@ -2349,16 +2380,14 @@ bool RenderWidgetHostViewMac::SyncGetCharacterIndexAtPoint(
     uint32_t* index) {
   *index = UINT32_MAX;
 
-  if (!host() || !host()->delegate() ||
-      !host()->delegate()->GetInputEventRouter())
+  if (!host() || !host()->GetInputEventRouter()) {
     return true;
+  }
 
   gfx::PointF transformed_point;
-  auto* view = host()
-                   ->delegate()
-                   ->GetInputEventRouter()
-                   ->GetRenderWidgetHostViewInputAtPoint(this, root_point,
-                                                         &transformed_point);
+  auto* view =
+      host()->GetInputEventRouter()->GetRenderWidgetHostViewInputAtPoint(
+          this, root_point, &transformed_point);
   if (!view) {
     return true;
   }
@@ -2434,6 +2463,51 @@ void RenderWidgetHostViewMac::SyncGetFirstRectForRange(
   SyncGetFirstRectForRange(requested_range, &out_rect, &out_actual_range,
                            &success);
   std::move(callback).Run(out_rect, out_actual_range, success);
+}
+
+void RenderWidgetHostViewMac::GetFirstRectForRange(
+    const gfx::Range& requested_range,
+    GetFirstRectForRangeCallback callback) {
+  TRACE_EVENT1("ime", "RenderWidgetHostViewMac::GetFirstRectForRange",
+               "requested range", requested_range.ToString());
+  RenderWidgetHostImpl* focused_widget = GetFocusedWidget();
+  if (!focused_widget) {
+    std::move(callback).Run(std::nullopt);
+    return;
+  }
+
+  // Ask the renderer for the bounds, since waiting for it here doesn't block
+  // and the cache may only have approximate bounds (e.g. the caret's, when
+  // kCachedFirstRectAllowRangeOutsideSelection is enabled).
+  TextInputClientMac::GetInstance()->AsyncGetFirstRectForRange(
+      focused_widget, requested_range,
+      base::BindOnce(&RenderWidgetHostViewMac::OnGotFirstRectForRange,
+                     weak_factory_.GetWeakPtr(), requested_range,
+                     GetDeviceScaleFactor(), std::move(callback)));
+}
+
+void RenderWidgetHostViewMac::OnGotFirstRectForRange(
+    const gfx::Range& requested_range,
+    float device_scale_factor,
+    GetFirstRectForRangeCallback callback,
+    gfx::Rect blink_rect) {
+  gfx::Rect rect =
+      gfx::ScaleToEnclosingRect(blink_rect, 1.f / device_scale_factor);
+
+  // If the renderer returns an empty rect, fall back to the cached bounds.
+  if (rect.IsEmpty() && GetFocusedWidget()) {
+    gfx::Rect cached_rect;
+    if (GetCachedFirstRectForCharacterRange(requested_range, &cached_rect,
+                                            /*actual_range=*/nullptr) ==
+        GetCachedFirstRectResult::kFound) {
+      rect = cached_rect;
+    }
+  }
+
+  // Clamp to the viewport so that a compromised renderer can't place UI outside
+  // the page. See https://crbug.com/519210950.
+  rect.AdjustToFit(gfx::Rect(GetVisibleViewportSize()));
+  std::move(callback).Run(rect);
 }
 
 void RenderWidgetHostViewMac::ExecuteEditCommand(const std::string& command) {
@@ -2692,19 +2766,32 @@ void RenderWidgetHostViewMac::OnGotStringForDictionaryOverlay(
     // https://crbug.com/737032
     auto* widget_host = content::RenderWidgetHost::FromID(
         target_widget_process_id, target_widget_routing_id);
-    gfx::Point updated_baseline_point = baseline_point_in_layout_space;
-    if (widget_host) {
-      if (auto* rwhv = widget_host->GetView()) {
-        updated_baseline_point = rwhv->TransformPointToRootCoordSpace(
-            baseline_point_in_layout_space);
+    // Layout space is physical pixels, but the transform below and ns_view_
+    // expect DIPs. Scale to DIPs before transforming.
+    gfx::PointF baseline_point =
+        gfx::ScalePoint(gfx::PointF(baseline_point_in_layout_space),
+                        1.f / GetDeviceScaleFactor());
+    // Values from an out-of-process iframe are in the iframe's own coordinates,
+    // which don't include its position or scale in the root view (such as from
+    // a pinch-zoom), so convert them to the root view's coordinates here.
+    RenderWidgetHostViewBase* target_view =
+        widget_host ? RenderWidgetHostImpl::From(widget_host)->GetView()
+                    : nullptr;
+    gfx::Transform to_root;
+    if (target_view &&
+        target_view->GetTransformToViewCoordSpace(this, &to_root)) {
+      baseline_point = to_root.MapPoint(baseline_point);
+      std::optional<gfx::Vector2dF> scale =
+          gfx::TryComputeTransform2dScaleComponents(to_root);
+      if (scale && scale->y() > 0) {
+        for (auto& attribute : attributed_string->attributes) {
+          attribute->font_point_size *= scale->y();
+        }
       }
     }
-    // Layout space is physical pixels. Scale
-    // it to get DIPs, which is what ns_view_ expects.
-    updated_baseline_point = gfx::ScaleToRoundedPoint(
-        updated_baseline_point, 1.f / GetDeviceScaleFactor());
+
     ns_view_->ShowDictionaryOverlay(std::move(attributed_string),
-                                    updated_baseline_point);
+                                    gfx::ToRoundedPoint(baseline_point));
   }
 }
 
@@ -2746,15 +2833,10 @@ RenderWidgetHostViewMac::MaybeUpdateScreenInfosForHiDPI() {
 }
 
 void RenderWidgetHostViewMac::CreateUnboundedSurface(
-    mojo::PendingAssociatedReceiver<blink::mojom::UnboundedSurfaceHost> host,
-    mojo::PendingAssociatedRemote<blink::mojom::UnboundedSurfaceClient> client,
-    const gfx::Rect& bounds_in_dips,
+    const gfx::Rect& bounds_in_screen,
     base::WeakPtr<RenderWidgetHostViewBase> subframe_view) {
-  gfx::Rect bounds_in_screen =
-      ConvertSubframeBoundsToScreen(bounds_in_dips, subframe_view.get());
   unbounded_surface_window_ = std::make_unique<UnboundedSurfaceWindowMac>(
-      this, std::move(host), std::move(client), bounds_in_screen,
-      std::move(subframe_view));
+      this, bounds_in_screen, std::move(subframe_view));
 }
 
 bool RenderWidgetHostViewMac::IsHeadless() const {

@@ -10,6 +10,7 @@
 #include "chrome/test/base/chrome_render_view_host_test_harness.h"
 #include "content/public/browser/picture_in_picture_window_controller.h"
 #include "content/public/browser/web_contents.h"
+#include "content/public/browser/web_contents_delegate.h"
 #include "content/public/test/mock_video_picture_in_picture_window_controller_impl.h"
 #include "extensions/buildflags/buildflags.h"
 #include "testing/gmock/include/gmock/gmock.h"
@@ -121,6 +122,8 @@ class PictureInPictureWindowManagerTest
   content::WebContents* child_web_contents() const {
     return child_web_contents_.get();
   }
+
+  void ResetChildWebContents() { child_web_contents_.reset(); }
 
   content::MockVideoPictureInPictureWindowControllerImpl*
   mock_video_picture_in_picture_controller() const {
@@ -235,6 +238,59 @@ TEST_F(PictureInPictureWindowManagerTest, OnEnterVideoPictureInPicture) {
   picture_in_picture_window_manager->EnterVideoPictureInPicture(web_contents());
 }
 
+TEST_F(PictureInPictureWindowManagerTest,
+       EnterVideoPipRejectedForDocumentPipChildWebContents) {
+  PictureInPictureWindowManager* picture_in_picture_window_manager =
+      PictureInPictureWindowManager::GetInstance();
+
+  MockPictureInPictureWindowController document_pip_controller;
+  ON_CALL(document_pip_controller, GetWebContents())
+      .WillByDefault(testing::Return(web_contents()));
+  ON_CALL(document_pip_controller, GetChildWebContents())
+      .WillByDefault(testing::Return(child_web_contents()));
+
+  picture_in_picture_window_manager->EnterPictureInPictureWithController(
+      &document_pip_controller);
+
+  // Entering video PiP from the Document PiP child WebContents must be
+  // rejected without closing the active Document PiP window.
+  EXPECT_CALL(document_pip_controller, Close).Times(0);
+  EXPECT_EQ(content::PictureInPictureResult::kNotSupported,
+            picture_in_picture_window_manager->EnterVideoPictureInPicture(
+                child_web_contents()));
+  EXPECT_EQ(child_web_contents(),
+            picture_in_picture_window_manager->GetChildWebContents());
+
+  EXPECT_CALL(document_pip_controller, Close(/*should_pause_video=*/false));
+  EXPECT_TRUE(picture_in_picture_window_manager->ExitPictureInPicture());
+}
+
+TEST_F(PictureInPictureWindowManagerTest,
+       EnterVideoPipFromClosingWindowDoesNotUseFreedWebContents) {
+  PictureInPictureWindowManager* picture_in_picture_window_manager =
+      PictureInPictureWindowManager::GetInstance();
+
+  MockPictureInPictureWindowController existing_controller;
+  ON_CALL(existing_controller, GetWebContents())
+      .WillByDefault(testing::Return(web_contents()));
+  ON_CALL(existing_controller, GetChildWebContents())
+      .WillByDefault(testing::Return(nullptr));
+
+  picture_in_picture_window_manager->EnterPictureInPictureWithController(
+      &existing_controller);
+
+  // Simulate closing the existing PiP window synchronously destroying the
+  // requesting WebContents.
+  EXPECT_CALL(existing_controller, Close(/*should_pause_video=*/false))
+      .WillOnce([this](bool) { ResetChildWebContents(); });
+
+  content::WebContents* requesting_contents = child_web_contents();
+  EXPECT_EQ(content::PictureInPictureResult::kNotSupported,
+            picture_in_picture_window_manager->EnterVideoPictureInPicture(
+                requesting_contents));
+  EXPECT_FALSE(picture_in_picture_window_manager->IsInPictureInPicture());
+}
+
 #if !BUILDFLAG(IS_ANDROID)
 TEST_F(PictureInPictureWindowManagerTest, RespectsMinAndMaxSize) {
   // The max window size should be 80% of the screen.
@@ -314,6 +370,60 @@ TEST_F(PictureInPictureWindowManagerTest, OnEnterDocumentPictureInPicture) {
 
   picture_in_picture_window_manager->EnterDocumentPictureInPicture(
       web_contents(), child_web_contents());
+}
+
+TEST_F(PictureInPictureWindowManagerTest,
+       EnterDocumentPipRejectedForDocumentPipChildWebContents) {
+  PictureInPictureWindowManager* picture_in_picture_window_manager =
+      PictureInPictureWindowManager::GetInstance();
+
+  MockPictureInPictureWindowController document_pip_controller;
+  ON_CALL(document_pip_controller, GetWebContents())
+      .WillByDefault(testing::Return(web_contents()));
+  ON_CALL(document_pip_controller, GetChildWebContents())
+      .WillByDefault(testing::Return(child_web_contents()));
+
+  picture_in_picture_window_manager->EnterPictureInPictureWithController(
+      &document_pip_controller);
+
+  std::unique_ptr<content::WebContents> second_child = CreateTestWebContents();
+
+  // Entering Document PiP from the Document PiP child WebContents must be
+  // rejected without closing the active Document PiP window.
+  EXPECT_CALL(document_pip_controller, Close).Times(0);
+  picture_in_picture_window_manager->EnterDocumentPictureInPicture(
+      child_web_contents(), second_child.get());
+  EXPECT_EQ(child_web_contents(),
+            picture_in_picture_window_manager->GetChildWebContents());
+
+  EXPECT_CALL(document_pip_controller, Close(/*should_pause_video=*/false));
+  EXPECT_TRUE(picture_in_picture_window_manager->ExitPictureInPicture());
+}
+
+TEST_F(PictureInPictureWindowManagerTest,
+       EnterDocumentPipFromClosingWindowDoesNotUseFreedWebContents) {
+  PictureInPictureWindowManager* picture_in_picture_window_manager =
+      PictureInPictureWindowManager::GetInstance();
+
+  MockPictureInPictureWindowController existing_controller;
+  ON_CALL(existing_controller, GetWebContents())
+      .WillByDefault(testing::Return(web_contents()));
+  ON_CALL(existing_controller, GetChildWebContents())
+      .WillByDefault(testing::Return(nullptr));
+
+  picture_in_picture_window_manager->EnterPictureInPictureWithController(
+      &existing_controller);
+
+  // Simulate closing the existing PiP window synchronously destroying the
+  // requesting parent WebContents.
+  EXPECT_CALL(existing_controller, Close(/*should_pause_video=*/false))
+      .WillOnce([this](bool) { ResetChildWebContents(); });
+
+  std::unique_ptr<content::WebContents> new_child = CreateTestWebContents();
+  content::WebContents* requesting_parent = child_web_contents();
+  picture_in_picture_window_manager->EnterDocumentPictureInPicture(
+      requesting_parent, new_child.get());
+  EXPECT_FALSE(picture_in_picture_window_manager->IsInPictureInPicture());
 }
 
 TEST_F(PictureInPictureWindowManagerTest, DontShowAutoPipSettingUiWithoutPip) {

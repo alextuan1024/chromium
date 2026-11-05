@@ -5,6 +5,8 @@
 package org.chromium.chrome.browser.share.send_tab_to_self;
 
 import android.content.Context;
+import android.content.res.Configuration;
+import android.content.res.Resources;
 import android.view.LayoutInflater;
 import android.view.View;
 import android.view.ViewGroup;
@@ -24,6 +26,7 @@ import org.chromium.components.browser_ui.bottomsheet.BottomSheetController.Shee
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetController.StateChangeReason;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetListViewBase;
 import org.chromium.components.browser_ui.bottomsheet.ItemDividerBase;
+import org.chromium.ui.base.DeviceFormFactor;
 
 import java.util.Set;
 
@@ -49,6 +52,7 @@ class EnhancedTargetDevicePickerView extends BottomSheetListViewBase {
     final View mSendButton;
     final View mBottomActionsBlock;
     final View mManageDevicesBlock;
+    final View mManageDevicesDivider;
     final View mManageDevicesLink;
 
     EnhancedTargetDevicePickerView(Context context, BottomSheetController bottomSheetController) {
@@ -61,9 +65,12 @@ class EnhancedTargetDevicePickerView extends BottomSheetListViewBase {
         // TODO(crbug.com/532092798): Explore methods to avoid jank during state transitions.
         mBottomActionsBlock = getContentView().findViewById(R.id.bottom_actions_block);
         mManageDevicesBlock = getContentView().findViewById(R.id.manage_devices_block);
+        mManageDevicesDivider = getContentView().findViewById(R.id.manage_devices_divider);
         mManageDevicesLink = getContentView().findViewById(R.id.manage_devices_link);
         if (bottomSheetController.isLargeFormFactorUiEnabled(this)) {
             updateManageDevicesVisibility(true);
+        } else {
+            updateManageDevicesSpacing();
         }
 
         setSheetItemListView(getContentView().findViewById(R.id.sheet_item_list));
@@ -132,29 +139,57 @@ class EnhancedTargetDevicePickerView extends BottomSheetListViewBase {
      * buttons, and optional manage devices footer) for the given sheet state.
      */
     private @Px int getNonListHeightForState(boolean forHalfState) {
+        updateManageDevicesSpacing();
+        boolean isDesktop = getBottomSheetController().isLargeFormFactorUiEnabled(this);
+        boolean showManageDevices = !forHalfState || isDesktop;
         int height = getHeaderAndHandlebarHeightPx();
         int paddingTop = mBottomActionsBlock.getPaddingTop();
-        int paddingBottom = mBottomActionsBlock.getPaddingBottom();
+        int paddingBottom = getBottomActionsPaddingBottomPx(showManageDevices);
         int sendButtonHeight = getElementHeightWithMarginsPx(mSendButton);
         height += paddingTop + sendButtonHeight + paddingBottom;
-        boolean isDesktop = getBottomSheetController().isLargeFormFactorUiEnabled(this);
-        if (!forHalfState || isDesktop) {
+        if (showManageDevices) {
             height += getElementHeightWithMarginsPx(mManageDevicesBlock);
         }
         return height;
     }
 
+    /**
+     * Measures {@code view} with an unconstrained height and returns its total height including
+     * vertical margins.
+     *
+     * <p>Always measures with `UNSPECIFIED` height instead of skipping when `getMeasuredHeight()`
+     * is non-zero. If a layout pass runs before the device list is clamped, the parent
+     * `LinearLayout` constrains `view` to the remaining vertical space, leaving
+     * `getMeasuredHeight() > 0` but smaller than its full unconstrained height.
+     */
     private @Px int getElementHeightWithMarginsPx(@Nullable View view) {
         if (view == null) return 0;
-        if (view.getMeasuredHeight() == 0) {
-            int widthSpec =
-                    View.MeasureSpec.makeMeasureSpec(
-                            getContentView().getResources().getDisplayMetrics().widthPixels,
-                            View.MeasureSpec.AT_MOST);
-            int heightSpec = View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED);
-            view.measure(widthSpec, heightSpec);
-        }
+
+        int widthSpec = getElementWidthMeasureSpec(view);
+        int heightSpec = View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED);
+        view.measure(widthSpec, heightSpec);
         return getHeightWithMarginsPx(view);
+    }
+
+    /**
+     * Returns the horizontal `MeasureSpec` for measuring a child inside `mBottomActionsBlock`. Uses
+     * the view's exact laid-out width when available, or falls back to the available width inside
+     * the sheet before the first layout pass.
+     */
+    private int getElementWidthMeasureSpec(View view) {
+        if (view.getWidth() > 0) {
+            return View.MeasureSpec.makeMeasureSpec(view.getWidth(), View.MeasureSpec.EXACTLY);
+        }
+        int horizontalPaddingPx =
+                mBottomActionsBlock.getPaddingLeft() + mBottomActionsBlock.getPaddingRight();
+        int availableWidthPx = Math.max(0, getSheetWidthPx() - horizontalPaddingPx);
+        return View.MeasureSpec.makeMeasureSpec(availableWidthPx, View.MeasureSpec.AT_MOST);
+    }
+
+    private @Px int getSheetWidthPx() {
+        int maxSheetWidthPx = getBottomSheetController().getMaxSheetWidth();
+        if (maxSheetWidthPx > 0) return maxSheetWidthPx;
+        return getContentView().getResources().getDisplayMetrics().widthPixels;
     }
 
     private @Px int getHeaderAndHandlebarHeightPx() {
@@ -214,7 +249,7 @@ class EnhancedTargetDevicePickerView extends BottomSheetListViewBase {
 
     @Override
     protected @Px int getSideMarginPx() {
-        return 0;
+        return getContentView().getResources().getDimensionPixelSize(R.dimen.stts_sheet_margin);
     }
 
     @Override
@@ -230,10 +265,7 @@ class EnhancedTargetDevicePickerView extends BottomSheetListViewBase {
     @Override
     protected void onSheetStateChanged(@SheetState int newState, @StateChangeReason int reason) {
         super.onSheetStateChanged(newState, reason);
-        boolean inHalfState = newState == SheetState.HALF;
-        boolean isDesktop = getBottomSheetController().isLargeFormFactorUiEnabled(this);
-        updateManageDevicesVisibility(!inHalfState || isDesktop);
-        updateOverflowForState(newState);
+        updateFooterAndListOverflowForState(newState);
     }
 
     /**
@@ -243,11 +275,28 @@ class EnhancedTargetDevicePickerView extends BottomSheetListViewBase {
     @Override
     protected void onContainerSizeChanged(@Px int width, @Px int height) {
         super.onContainerSizeChanged(width, height);
-        @SheetState int currentState = getBottomSheetController().getSheetState();
-        boolean inHalfState = currentState == SheetState.HALF;
+        updateManageDevicesSpacing();
+        updateFooterAndListOverflowForState(getBottomSheetController().getSheetState());
+    }
+
+    /**
+     * Updates the manage devices footer visibility and device list height clamping for {@code
+     * state}.
+     *
+     * <p>During transitions (`SheetState.SCROLLING`), layout updates are applied for the target
+     * state before the animation settles. Otherwise, opening into `SheetState.HALF` temporarily
+     * treats `SheetState.SCROLLING` as non-half (showing the footer and leaving the list unclamped)
+     * until the animation ends, causing a visible jump on settle and clipping the footer on
+     * desktop.
+     */
+    private void updateFooterAndListOverflowForState(@SheetState int state) {
+        @SheetState int effectiveState = resolveTargetOrCurrentSheetState(state);
+        if (effectiveState != SheetState.HALF && effectiveState != SheetState.FULL) return;
+
+        boolean inHalfState = effectiveState == SheetState.HALF;
         boolean isDesktop = getBottomSheetController().isLargeFormFactorUiEnabled(this);
         updateManageDevicesVisibility(!inHalfState || isDesktop);
-        updateOverflowForState(currentState);
+        updateOverflowForState(effectiveState);
     }
 
     /**
@@ -255,7 +304,8 @@ class EnhancedTargetDevicePickerView extends BottomSheetListViewBase {
      * exceeds the maximum allowable height for the current sheet state.
      */
     private void updateOverflowForState(@SheetState int state) {
-        if (state != SheetState.HALF && state != SheetState.FULL) return;
+        @SheetState int effectiveState = resolveTargetOrCurrentSheetState(state);
+        if (effectiveState != SheetState.HALF && effectiveState != SheetState.FULL) return;
 
         RecyclerView listView = getSheetItemListView();
         // Unsuppress layout so LayoutParams height changes take effect on the RecyclerView.
@@ -264,7 +314,7 @@ class EnhancedTargetDevicePickerView extends BottomSheetListViewBase {
             listView.suppressLayout(false);
         }
 
-        boolean inHalfState = state == SheetState.HALF;
+        boolean inHalfState = effectiveState == SheetState.HALF;
         @Px int targetMaxHeight = getTargetMaxListHeight(inHalfState);
         if (calculateListHeight() > targetMaxHeight) {
             enableFadingEdge(listView);
@@ -278,6 +328,24 @@ class EnhancedTargetDevicePickerView extends BottomSheetListViewBase {
         if (wasSuppressed) {
             listView.suppressLayout(true);
         }
+    }
+
+    /**
+     * Resolves `SheetState.SCROLLING` to the state the sheet is transitioning toward.
+     *
+     * <p>When a settle animation is in progress, `getTargetSheetState()` returns the destination
+     * state (`HALF` or `FULL`). During a manual user drag (where target state is `NONE`), this
+     * falls back to `FULL` so the list unclamps and the footer appears smoothly while dragging
+     * upward.
+     */
+    private @SheetState int resolveTargetOrCurrentSheetState(@SheetState int state) {
+        if (state != SheetState.SCROLLING) return state;
+
+        @SheetState int targetState = getBottomSheetController().getTargetSheetState();
+        if (targetState != SheetState.NONE && targetState != SheetState.SCROLLING) {
+            return targetState;
+        }
+        return SheetState.FULL;
     }
 
     /**
@@ -298,6 +366,62 @@ class EnhancedTargetDevicePickerView extends BottomSheetListViewBase {
         int visibility = visible ? View.VISIBLE : View.GONE;
         if (mManageDevicesBlock.getVisibility() == visibility) return;
         mManageDevicesBlock.setVisibility(visibility);
+        updateManageDevicesSpacing();
+    }
+
+    private void updateManageDevicesSpacing() {
+        boolean phoneLandscape = isPhoneLandscape();
+        Resources resources = getContentView().getResources();
+        int dividerMarginTopPx =
+                resources.getDimensionPixelSize(
+                        phoneLandscape
+                                ? R.dimen.stts_manage_devices_divider_top_margin_landscape
+                                : R.dimen.stts_sheet_margin);
+        int linkMarginTopPx =
+                resources.getDimensionPixelSize(
+                        phoneLandscape
+                                ? R.dimen.stts_manage_devices_top_margin_landscape
+                                : R.dimen.stts_manage_devices_top_margin);
+        setTopMarginPx(mManageDevicesDivider, dividerMarginTopPx);
+        setTopMarginPx(mManageDevicesLink, linkMarginTopPx);
+
+        int paddingBottomPx =
+                getBottomActionsPaddingBottomPx(
+                        mManageDevicesBlock.getVisibility() == View.VISIBLE);
+        if (mBottomActionsBlock.getPaddingBottom() != paddingBottomPx) {
+            mBottomActionsBlock.setPadding(
+                    mBottomActionsBlock.getPaddingLeft(),
+                    mBottomActionsBlock.getPaddingTop(),
+                    mBottomActionsBlock.getPaddingRight(),
+                    paddingBottomPx);
+        }
+    }
+
+    private @Px int getBottomActionsPaddingBottomPx(boolean manageDevicesVisible) {
+        boolean useCompactBottomPadding = isPhoneLandscape() && manageDevicesVisible;
+        return getContentView()
+                .getResources()
+                .getDimensionPixelSize(
+                        useCompactBottomPadding
+                                ? R.dimen.stts_bottom_actions_bottom_padding_landscape
+                                : R.dimen.stts_sheet_margin);
+    }
+
+    private boolean isPhoneLandscape() {
+        if (getBottomSheetController().isLargeFormFactorUiEnabled(this)) return false;
+        Context context = getContentView().getContext();
+        if (DeviceFormFactor.isNonMultiDisplayContextOnTablet(context)) return false;
+        return context.getResources().getConfiguration().orientation
+                == Configuration.ORIENTATION_LANDSCAPE;
+    }
+
+    private static void setTopMarginPx(View view, @Px int topMarginPx) {
+        ViewGroup.LayoutParams layoutParams = view.getLayoutParams();
+        if (!(layoutParams instanceof ViewGroup.MarginLayoutParams)) return;
+        ViewGroup.MarginLayoutParams params = (ViewGroup.MarginLayoutParams) layoutParams;
+        if (params.topMargin == topMarginPx) return;
+        params.topMargin = topMarginPx;
+        view.setLayoutParams(params);
     }
 
     private @Px int getMaxAvailableHeightPx() {

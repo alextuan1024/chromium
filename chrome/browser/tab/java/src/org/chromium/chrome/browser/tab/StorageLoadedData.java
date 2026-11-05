@@ -6,8 +6,10 @@ package org.chromium.chrome.browser.tab;
 
 import org.jni_zero.CalledByNative;
 import org.jni_zero.JNINamespace;
+import org.jni_zero.JniPtr;
 import org.jni_zero.JniType;
-import org.jni_zero.NativeMethods;
+import org.jni_zero.JniTypeToken;
+import org.jni_zero.JniUniquePtr;
 
 import org.chromium.base.Token;
 import org.chromium.base.lifetime.Destroyable;
@@ -24,6 +26,9 @@ import java.nio.ByteBuffer;
 @NullMarked
 @JNINamespace("tabs")
 public class StorageLoadedData implements Destroyable {
+    @JniType("::tabs::StorageLoadedDataAndroid")
+    interface NativeStorageLoadedDataAndroid extends JniTypeToken {}
+
     /** Simple data container for a TabState and its corresponding creation callback. */
     public static class LoadedTabState {
         public final @TabId int tabId;
@@ -85,14 +90,14 @@ public class StorageLoadedData implements Destroyable {
         }
     }
 
-    private long mNativePtr;
+    private @Nullable JniUniquePtr<NativeStorageLoadedDataAndroid> mNativePtr;
     private final LoadedTabState[] mLoadedTabStates;
     private final TabGroupCollectionData[] mGroupsData;
     private final int mActiveTabIndex;
     private final StorageLoadWarning[] mWarnings;
 
     private StorageLoadedData(
-            long nativePtr,
+            JniUniquePtr<NativeStorageLoadedDataAndroid> nativePtr,
             LoadedTabState[] loadedTabStates,
             TabGroupCollectionData[] groupsData,
             int activeTabIndex,
@@ -106,29 +111,25 @@ public class StorageLoadedData implements Destroyable {
 
     @Override
     public void destroy() {
-        for (TabGroupCollectionData groupData : getGroupsData()) {
-            groupData.destroy();
-        }
-
         for (LoadedTabState loadedTabState : mLoadedTabStates) {
             loadedTabState.destroy();
         }
 
-        assert mNativePtr != 0;
-        StorageLoadedDataJni.get().destroy(mNativePtr);
-        mNativePtr = 0;
+        assert mNativePtr != null;
+        mNativePtr.destroy();
+        mNativePtr = null;
     }
 
     @CalledByNative
-    public long getNativePtr() {
+    @Nullable JniPtr<NativeStorageLoadedDataAndroid> getNativePtr() {
         return mNativePtr;
     }
 
     @CalledByNative
-    public static StorageLoadedData createData(
-            long nativePtr,
+    static StorageLoadedData createData(
+            JniUniquePtr<NativeStorageLoadedDataAndroid> nativePtr,
             @JniType("std::vector<tabs_pb::TabState>") LoadedTabState[] loadedTabStates,
-            @JniType("std::vector<tabs::TabGroupCollectionDataAndroid*>")
+            @JniType("std::vector<std::unique_ptr<tabs::TabGroupCollectionData>>")
                     TabGroupCollectionData[] groups,
             int activeTabIndex,
             @JniType("std::vector<tabs::StorageLoadingContext::Warning>")
@@ -148,17 +149,16 @@ public class StorageLoadedData implements Destroyable {
     }
 
     @CalledByNative
-    public static TabState createTabState(
-            int parentTabId,
-            int rootId,
+    private static TabState createTabState(
+            @TabId int parentTabId,
             long timestampMillis,
             @Nullable ByteBuffer webContentsStateBuffer,
             int webContentsStateVersion,
             long webContentsStateStringPointer,
             @Nullable @JniType("std::string") String openerAppId,
             int themeColor,
-            int launchTypeAtCreation,
-            int userAgent,
+            @TabLaunchType int launchTypeAtCreation,
+            @TabUserAgent int userAgent,
             long lastNavigationCommittedTimestampMillis,
             @Nullable Token tabGroupId,
             boolean tabHasSensitiveContent,
@@ -166,7 +166,6 @@ public class StorageLoadedData implements Destroyable {
             @Nullable @JniType("std::string") String url) {
         TabState tabState = new TabState();
         tabState.parentId = parentTabId;
-        tabState.rootId = rootId;
         tabState.timestampMillis = timestampMillis;
         if (webContentsStateBuffer != null) {
             assert webContentsStateStringPointer != 0;
@@ -211,10 +210,5 @@ public class StorageLoadedData implements Destroyable {
     /** Returns the warnings which occurred during the load process. */
     public StorageLoadWarning[] getWarnings() {
         return mWarnings;
-    }
-
-    @NativeMethods
-    interface Natives {
-        void destroy(long nativeStorageLoadedDataAndroid);
     }
 }

@@ -17,6 +17,7 @@
           "27a266a",
           "--xctest"
         ],
+        "ci_only": true,
         "isolate_profile_data": true,
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
@@ -33,7 +34,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -51,7 +52,7 @@
             }
           ],
           "optional_dimensions": {
-            "30": {
+            "180": {
               "cpu": "Apple_(Virtual)"
             }
           },
@@ -90,7 +91,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -107,6 +108,11 @@
               "path": "Xcode.app"
             }
           ],
+          "optional_dimensions": {
+            "180": {
+              "cpu": "Apple_(Virtual)"
+            }
+          },
           "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com"
         },
         "test": "absl_hardening_tests",
@@ -142,7 +148,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -159,6 +165,11 @@
               "path": "Xcode.app"
             }
           ],
+          "optional_dimensions": {
+            "180": {
+              "cpu": "Apple_(Virtual)"
+            }
+          },
           "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com"
         },
         "test": "absl_hardening_tests",
@@ -194,7 +205,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -211,6 +222,11 @@
               "path": "Xcode.app"
             }
           ],
+          "optional_dimensions": {
+            "180": {
+              "cpu": "Apple_(Virtual)"
+            }
+          },
           "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com"
         },
         "test": "base_unittests",
@@ -230,6 +246,7 @@
           "27a266a",
           "--xctest"
         ],
+        "ci_only": true,
         "isolate_profile_data": true,
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
@@ -246,7 +263,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -264,7 +281,7 @@
             }
           ],
           "optional_dimensions": {
-            "30": {
+            "180": {
               "cpu": "Apple_(Virtual)"
             }
           },
@@ -287,6 +304,7 @@
           "27a266a",
           "--xctest"
         ],
+        "ci_only": true,
         "isolate_profile_data": true,
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
@@ -303,7 +321,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -321,7 +339,7 @@
             }
           ],
           "optional_dimensions": {
-            "30": {
+            "180": {
               "cpu": "Apple_(Virtual)"
             }
           },
@@ -360,7 +378,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -377,6 +395,11 @@
               "path": "Xcode.app"
             }
           ],
+          "optional_dimensions": {
+            "180": {
+              "cpu": "Apple_(Virtual)"
+            }
+          },
           "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com"
         },
         "test": "base_unittests",
@@ -412,7 +435,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -429,6 +452,11 @@
               "path": "Xcode.app"
             }
           ],
+          "optional_dimensions": {
+            "180": {
+              "cpu": "Apple_(Virtual)"
+            }
+          },
           "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com"
         },
         "test": "base_unittests",
@@ -448,6 +476,7 @@
           "27a266a",
           "--xctest"
         ],
+        "ci_only": true,
         "isolate_profile_data": true,
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
@@ -464,7 +493,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -482,7 +511,7 @@
             }
           ],
           "optional_dimensions": {
-            "30": {
+            "180": {
               "cpu": "Apple_(Virtual)"
             }
           },
@@ -521,7 +550,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -538,6 +567,11 @@
               "path": "Xcode.app"
             }
           ],
+          "optional_dimensions": {
+            "180": {
+              "cpu": "Apple_(Virtual)"
+            }
+          },
           "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com"
         },
         "test": "boringssl_crypto_tests",
@@ -573,7 +607,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -590,6 +624,11 @@
               "path": "Xcode.app"
             }
           ],
+          "optional_dimensions": {
+            "180": {
+              "cpu": "Apple_(Virtual)"
+            }
+          },
           "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com"
         },
         "test": "boringssl_crypto_tests",
@@ -609,6 +648,7 @@
           "27a266a",
           "--xctest"
         ],
+        "ci_only": true,
         "isolate_profile_data": true,
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
@@ -625,7 +665,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -643,7 +683,7 @@
             }
           ],
           "optional_dimensions": {
-            "30": {
+            "180": {
               "cpu": "Apple_(Virtual)"
             }
           },
@@ -682,7 +722,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -699,6 +739,11 @@
               "path": "Xcode.app"
             }
           ],
+          "optional_dimensions": {
+            "180": {
+              "cpu": "Apple_(Virtual)"
+            }
+          },
           "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com"
         },
         "test": "boringssl_ssl_tests",
@@ -734,7 +779,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -751,6 +796,11 @@
               "path": "Xcode.app"
             }
           ],
+          "optional_dimensions": {
+            "180": {
+              "cpu": "Apple_(Virtual)"
+            }
+          },
           "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com"
         },
         "test": "boringssl_ssl_tests",
@@ -786,7 +836,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -803,6 +853,11 @@
               "path": "Xcode.app"
             }
           ],
+          "optional_dimensions": {
+            "180": {
+              "cpu": "Apple_(Virtual)"
+            }
+          },
           "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com"
         },
         "test": "components_unittests",
@@ -822,6 +877,7 @@
           "27a266a",
           "--xctest"
         ],
+        "ci_only": true,
         "isolate_profile_data": true,
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
@@ -838,7 +894,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -856,7 +912,7 @@
             }
           ],
           "optional_dimensions": {
-            "30": {
+            "180": {
               "cpu": "Apple_(Virtual)"
             }
           },
@@ -879,6 +935,7 @@
           "27a266a",
           "--xctest"
         ],
+        "ci_only": true,
         "isolate_profile_data": true,
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
@@ -895,7 +952,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -913,7 +970,7 @@
             }
           ],
           "optional_dimensions": {
-            "30": {
+            "180": {
               "cpu": "Apple_(Virtual)"
             }
           },
@@ -952,7 +1009,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -969,6 +1026,11 @@
               "path": "Xcode.app"
             }
           ],
+          "optional_dimensions": {
+            "180": {
+              "cpu": "Apple_(Virtual)"
+            }
+          },
           "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com"
         },
         "test": "components_unittests",
@@ -1004,7 +1066,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -1021,6 +1083,11 @@
               "path": "Xcode.app"
             }
           ],
+          "optional_dimensions": {
+            "180": {
+              "cpu": "Apple_(Virtual)"
+            }
+          },
           "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com"
         },
         "test": "components_unittests",
@@ -1040,6 +1107,7 @@
           "27a266a",
           "--xctest"
         ],
+        "ci_only": true,
         "isolate_profile_data": true,
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
@@ -1056,7 +1124,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -1074,7 +1142,7 @@
             }
           ],
           "optional_dimensions": {
-            "30": {
+            "180": {
               "cpu": "Apple_(Virtual)"
             }
           },
@@ -1113,7 +1181,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -1130,6 +1198,11 @@
               "path": "Xcode.app"
             }
           ],
+          "optional_dimensions": {
+            "180": {
+              "cpu": "Apple_(Virtual)"
+            }
+          },
           "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com"
         },
         "test": "crashpad_tests",
@@ -1165,7 +1238,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -1182,6 +1255,11 @@
               "path": "Xcode.app"
             }
           ],
+          "optional_dimensions": {
+            "180": {
+              "cpu": "Apple_(Virtual)"
+            }
+          },
           "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com"
         },
         "test": "crashpad_tests",
@@ -1201,6 +1279,7 @@
           "27a266a",
           "--xctest"
         ],
+        "ci_only": true,
         "isolate_profile_data": true,
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
@@ -1217,7 +1296,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -1235,7 +1314,7 @@
             }
           ],
           "optional_dimensions": {
-            "30": {
+            "180": {
               "cpu": "Apple_(Virtual)"
             }
           },
@@ -1274,7 +1353,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -1291,6 +1370,11 @@
               "path": "Xcode.app"
             }
           ],
+          "optional_dimensions": {
+            "180": {
+              "cpu": "Apple_(Virtual)"
+            }
+          },
           "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com"
         },
         "test": "crypto_unittests",
@@ -1326,7 +1410,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -1343,6 +1427,11 @@
               "path": "Xcode.app"
             }
           ],
+          "optional_dimensions": {
+            "180": {
+              "cpu": "Apple_(Virtual)"
+            }
+          },
           "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com"
         },
         "test": "crypto_unittests",
@@ -1378,7 +1467,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -1395,6 +1484,11 @@
               "path": "Xcode.app"
             }
           ],
+          "optional_dimensions": {
+            "180": {
+              "cpu": "Apple_(Virtual)"
+            }
+          },
           "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com"
         },
         "test": "gfx_unittests",
@@ -1414,6 +1508,7 @@
           "27a266a",
           "--xctest"
         ],
+        "ci_only": true,
         "isolate_profile_data": true,
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
@@ -1430,7 +1525,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -1448,7 +1543,7 @@
             }
           ],
           "optional_dimensions": {
-            "30": {
+            "180": {
               "cpu": "Apple_(Virtual)"
             }
           },
@@ -1471,6 +1566,7 @@
           "27a266a",
           "--xctest"
         ],
+        "ci_only": true,
         "isolate_profile_data": true,
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
@@ -1487,7 +1583,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -1505,7 +1601,7 @@
             }
           ],
           "optional_dimensions": {
-            "30": {
+            "180": {
               "cpu": "Apple_(Virtual)"
             }
           },
@@ -1544,7 +1640,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -1561,6 +1657,11 @@
               "path": "Xcode.app"
             }
           ],
+          "optional_dimensions": {
+            "180": {
+              "cpu": "Apple_(Virtual)"
+            }
+          },
           "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com"
         },
         "test": "gfx_unittests",
@@ -1596,7 +1697,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -1613,6 +1714,11 @@
               "path": "Xcode.app"
             }
           ],
+          "optional_dimensions": {
+            "180": {
+              "cpu": "Apple_(Virtual)"
+            }
+          },
           "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com"
         },
         "test": "gfx_unittests",
@@ -1632,6 +1738,7 @@
           "27a266a",
           "--xctest"
         ],
+        "ci_only": true,
         "isolate_profile_data": true,
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
@@ -1648,7 +1755,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -1666,7 +1773,7 @@
             }
           ],
           "optional_dimensions": {
-            "30": {
+            "180": {
               "cpu": "Apple_(Virtual)"
             }
           },
@@ -1705,7 +1812,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -1722,6 +1829,11 @@
               "path": "Xcode.app"
             }
           ],
+          "optional_dimensions": {
+            "180": {
+              "cpu": "Apple_(Virtual)"
+            }
+          },
           "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com"
         },
         "test": "google_apis_unittests",
@@ -1757,7 +1869,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -1774,6 +1886,11 @@
               "path": "Xcode.app"
             }
           ],
+          "optional_dimensions": {
+            "180": {
+              "cpu": "Apple_(Virtual)"
+            }
+          },
           "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com"
         },
         "test": "google_apis_unittests",
@@ -1793,6 +1910,7 @@
           "27a266a",
           "--xctest"
         ],
+        "ci_only": true,
         "isolate_profile_data": true,
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
@@ -1809,7 +1927,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -1827,7 +1945,7 @@
             }
           ],
           "optional_dimensions": {
-            "30": {
+            "180": {
               "cpu": "Apple_(Virtual)"
             }
           },
@@ -1866,7 +1984,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -1883,6 +2001,11 @@
               "path": "Xcode.app"
             }
           ],
+          "optional_dimensions": {
+            "180": {
+              "cpu": "Apple_(Virtual)"
+            }
+          },
           "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com"
         },
         "test": "gwp_asan_unittests",
@@ -1918,7 +2041,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -1935,6 +2058,11 @@
               "path": "Xcode.app"
             }
           ],
+          "optional_dimensions": {
+            "180": {
+              "cpu": "Apple_(Virtual)"
+            }
+          },
           "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com"
         },
         "test": "gwp_asan_unittests",
@@ -1944,7 +2072,8 @@
       {
         "args": [
           "--clones",
-          "2",
+          "1",
+          "--run-eg-smoke-tests-only",
           "--use-simulator-cache",
           "--platform",
           "iPhone 15",
@@ -1961,9 +2090,9 @@
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
-        "module_name": "//ios/chrome/test/earl_grey2:ios_chrome_integration_eg2tests_module",
+        "module_name": "//ios/chrome/test/earl_grey2:ios_chrome_all_eg2tests_module",
         "module_scheme": "xctest",
-        "name": "ios_chrome_integration_eg2tests_module iPhone 15 18.5",
+        "name": "ios_chrome_all_eg2tests_module iPhone 15 18.5",
         "resultdb": {
           "enable": true,
           "has_native_resultdb_integration": true
@@ -1973,7 +2102,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -1991,21 +2120,22 @@
             }
           ],
           "optional_dimensions": {
-            "30": {
+            "180": {
               "cpu": "Apple_(Virtual)"
             }
           },
           "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com",
-          "shards": 10
+          "shards": 3
         },
-        "test": "ios_chrome_integration_eg2tests_module",
-        "test_id_prefix": "ninja://ios/chrome/test/earl_grey2:ios_chrome_integration_eg2tests_module/",
+        "test": "ios_chrome_all_eg2tests_module",
+        "test_id_prefix": "ninja://ios/chrome/test/earl_grey2:ios_chrome_all_eg2tests_module/",
         "variant_id": "iPhone 15 18.5"
       },
       {
         "args": [
           "--clones",
-          "2",
+          "1",
+          "--run-eg-smoke-tests-only",
           "--use-simulator-cache",
           "--platform",
           "iPhone 16",
@@ -2022,9 +2152,9 @@
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
-        "module_name": "//ios/chrome/test/earl_grey2:ios_chrome_integration_eg2tests_module",
+        "module_name": "//ios/chrome/test/earl_grey2:ios_chrome_all_eg2tests_module",
         "module_scheme": "xctest",
-        "name": "ios_chrome_integration_eg2tests_module iPhone 16 26.5",
+        "name": "ios_chrome_all_eg2tests_module iPhone 16 26.5",
         "resultdb": {
           "enable": true,
           "has_native_resultdb_integration": true
@@ -2034,7 +2164,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -2051,17 +2181,23 @@
               "path": "Xcode.app"
             }
           ],
+          "optional_dimensions": {
+            "180": {
+              "cpu": "Apple_(Virtual)"
+            }
+          },
           "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com",
-          "shards": 9
+          "shards": 3
         },
-        "test": "ios_chrome_integration_eg2tests_module",
-        "test_id_prefix": "ninja://ios/chrome/test/earl_grey2:ios_chrome_integration_eg2tests_module/",
+        "test": "ios_chrome_all_eg2tests_module",
+        "test_id_prefix": "ninja://ios/chrome/test/earl_grey2:ios_chrome_all_eg2tests_module/",
         "variant_id": "iPhone 16 26.5"
       },
       {
         "args": [
           "--clones",
-          "2",
+          "1",
+          "--run-eg-smoke-tests-only",
           "--use-simulator-cache",
           "--platform",
           "iPhone 16",
@@ -2078,9 +2214,9 @@
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
-        "module_name": "//ios/chrome/test/earl_grey2:ios_chrome_integration_eg2tests_module",
+        "module_name": "//ios/chrome/test/earl_grey2:ios_chrome_all_eg2tests_module",
         "module_scheme": "xctest",
-        "name": "ios_chrome_integration_eg2tests_module iPhone 16 27.0",
+        "name": "ios_chrome_all_eg2tests_module iPhone 16 27.0",
         "resultdb": {
           "enable": true,
           "has_native_resultdb_integration": true
@@ -2090,7 +2226,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -2107,11 +2243,16 @@
               "path": "Xcode.app"
             }
           ],
+          "optional_dimensions": {
+            "180": {
+              "cpu": "Apple_(Virtual)"
+            }
+          },
           "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com",
-          "shards": 9
+          "shards": 3
         },
-        "test": "ios_chrome_integration_eg2tests_module",
-        "test_id_prefix": "ninja://ios/chrome/test/earl_grey2:ios_chrome_integration_eg2tests_module/",
+        "test": "ios_chrome_all_eg2tests_module",
+        "test_id_prefix": "ninja://ios/chrome/test/earl_grey2:ios_chrome_all_eg2tests_module/",
         "variant_id": "iPhone 16 27.0"
       },
       {
@@ -2143,7 +2284,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -2160,6 +2301,11 @@
               "path": "Xcode.app"
             }
           ],
+          "optional_dimensions": {
+            "180": {
+              "cpu": "Apple_(Virtual)"
+            }
+          },
           "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com"
         },
         "test": "ios_chrome_unittests",
@@ -2179,6 +2325,7 @@
           "27a266a",
           "--xctest"
         ],
+        "ci_only": true,
         "isolate_profile_data": true,
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
@@ -2195,7 +2342,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -2213,7 +2360,7 @@
             }
           ],
           "optional_dimensions": {
-            "30": {
+            "180": {
               "cpu": "Apple_(Virtual)"
             }
           },
@@ -2236,6 +2383,7 @@
           "27a266a",
           "--xctest"
         ],
+        "ci_only": true,
         "isolate_profile_data": true,
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
@@ -2252,7 +2400,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -2270,7 +2418,7 @@
             }
           ],
           "optional_dimensions": {
-            "30": {
+            "180": {
               "cpu": "Apple_(Virtual)"
             }
           },
@@ -2309,7 +2457,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -2326,6 +2474,11 @@
               "path": "Xcode.app"
             }
           ],
+          "optional_dimensions": {
+            "180": {
+              "cpu": "Apple_(Virtual)"
+            }
+          },
           "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com"
         },
         "test": "ios_chrome_unittests",
@@ -2361,7 +2514,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -2378,6 +2531,11 @@
               "path": "Xcode.app"
             }
           ],
+          "optional_dimensions": {
+            "180": {
+              "cpu": "Apple_(Virtual)"
+            }
+          },
           "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com"
         },
         "test": "ios_chrome_unittests",
@@ -2397,6 +2555,7 @@
           "27a266a",
           "--xctest"
         ],
+        "ci_only": true,
         "isolate_profile_data": true,
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
@@ -2413,7 +2572,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -2431,7 +2590,7 @@
             }
           ],
           "optional_dimensions": {
-            "30": {
+            "180": {
               "cpu": "Apple_(Virtual)"
             }
           },
@@ -2470,7 +2629,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -2487,6 +2646,11 @@
               "path": "Xcode.app"
             }
           ],
+          "optional_dimensions": {
+            "180": {
+              "cpu": "Apple_(Virtual)"
+            }
+          },
           "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com"
         },
         "test": "ios_components_unittests",
@@ -2522,7 +2686,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -2539,6 +2703,11 @@
               "path": "Xcode.app"
             }
           ],
+          "optional_dimensions": {
+            "180": {
+              "cpu": "Apple_(Virtual)"
+            }
+          },
           "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com"
         },
         "test": "ios_components_unittests",
@@ -2574,7 +2743,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -2591,6 +2760,11 @@
               "path": "Xcode.app"
             }
           ],
+          "optional_dimensions": {
+            "180": {
+              "cpu": "Apple_(Virtual)"
+            }
+          },
           "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com"
         },
         "test": "ios_credential_provider_extension_unittests",
@@ -2610,6 +2784,7 @@
           "27a266a",
           "--xctest"
         ],
+        "ci_only": true,
         "isolate_profile_data": true,
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
@@ -2626,7 +2801,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -2644,7 +2819,7 @@
             }
           ],
           "optional_dimensions": {
-            "30": {
+            "180": {
               "cpu": "Apple_(Virtual)"
             }
           },
@@ -2667,6 +2842,7 @@
           "27a266a",
           "--xctest"
         ],
+        "ci_only": true,
         "isolate_profile_data": true,
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
@@ -2683,7 +2859,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -2701,7 +2877,7 @@
             }
           ],
           "optional_dimensions": {
-            "30": {
+            "180": {
               "cpu": "Apple_(Virtual)"
             }
           },
@@ -2740,7 +2916,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -2757,6 +2933,11 @@
               "path": "Xcode.app"
             }
           ],
+          "optional_dimensions": {
+            "180": {
+              "cpu": "Apple_(Virtual)"
+            }
+          },
           "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com"
         },
         "test": "ios_credential_provider_extension_unittests",
@@ -2792,7 +2973,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -2809,6 +2990,11 @@
               "path": "Xcode.app"
             }
           ],
+          "optional_dimensions": {
+            "180": {
+              "cpu": "Apple_(Virtual)"
+            }
+          },
           "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com"
         },
         "test": "ios_credential_provider_extension_unittests",
@@ -2828,6 +3014,7 @@
           "27a266a",
           "--xctest"
         ],
+        "ci_only": true,
         "isolate_profile_data": true,
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
@@ -2844,7 +3031,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -2862,7 +3049,7 @@
             }
           ],
           "optional_dimensions": {
-            "30": {
+            "180": {
               "cpu": "Apple_(Virtual)"
             }
           },
@@ -2902,7 +3089,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -2919,6 +3106,11 @@
               "path": "Xcode.app"
             }
           ],
+          "optional_dimensions": {
+            "180": {
+              "cpu": "Apple_(Virtual)"
+            }
+          },
           "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com",
           "shards": 3
         },
@@ -2955,7 +3147,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -2972,6 +3164,11 @@
               "path": "Xcode.app"
             }
           ],
+          "optional_dimensions": {
+            "180": {
+              "cpu": "Apple_(Virtual)"
+            }
+          },
           "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com",
           "shards": 3
         },
@@ -2992,6 +3189,7 @@
           "27a266a",
           "--xctest"
         ],
+        "ci_only": true,
         "isolate_profile_data": true,
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
@@ -3008,7 +3206,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -3026,7 +3224,7 @@
             }
           ],
           "optional_dimensions": {
-            "30": {
+            "180": {
               "cpu": "Apple_(Virtual)"
             }
           },
@@ -3065,7 +3263,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -3082,6 +3280,11 @@
               "path": "Xcode.app"
             }
           ],
+          "optional_dimensions": {
+            "180": {
+              "cpu": "Apple_(Virtual)"
+            }
+          },
           "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com"
         },
         "test": "ios_testing_unittests",
@@ -3117,7 +3320,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -3134,6 +3337,11 @@
               "path": "Xcode.app"
             }
           ],
+          "optional_dimensions": {
+            "180": {
+              "cpu": "Apple_(Virtual)"
+            }
+          },
           "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com"
         },
         "test": "ios_testing_unittests",
@@ -3169,7 +3377,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -3186,6 +3394,11 @@
               "path": "Xcode.app"
             }
           ],
+          "optional_dimensions": {
+            "180": {
+              "cpu": "Apple_(Virtual)"
+            }
+          },
           "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com"
         },
         "test": "ios_web_inttests",
@@ -3205,6 +3418,7 @@
           "27a266a",
           "--xctest"
         ],
+        "ci_only": true,
         "isolate_profile_data": true,
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
@@ -3221,7 +3435,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -3239,7 +3453,7 @@
             }
           ],
           "optional_dimensions": {
-            "30": {
+            "180": {
               "cpu": "Apple_(Virtual)"
             }
           },
@@ -3262,6 +3476,7 @@
           "27a266a",
           "--xctest"
         ],
+        "ci_only": true,
         "isolate_profile_data": true,
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
@@ -3278,7 +3493,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -3296,7 +3511,7 @@
             }
           ],
           "optional_dimensions": {
-            "30": {
+            "180": {
               "cpu": "Apple_(Virtual)"
             }
           },
@@ -3335,7 +3550,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -3352,6 +3567,11 @@
               "path": "Xcode.app"
             }
           ],
+          "optional_dimensions": {
+            "180": {
+              "cpu": "Apple_(Virtual)"
+            }
+          },
           "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com"
         },
         "test": "ios_web_inttests",
@@ -3387,7 +3607,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -3404,6 +3624,11 @@
               "path": "Xcode.app"
             }
           ],
+          "optional_dimensions": {
+            "180": {
+              "cpu": "Apple_(Virtual)"
+            }
+          },
           "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com"
         },
         "test": "ios_web_inttests",
@@ -3440,7 +3665,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -3458,7 +3683,7 @@
             }
           ],
           "optional_dimensions": {
-            "30": {
+            "180": {
               "cpu": "Apple_(Virtual)"
             }
           },
@@ -3498,7 +3723,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -3515,6 +3740,11 @@
               "path": "Xcode.app"
             }
           ],
+          "optional_dimensions": {
+            "180": {
+              "cpu": "Apple_(Virtual)"
+            }
+          },
           "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com"
         },
         "test": "ios_web_shell_eg2tests_module",
@@ -3551,7 +3781,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -3568,6 +3798,11 @@
               "path": "Xcode.app"
             }
           ],
+          "optional_dimensions": {
+            "180": {
+              "cpu": "Apple_(Virtual)"
+            }
+          },
           "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com"
         },
         "test": "ios_web_shell_eg2tests_module",
@@ -3603,7 +3838,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -3620,6 +3855,11 @@
               "path": "Xcode.app"
             }
           ],
+          "optional_dimensions": {
+            "180": {
+              "cpu": "Apple_(Virtual)"
+            }
+          },
           "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com"
         },
         "test": "ios_web_unittests",
@@ -3639,6 +3879,7 @@
           "27a266a",
           "--xctest"
         ],
+        "ci_only": true,
         "isolate_profile_data": true,
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
@@ -3655,7 +3896,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -3673,7 +3914,7 @@
             }
           ],
           "optional_dimensions": {
-            "30": {
+            "180": {
               "cpu": "Apple_(Virtual)"
             }
           },
@@ -3696,6 +3937,7 @@
           "27a266a",
           "--xctest"
         ],
+        "ci_only": true,
         "isolate_profile_data": true,
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
@@ -3712,7 +3954,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -3730,7 +3972,7 @@
             }
           ],
           "optional_dimensions": {
-            "30": {
+            "180": {
               "cpu": "Apple_(Virtual)"
             }
           },
@@ -3769,7 +4011,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -3786,6 +4028,11 @@
               "path": "Xcode.app"
             }
           ],
+          "optional_dimensions": {
+            "180": {
+              "cpu": "Apple_(Virtual)"
+            }
+          },
           "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com"
         },
         "test": "ios_web_unittests",
@@ -3821,7 +4068,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -3838,6 +4085,11 @@
               "path": "Xcode.app"
             }
           ],
+          "optional_dimensions": {
+            "180": {
+              "cpu": "Apple_(Virtual)"
+            }
+          },
           "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com"
         },
         "test": "ios_web_unittests",
@@ -3873,7 +4125,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -3890,6 +4142,11 @@
               "path": "Xcode.app"
             }
           ],
+          "optional_dimensions": {
+            "180": {
+              "cpu": "Apple_(Virtual)"
+            }
+          },
           "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com"
         },
         "test": "ios_web_view_inttests",
@@ -3909,6 +4166,7 @@
           "27a266a",
           "--xctest"
         ],
+        "ci_only": true,
         "isolate_profile_data": true,
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
@@ -3925,7 +4183,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -3943,7 +4201,7 @@
             }
           ],
           "optional_dimensions": {
-            "30": {
+            "180": {
               "cpu": "Apple_(Virtual)"
             }
           },
@@ -3966,6 +4224,7 @@
           "27a266a",
           "--xctest"
         ],
+        "ci_only": true,
         "isolate_profile_data": true,
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
@@ -3982,7 +4241,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -4000,7 +4259,7 @@
             }
           ],
           "optional_dimensions": {
-            "30": {
+            "180": {
               "cpu": "Apple_(Virtual)"
             }
           },
@@ -4039,7 +4298,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -4056,6 +4315,11 @@
               "path": "Xcode.app"
             }
           ],
+          "optional_dimensions": {
+            "180": {
+              "cpu": "Apple_(Virtual)"
+            }
+          },
           "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com"
         },
         "test": "ios_web_view_inttests",
@@ -4091,7 +4355,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -4108,6 +4372,11 @@
               "path": "Xcode.app"
             }
           ],
+          "optional_dimensions": {
+            "180": {
+              "cpu": "Apple_(Virtual)"
+            }
+          },
           "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com"
         },
         "test": "ios_web_view_inttests",
@@ -4143,7 +4412,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -4160,6 +4429,11 @@
               "path": "Xcode.app"
             }
           ],
+          "optional_dimensions": {
+            "180": {
+              "cpu": "Apple_(Virtual)"
+            }
+          },
           "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com"
         },
         "test": "ios_web_view_unittests",
@@ -4179,6 +4453,7 @@
           "27a266a",
           "--xctest"
         ],
+        "ci_only": true,
         "isolate_profile_data": true,
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
@@ -4195,7 +4470,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -4213,7 +4488,7 @@
             }
           ],
           "optional_dimensions": {
-            "30": {
+            "180": {
               "cpu": "Apple_(Virtual)"
             }
           },
@@ -4236,6 +4511,7 @@
           "27a266a",
           "--xctest"
         ],
+        "ci_only": true,
         "isolate_profile_data": true,
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
@@ -4252,7 +4528,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -4270,7 +4546,7 @@
             }
           ],
           "optional_dimensions": {
-            "30": {
+            "180": {
               "cpu": "Apple_(Virtual)"
             }
           },
@@ -4309,7 +4585,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -4326,6 +4602,11 @@
               "path": "Xcode.app"
             }
           ],
+          "optional_dimensions": {
+            "180": {
+              "cpu": "Apple_(Virtual)"
+            }
+          },
           "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com"
         },
         "test": "ios_web_view_unittests",
@@ -4361,7 +4642,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -4378,6 +4659,11 @@
               "path": "Xcode.app"
             }
           ],
+          "optional_dimensions": {
+            "180": {
+              "cpu": "Apple_(Virtual)"
+            }
+          },
           "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com"
         },
         "test": "ios_web_view_unittests",
@@ -4397,6 +4683,7 @@
           "27a266a",
           "--xctest"
         ],
+        "ci_only": true,
         "isolate_profile_data": true,
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
@@ -4413,7 +4700,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -4431,7 +4718,7 @@
             }
           ],
           "optional_dimensions": {
-            "30": {
+            "180": {
               "cpu": "Apple_(Virtual)"
             }
           },
@@ -4470,7 +4757,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -4487,6 +4774,11 @@
               "path": "Xcode.app"
             }
           ],
+          "optional_dimensions": {
+            "180": {
+              "cpu": "Apple_(Virtual)"
+            }
+          },
           "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com"
         },
         "test": "net_unittests",
@@ -4522,7 +4814,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -4539,6 +4831,11 @@
               "path": "Xcode.app"
             }
           ],
+          "optional_dimensions": {
+            "180": {
+              "cpu": "Apple_(Virtual)"
+            }
+          },
           "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com"
         },
         "test": "net_unittests",
@@ -4558,7 +4855,7 @@
           "27a266a",
           "--xctest"
         ],
-        "experiment_percentage": 100,
+        "ci_only": true,
         "isolate_profile_data": true,
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
@@ -4575,7 +4872,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -4593,7 +4890,7 @@
             }
           ],
           "optional_dimensions": {
-            "30": {
+            "180": {
               "cpu": "Apple_(Virtual)"
             }
           },
@@ -4616,7 +4913,6 @@
           "27a266a",
           "--xctest"
         ],
-        "experiment_percentage": 100,
         "isolate_profile_data": true,
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
@@ -4633,7 +4929,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -4650,6 +4946,11 @@
               "path": "Xcode.app"
             }
           ],
+          "optional_dimensions": {
+            "180": {
+              "cpu": "Apple_(Virtual)"
+            }
+          },
           "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com"
         },
         "test": "rlz_unittests",
@@ -4669,7 +4970,6 @@
           "27a266a",
           "--xctest"
         ],
-        "experiment_percentage": 100,
         "isolate_profile_data": true,
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
@@ -4686,7 +4986,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -4703,6 +5003,11 @@
               "path": "Xcode.app"
             }
           ],
+          "optional_dimensions": {
+            "180": {
+              "cpu": "Apple_(Virtual)"
+            }
+          },
           "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com"
         },
         "test": "rlz_unittests",
@@ -4722,6 +5027,7 @@
           "27a266a",
           "--xctest"
         ],
+        "ci_only": true,
         "isolate_profile_data": true,
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
@@ -4738,7 +5044,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -4756,7 +5062,7 @@
             }
           ],
           "optional_dimensions": {
-            "30": {
+            "180": {
               "cpu": "Apple_(Virtual)"
             }
           },
@@ -4795,7 +5101,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -4812,6 +5118,11 @@
               "path": "Xcode.app"
             }
           ],
+          "optional_dimensions": {
+            "180": {
+              "cpu": "Apple_(Virtual)"
+            }
+          },
           "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com"
         },
         "test": "services_unittests",
@@ -4847,7 +5158,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -4864,6 +5175,11 @@
               "path": "Xcode.app"
             }
           ],
+          "optional_dimensions": {
+            "180": {
+              "cpu": "Apple_(Virtual)"
+            }
+          },
           "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com"
         },
         "test": "services_unittests",
@@ -4899,7 +5215,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -4916,6 +5232,11 @@
               "path": "Xcode.app"
             }
           ],
+          "optional_dimensions": {
+            "180": {
+              "cpu": "Apple_(Virtual)"
+            }
+          },
           "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com"
         },
         "test": "skia_unittests",
@@ -4935,6 +5256,7 @@
           "27a266a",
           "--xctest"
         ],
+        "ci_only": true,
         "isolate_profile_data": true,
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
@@ -4951,7 +5273,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -4969,7 +5291,7 @@
             }
           ],
           "optional_dimensions": {
-            "30": {
+            "180": {
               "cpu": "Apple_(Virtual)"
             }
           },
@@ -4992,6 +5314,7 @@
           "27a266a",
           "--xctest"
         ],
+        "ci_only": true,
         "isolate_profile_data": true,
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
@@ -5008,7 +5331,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -5026,7 +5349,7 @@
             }
           ],
           "optional_dimensions": {
-            "30": {
+            "180": {
               "cpu": "Apple_(Virtual)"
             }
           },
@@ -5065,7 +5388,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -5082,6 +5405,11 @@
               "path": "Xcode.app"
             }
           ],
+          "optional_dimensions": {
+            "180": {
+              "cpu": "Apple_(Virtual)"
+            }
+          },
           "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com"
         },
         "test": "skia_unittests",
@@ -5117,7 +5445,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -5134,6 +5462,11 @@
               "path": "Xcode.app"
             }
           ],
+          "optional_dimensions": {
+            "180": {
+              "cpu": "Apple_(Virtual)"
+            }
+          },
           "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com"
         },
         "test": "skia_unittests",
@@ -5153,6 +5486,7 @@
           "27a266a",
           "--xctest"
         ],
+        "ci_only": true,
         "isolate_profile_data": true,
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
@@ -5169,7 +5503,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -5187,7 +5521,7 @@
             }
           ],
           "optional_dimensions": {
-            "30": {
+            "180": {
               "cpu": "Apple_(Virtual)"
             }
           },
@@ -5226,7 +5560,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -5243,6 +5577,11 @@
               "path": "Xcode.app"
             }
           ],
+          "optional_dimensions": {
+            "180": {
+              "cpu": "Apple_(Virtual)"
+            }
+          },
           "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com"
         },
         "test": "sql_unittests",
@@ -5278,7 +5617,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -5295,6 +5634,11 @@
               "path": "Xcode.app"
             }
           ],
+          "optional_dimensions": {
+            "180": {
+              "cpu": "Apple_(Virtual)"
+            }
+          },
           "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com"
         },
         "test": "sql_unittests",
@@ -5330,7 +5674,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -5347,6 +5691,11 @@
               "path": "Xcode.app"
             }
           ],
+          "optional_dimensions": {
+            "180": {
+              "cpu": "Apple_(Virtual)"
+            }
+          },
           "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com"
         },
         "test": "ui_base_unittests",
@@ -5366,6 +5715,7 @@
           "27a266a",
           "--xctest"
         ],
+        "ci_only": true,
         "isolate_profile_data": true,
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
@@ -5382,7 +5732,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -5400,7 +5750,7 @@
             }
           ],
           "optional_dimensions": {
-            "30": {
+            "180": {
               "cpu": "Apple_(Virtual)"
             }
           },
@@ -5423,6 +5773,7 @@
           "27a266a",
           "--xctest"
         ],
+        "ci_only": true,
         "isolate_profile_data": true,
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
@@ -5439,7 +5790,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -5457,7 +5808,7 @@
             }
           ],
           "optional_dimensions": {
-            "30": {
+            "180": {
               "cpu": "Apple_(Virtual)"
             }
           },
@@ -5496,7 +5847,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -5513,6 +5864,11 @@
               "path": "Xcode.app"
             }
           ],
+          "optional_dimensions": {
+            "180": {
+              "cpu": "Apple_(Virtual)"
+            }
+          },
           "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com"
         },
         "test": "ui_base_unittests",
@@ -5548,7 +5904,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -5565,6 +5921,11 @@
               "path": "Xcode.app"
             }
           ],
+          "optional_dimensions": {
+            "180": {
+              "cpu": "Apple_(Virtual)"
+            }
+          },
           "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com"
         },
         "test": "ui_base_unittests",
@@ -5584,6 +5945,7 @@
           "27a266a",
           "--xctest"
         ],
+        "ci_only": true,
         "isolate_profile_data": true,
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
@@ -5600,7 +5962,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -5618,7 +5980,7 @@
             }
           ],
           "optional_dimensions": {
-            "30": {
+            "180": {
               "cpu": "Apple_(Virtual)"
             }
           },
@@ -5657,7 +6019,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -5674,6 +6036,11 @@
               "path": "Xcode.app"
             }
           ],
+          "optional_dimensions": {
+            "180": {
+              "cpu": "Apple_(Virtual)"
+            }
+          },
           "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com"
         },
         "test": "url_unittests",
@@ -5709,7 +6076,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -5726,6 +6093,11 @@
               "path": "Xcode.app"
             }
           ],
+          "optional_dimensions": {
+            "180": {
+              "cpu": "Apple_(Virtual)"
+            }
+          },
           "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com"
         },
         "test": "url_unittests",

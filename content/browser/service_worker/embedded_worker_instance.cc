@@ -13,6 +13,7 @@
 #include "base/functional/callback.h"
 #include "base/functional/callback_helpers.h"
 #include "base/observer_list.h"
+#include "base/task/sequenced_task_runner.h"
 #include "base/time/time.h"
 #include "base/trace_event/trace_event.h"
 #include "content/browser/bad_message.h"
@@ -190,7 +191,9 @@ class EmbeddedWorkerInstance::WorkerProcessHandle {
 
   ~WorkerProcessHandle() {
     CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M159);
-    process_manager_->ReleaseWorkerProcess(embedded_worker_id_);
+    if (process_manager_) {
+      process_manager_->ReleaseWorkerProcess(embedded_worker_id_);
+    }
   }
 
   ChildProcessId process_id() const { return process_id_; }
@@ -234,8 +237,9 @@ void EmbeddedWorkerInstance::Start(
   CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M159);
   CHECK(context_, base::NotFatalUntil::M159);
   restart_count_++;
-  CHECK_EQ(blink::EmbeddedWorkerStatus::kStopped, status_,
-           base::NotFatalUntil::M159);
+  // TODO(crbug.com/568963745): CHECK-exclusion: Convert to a CHECK once we are
+  // confident it won't be triggered.
+  DCHECK_EQ(blink::EmbeddedWorkerStatus::kStopped, status_);
 
   CHECK_NE(blink::mojom::kInvalidServiceWorkerVersionId,
            params->service_worker_version_id, base::NotFatalUntil::M159);
@@ -545,7 +549,9 @@ void EmbeddedWorkerInstance::OnProcessAllocated(
     ServiceWorkerMetrics::StartSituation start_situation) {
   CHECK_EQ(blink::EmbeddedWorkerStatus::kStarting, status_,
            base::NotFatalUntil::M159);
-  CHECK(!process_handle_, base::NotFatalUntil::M159);
+  // TODO(crbug.com/573268612): CHECK-exclusion: Convert to a CHECK once we are
+  // confident it won't be triggered.
+  DCHECK(!process_handle_);
 
   process_handle_ = std::move(handle);
 
@@ -1050,7 +1056,12 @@ void EmbeddedWorkerInstance::ReleaseProcess() {
 
   instance_host_receiver_.reset();
   devtools_proxy_.reset();
-  process_handle_.reset();
+  if (in_dtor_ && process_handle_) {
+    base::SequencedTaskRunner::GetCurrentDefault()->DeleteSoon(
+        FROM_HERE, std::move(process_handle_));
+  } else {
+    process_handle_.reset();
+  }
   subresource_loader_updater_.reset();
   coep_reporter_.reset();
   status_ = blink::EmbeddedWorkerStatus::kStopped;

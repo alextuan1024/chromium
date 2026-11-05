@@ -24,7 +24,7 @@ namespace device_signals {
 // Possible values for the trigger which generated the device signals.
 enum class Trigger {
   kUnspecified = 0,
-  kBrowserNavigation = 1,  // Ash only
+  kBrowserNavigation = 1,
   kLoginScreen = 2,        // Ash only
   kSignalsReport = 3,
 };
@@ -231,8 +231,7 @@ struct OsSignalsResponse : BaseSignalResponse {
   std::optional<std::string> hostname = std::nullopt;
   std::optional<std::vector<std::string>> mac_addresses = std::nullopt;
   std::string operating_system{};
-  device_signals::SettingValue os_firewall =
-      device_signals::SettingValue::UNKNOWN;
+  std::optional<device_signals::SettingValue> os_firewall = std::nullopt;
 
   // Version of the OS
   // - Win: <major>.<minor>.<build>.<patch>, e.g 10.0.22631.5909
@@ -282,6 +281,7 @@ struct ProfileSignalsResponse : BaseSignalResponse {
   safe_browsing::SafeBrowsingState safe_browsing_protection_level =
       safe_browsing::SafeBrowsingState::NO_SAFE_BROWSING;
   bool site_isolation_enabled = false;
+  bool is_isolated_mode = false;
   std::optional<std::string> profile_id = std::nullopt;
 
   // Enterprise cloud content analysis exclusives

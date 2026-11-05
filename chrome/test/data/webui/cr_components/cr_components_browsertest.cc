@@ -14,7 +14,6 @@
 #include "base/command_line.h"
 #include "chrome/browser/browser_features.h"
 #include "components/history_clusters/core/features.h"
-#include "components/history_embeddings/core/history_embeddings_features.h"
 #include "ui/compositor/compositor_switches.h"
 #endif
 
@@ -51,35 +50,6 @@ IN_PROC_BROWSER_TEST_F(CrComponentsTest, AudioLevelsProcessorTest) {
           "mocha.run()");
 }
 
-class CrComponentsHistoryEmbeddingsTest : public WebUIMochaBrowserTest {
- protected:
-  CrComponentsHistoryEmbeddingsTest() {
-    scoped_feature_list_.InitAndEnableFeature(
-        history_embeddings::kHistoryEmbeddings);
-    set_test_loader_host(chrome::kChromeUIHistoryHost);
-  }
-
- private:
-  base::test::ScopedFeatureList scoped_feature_list_;
-};
-
-IN_PROC_BROWSER_TEST_F(CrComponentsHistoryEmbeddingsTest, HistoryEmbeddings) {
-  RunTest("cr_components/history_embeddings/history_embeddings_test.js",
-          "mocha.run()");
-}
-
-IN_PROC_BROWSER_TEST_F(CrComponentsHistoryEmbeddingsTest,
-                       HistoryEmbeddingsFilterChips) {
-  RunTest("cr_components/history_embeddings/filter_chips_test.js",
-          "mocha.run()");
-}
-
-IN_PROC_BROWSER_TEST_F(CrComponentsHistoryEmbeddingsTest,
-                       HistoryEmbeddingsResultImage) {
-  RunTest("cr_components/history_embeddings/result_image_test.js",
-          "mocha.run()");
-}
-
 IN_PROC_BROWSER_TEST_F(CrComponentsTest, ManagedDialog) {
   RunTest("cr_components/managed_dialog_test.js", "mocha.run()");
 }
@@ -102,7 +72,6 @@ IN_PROC_BROWSER_TEST_F(CrComponentsSearchboxTest, RealboxMatchTest) {
   RunTest("cr_components/searchbox/searchbox_match_test.js", "mocha.run()");
 }
 
-
 IN_PROC_BROWSER_TEST_F(CrComponentsSearchboxTest, SearchboxInputTest) {
   set_test_loader_host(chrome::kChromeUINewTabPageHost);
   RunTest("cr_components/searchbox/searchbox_input_test.js", "mocha.run()");
@@ -113,7 +82,6 @@ IN_PROC_BROWSER_TEST_F(CrComponentsSearchboxTest, RealboxPlaceholderTest) {
   RunTest("cr_components/searchbox/placeholder_text_cycler_test.js",
           "runMochaSuite('PlaceholderTextCyclerTest');");
 }
-
 
 IN_PROC_BROWSER_TEST_F(CrComponentsSearchboxTest, SearchboxDropdownTest) {
   set_test_loader_host(chrome::kChromeUINewTabPageHost);
@@ -203,6 +171,11 @@ IN_PROC_BROWSER_TEST_F(CrComponentsMostVisitedTest, ReflowLayouts) {
           "runMochaSuite('Reflow Layouts');");
 }
 
+IN_PROC_BROWSER_TEST_F(CrComponentsMostVisitedTest, ContainerWidth) {
+  RunTest("cr_components/most_visited_test.js",
+          "runMochaSuite('ContainerWidth');");
+}
+
 IN_PROC_BROWSER_TEST_F(CrComponentsMostVisitedTest, LoggingAndUpdates) {
   RunTest("cr_components/most_visited_test.js",
           "runMochaSuite('LoggingAndUpdates');");
@@ -246,6 +219,11 @@ IN_PROC_BROWSER_TEST_F(CrComponentsMostVisitedTest, ExpandableTiles) {
 IN_PROC_BROWSER_TEST_F(CrComponentsMostVisitedTest, ShortcutsAutoRemovalToast) {
   RunTest("cr_components/most_visited_test.js",
           "runMochaSuite('ShortcutsAutoRemovalToast');");
+}
+
+IN_PROC_BROWSER_TEST_F(CrComponentsMostVisitedTest, ShortcutsReorder) {
+  RunTest("cr_components/most_visited_test.js",
+          "runMochaSuite('ShortcutsReorder');");
 }
 
 IN_PROC_BROWSER_TEST_F(CrComponentsMostVisitedTest, NonEditable) {
@@ -305,7 +283,10 @@ class CrComponentsComposeboxTest : public WebUIMochaBrowserTest {
   CrComponentsComposeboxTest() {
     scoped_feature_list_.InitWithFeatures(
         /*enabled_features=*/{contextual_tasks::kContextualTasks},
-        /*disabled_features=*/{lens::features::kLensSendRawFileMediaTypes});
+        /*disabled_features=*/{
+            contextual_tasks::kContextualTasksRearchitecture,
+            contextual_tasks::kContextualTasksSidePanelRearchitecture,
+            lens::features::kLensSendRawFileMediaTypes});
 
     set_test_loader_host(chrome::kChromeUIContextualTasksHost);
   }
@@ -319,7 +300,8 @@ IN_PROC_BROWSER_TEST_F(CrComponentsComposeboxTest, ContextualEntrypointButton) {
           "mocha.run()");
 }
 
-IN_PROC_BROWSER_TEST_F(CrComponentsComposeboxTest, ContextualEntrypointAndMenu) {
+IN_PROC_BROWSER_TEST_F(CrComponentsComposeboxTest,
+                       ContextualEntrypointAndMenu) {
   RunTest("cr_components/composebox/contextual_entrypoint_and_menu_test.js",
           "mocha.run()");
 }
@@ -342,8 +324,13 @@ IN_PROC_BROWSER_TEST_F(CrComponentsComposeboxTest,
           "mocha.run()");
 }
 
-IN_PROC_BROWSER_TEST_F(CrComponentsComposeboxTest, RecordingWave) {
-  RunTest("cr_components/composebox/recording_wave_test.js", "mocha.run()");
+typedef WebUIMochaBrowserTest CrComponentsSearchTest;
+IN_PROC_BROWSER_TEST_F(CrComponentsSearchTest, AnimatedGlow) {
+  RunTest("cr_components/search/animated_glow_test.js", "mocha.run()");
+}
+
+IN_PROC_BROWSER_TEST_F(CrComponentsSearchTest, RecordingWave) {
+  RunTest("cr_components/search/recording_wave_test.js", "mocha.run()");
 }
 
 IN_PROC_BROWSER_TEST_F(CrComponentsComposeboxTest, LensSearch) {
@@ -447,6 +434,11 @@ IN_PROC_BROWSER_TEST_F(CrComponentsComposeboxTest, ComposeboxMatch) {
 
 IN_PROC_BROWSER_TEST_F(CrComponentsComposeboxTest, ComposeboxMixin) {
   RunTest("cr_components/composebox/composebox_mixin_test.js", "mocha.run()");
+}
+
+IN_PROC_BROWSER_TEST_F(CrComponentsComposeboxTest, ComposeboxAimButton) {
+  RunTest("cr_components/composebox/composebox_aim_button_test.js",
+          "runMochaSuite('ComposeboxAimButtonTest')");
 }
 
 #if !BUILDFLAG(IS_ANDROID)

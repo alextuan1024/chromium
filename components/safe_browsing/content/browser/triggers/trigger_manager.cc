@@ -9,8 +9,8 @@
 #include "base/metrics/histogram_functions.h"
 #include "base/task/single_thread_task_runner.h"
 #include "components/prefs/pref_service.h"
-#include "components/safe_browsing/content/browser/base_ui_manager.h"
-#include "components/safe_browsing/content/browser/threat_details.h"
+#include "components/safe_browsing/content/browser/interstitials/base_ui_manager.h"
+#include "components/safe_browsing/content/browser/threat_details/threat_details.h"
 #include "components/safe_browsing/content/browser/web_contents_key.h"
 #include "components/safe_browsing/core/common/features.h"
 #include "components/safe_browsing/core/common/safe_browsing_prefs.h"
@@ -333,17 +333,10 @@ void TriggerManager::WebContentsDestroyed(content::WebContents* web_contents) {
 TriggerManagerWebContentsHelper::TriggerManagerWebContentsHelper(
     content::WebContents* web_contents,
     TriggerManager* trigger_manager)
-    : content::WebContentsObserver(web_contents),
-      content::WebContentsUserData<TriggerManagerWebContentsHelper>(
-          *web_contents),
-      trigger_manager_(trigger_manager) {}
+    : web_contents_(web_contents), trigger_manager_(trigger_manager) {}
 
-TriggerManagerWebContentsHelper::~TriggerManagerWebContentsHelper() = default;
-
-void TriggerManagerWebContentsHelper::WebContentsDestroyed() {
-  trigger_manager_->WebContentsDestroyed(web_contents());
+TriggerManagerWebContentsHelper::~TriggerManagerWebContentsHelper() {
+  trigger_manager_->WebContentsDestroyed(web_contents_);
 }
-
-WEB_CONTENTS_USER_DATA_KEY_IMPL(TriggerManagerWebContentsHelper);
 
 }  // namespace safe_browsing

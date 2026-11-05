@@ -24,8 +24,8 @@
 #include "content/public/browser/page_navigator.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/models/dialog_model.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
 #include "ui/base/page_transition_types.h"
-#include "ui/base/window_open_disposition.h"
 #include "url/gurl.h"
 
 #if BUILDFLAG(IS_WIN)
@@ -47,18 +47,20 @@ void OnDialogAccepted(content::PageNavigator* navigator,
                       bool auto_update_enabled,
                       const std::string& update_browser_redirect_url) {
   if (auto_update_enabled) {
-    DCHECK(UpgradeDetector::GetInstance()->is_outdated_install());
+    CHECK(UpgradeDetector::GetInstance()->is_outdated_install(),
+          base::NotFatalUntil::M162);
     base::RecordAction(
         base::UserMetricsAction("OutdatedUpgradeBubble.Reinstall"));
 
     navigator->OpenURL(content::OpenURLParams::CreateBrowserInitiated(
                            GURL(update_browser_redirect_url),
-                           WindowOpenDisposition::NEW_FOREGROUND_TAB,
+                           ui::mojom::WindowOpenDisposition::kNewForegroundTab,
                            ui::PAGE_TRANSITION_LINK),
                        /*navigation_handle_callback=*/{});
 #if BUILDFLAG(IS_WIN)
   } else {
-    DCHECK(UpgradeDetector::GetInstance()->is_outdated_install_no_au());
+    CHECK(UpgradeDetector::GetInstance()->is_outdated_install_no_au(),
+          base::NotFatalUntil::M162);
     base::RecordAction(
         base::UserMetricsAction("OutdatedUpgradeBubble.EnableAU"));
     // Record that the autoupdate flavour of the dialog has been shown.

@@ -54,6 +54,7 @@ TabMetadata::TabOrigin GetTabOriginFromLaunchType(int type) {
     case TabModel::TabLaunchType::FROM_READING_LIST:
     case TabModel::TabLaunchType::FROM_TAB_SWITCHER_UI:
     case TabModel::TabLaunchType::FROM_OMNIBOX:
+    case TabModel::TabLaunchType::FROM_OMNIBOX_BACKGROUND:
     case TabModel::TabLaunchType::FROM_BOOKMARK_BAR_BACKGROUND:
     case TabModel::TabLaunchType::FROM_RECENT_TABS_FOREGROUND:
     case TabModel::TabLaunchType::FROM_HISTORY_NAVIGATION_BACKGROUND:
@@ -61,6 +62,7 @@ TabMetadata::TabOrigin GetTabOriginFromLaunchType(int type) {
     case TabModel::TabLaunchType::FROM_LONGPRESS_FOREGROUND_IN_GROUP:
     case TabModel::TabLaunchType::FROM_LINK_CREATING_NEW_WINDOW:
     case TabModel::TabLaunchType::FROM_TIPS_NOTIFICATIONS:
+    case TabModel::TabLaunchType::FROM_UNDO_CLOSURE:
       return TabMetadata::TabOrigin::kOpenedByUserAction;
 
     case TabModel::TabLaunchType::FROM_RESTORE:

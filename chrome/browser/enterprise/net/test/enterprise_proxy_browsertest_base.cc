@@ -73,6 +73,7 @@ const std::vector<std::string>& GetTestCertHostnames() {
       kUnmatchedHost,
       "domain1.example.com",
       "domain2.example.com",
+      "domain.example2.com",
   });
   return *kHostnames;
 }
@@ -80,7 +81,8 @@ const std::vector<std::string>& GetTestCertHostnames() {
 }  // namespace
 
 EnterpriseProxyBrowserTestBase::EnterpriseProxyBrowserTestBase(
-    const ManagementContext& context) {
+    const ManagementContext& context)
+    : is_platform_managed_(context.is_platform_managed) {
   scoped_feature_list_.InitWithFeatures(
       /*enabled_features=*/{enterprise_net::kEnableDynamicRouteFetching,
                             enterprise_net::kEnterpriseProxyErrorHandling},
@@ -141,11 +143,18 @@ void EnterpriseProxyBrowserTestBase::SetUpOnMainThread() {
   ASSERT_TRUE(https_server_.InitializeAndListen());
   https_server_.EnableConnectProxy(std::vector<net::HostPortPair>{
       net::HostPortPair(kDestinationHost, https_server_.port()),
+      net::HostPortPair("domain.example2.com", https_server_.port()),
   });
   https_server_.StartAcceptingConnections();
+
+  scoped_extra_domains_ =
+      std::make_unique<enterprise_net::ScopedExtraAllowedDomainsForTesting>(
+          std::vector<std::string>{"example.com", "example2.com", "127.0.0.1",
+                                   "localhost"});
 }
 
 void EnterpriseProxyBrowserTestBase::TearDownOnMainThread() {
+  scoped_extra_domains_.reset();
   identity_test_env_adaptor_.reset();
   MixinBasedPlatformBrowserTest::TearDownOnMainThread();
 }
@@ -166,9 +175,24 @@ void EnterpriseProxyBrowserTestBase::SetMachineProxyProvisioningDomains(
   management_context_mixin_->SetCloudMachinePolicies(std::move(policies));
 }
 
+#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX) || \
+    BUILDFLAG(IS_ANDROID)
+void EnterpriseProxyBrowserTestBase::SetEnableForAllUsers(bool enable) {
+  base::flat_map<std::string, std::optional<base::Value>> policies;
+  policies.emplace(policy::key::kEnableProxyOverrideRulesForAllUsers,
+                   base::Value(enable ? 1 : 0));
+  if (is_platform_managed_) {
+    management_context_mixin_->SetPlatformPolicies(std::move(policies));
+  } else {
+    management_context_mixin_->SetCloudMachinePolicies(std::move(policies));
+  }
+}
+#endif
+
 base::DictValue EnterpriseProxyBrowserTestBase::CreateDomainPolicyEntry(
     const std::string& domain_id,
-    bool use_oauth) {
+    bool use_oauth,
+    base::ListValue extra_headers) {
   base::DictValue entry;
   entry.Set("pvd_id",
             net::HostPortPair(domain_id, https_server_.port()).ToString());
@@ -177,6 +201,9 @@ base::DictValue EnterpriseProxyBrowserTestBase::CreateDomainPolicyEntry(
     auth_config.Set("type", "profile_bearer_token");
     auth_config.Set("scope", "cloud_secure_gateway");
     entry.Set("auth_config", std::move(auth_config));
+  }
+  if (!extra_headers.empty()) {
+    entry.Set("extra_headers", std::move(extra_headers));
   }
   return entry;
 }
@@ -281,6 +308,8 @@ EnterpriseProxyBrowserTestBase::HandlePvdRequest(
     return nullptr;
   }
 
+  last_pvd_request_headers_ = request.headers;
+
   if (pvd_response_override_code_.has_value()) {
     auto response = std::make_unique<net::test_server::BasicHttpResponse>();
     response->set_code(*pvd_response_override_code_);
@@ -304,6 +333,10 @@ EnterpriseProxyBrowserTestBase::HandlePvdRequest(
     response->set_content(BuildValidPvdJson(
         "domain2.example.com", https_server_.host_port_pair().ToString(),
         {"domain2.example.com"}, /*require_auth=*/true));
+  } else if (domain == "domain.example2.com") {
+    response->set_content(BuildValidPvdJson(
+        "domain.example2.com", https_server_.host_port_pair().ToString(),
+        {"domain.example2.com"}, /*require_auth=*/true));
   } else {
     // Default / kTestPvdDomain: matches kDestinationHost with auth.
     response->set_content(BuildValidPvdJson(

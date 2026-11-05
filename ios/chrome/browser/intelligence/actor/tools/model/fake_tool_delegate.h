@@ -18,10 +18,6 @@
 
 class WebStateList;
 
-namespace origin_gating {
-class OriginGatingChecker;
-}  // namespace origin_gating
-
 namespace actor {
 
 class AggregatedJournal;
@@ -45,7 +41,13 @@ class FakeToolDelegate : public ToolDelegate {
   ActorTaskFormFillingHandler* GetActorTaskFormFillingHandler() override;
   void InterruptFromTool() override;
   void UninterruptFromTool() override;
-  origin_gating::OriginGatingChecker* GetOriginGatingChecker() const override;
+  void IsAcceptableNavigationDestination(
+      const GURL& url,
+      ToolExecutionCallback callback) override;
+
+  void set_navigation_destination_allowed(bool allowed) {
+    navigation_destination_allowed_ = allowed;
+  }
 
   void set_form_filling_handler(
       std::unique_ptr<ActorTaskFormFillingHandler> handler) {
@@ -53,11 +55,6 @@ class FakeToolDelegate : public ToolDelegate {
   }
 
   void set_fail_insert_web_state(bool fail) { fail_insert_web_state_ = fail; }
-
-  void set_origin_gating_checker(
-      origin_gating::OriginGatingChecker* gating_checker) {
-    gating_checker_ = gating_checker;
-  }
 
   void SetWebStateListForWindowId(int32_t window_id,
                                   WebStateList* web_state_list);
@@ -68,9 +65,9 @@ class FakeToolDelegate : public ToolDelegate {
   std::unique_ptr<ActorTaskFormFillingHandler> form_filling_handler_;
   raw_ptr<AggregatedJournal> journal_ = nullptr;
   raw_ptr<ActorToolFactory> tool_factory_ = nullptr;
-  raw_ptr<origin_gating::OriginGatingChecker> gating_checker_ = nullptr;
   std::map<int32_t, base::WeakPtr<WebStateList>> web_state_lists_;
   bool fail_insert_web_state_ = false;
+  bool navigation_destination_allowed_ = true;
 };
 
 }  // namespace actor

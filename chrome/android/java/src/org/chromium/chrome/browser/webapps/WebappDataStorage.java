@@ -13,6 +13,8 @@ import android.content.pm.PackageInfo;
 import android.graphics.Bitmap;
 import android.text.format.DateUtils;
 
+import androidx.annotation.VisibleForTesting;
+
 import org.chromium.base.ContextUtils;
 import org.chromium.base.Log;
 import org.chromium.base.PackageUtils;
@@ -248,7 +250,8 @@ public class WebappDataStorage {
         boolean updated = false;
 
         // The URL and scope may have been deleted by the user clearing their history. Check whether
-        // they are present, and update if necessary.
+        // they are present, and update if necessary. Also update the scope if it has changed (e.g.
+        // when a WebAPK's manifest scope is updated and relaunched).
         String url = mPreferences.getString(KEY_URL, URL_INVALID);
         if (url.equals(URL_INVALID)) {
             url = info.url();
@@ -256,7 +259,7 @@ public class WebappDataStorage {
             updated = true;
         }
 
-        if (mPreferences.getString(KEY_SCOPE, URL_INVALID).equals(URL_INVALID)) {
+        if (!mPreferences.getString(KEY_SCOPE, URL_INVALID).equals(info.scopeUrl())) {
             editor.putString(KEY_SCOPE, info.scopeUrl());
             updated = true;
         }
@@ -392,6 +395,12 @@ public class WebappDataStorage {
     /** Updates the last used time of this object. */
     void updateLastUsedTime() {
         mPreferences.edit().putLong(KEY_LAST_USED, TimeUtils.currentTimeMillis()).apply();
+    }
+
+    /** Updates the scope for testing. */
+    @VisibleForTesting
+    public void updateScopeForTests(String scope) {
+        mPreferences.edit().putString(KEY_SCOPE, scope).apply();
     }
 
     /** Returns the package name if the data is for a WebAPK, null otherwise. */

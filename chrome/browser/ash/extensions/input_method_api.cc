@@ -50,8 +50,8 @@
 #include "ui/base/ime/ash/input_method_descriptor.h"
 #include "ui/base/ime/ash/input_method_manager.h"
 #include "ui/base/ime/ash/input_method_util.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
 #include "ui/base/page_transition_types.h"
-#include "ui/base/window_open_disposition.h"
 
 namespace {
 
@@ -307,7 +307,7 @@ InputMethodPrivateOpenOptionsPageFunction::Run() {
     if (browser) {
       content::OpenURLParams url_params =
           content::OpenURLParams::CreateBrowserInitiated(
-              options_page_url, WindowOpenDisposition::SINGLETON_TAB,
+              options_page_url, ui::mojom::WindowOpenDisposition::kSingletonTab,
               ui::PAGE_TRANSITION_LINK);
       browser->GetBrowser().OpenURL(url_params,
                                     /*navigation_handle_callback=*/{});
@@ -410,10 +410,11 @@ ExtensionFunction::ResponseAction InputMethodPrivateSetSettingsFunction::Run() {
   extensions::EventRouter* router =
       extensions::EventRouter::Get(browser_context());
   if (router->HasEventListener(OnInputMethodOptionsChanged::kEventName)) {
+    auto event_args = base::MakeRefCounted<extensions::EventArgs>(
+        OnInputMethodOptionsChanged::Create(params->engine_id));
     auto event = std::make_unique<extensions::Event>(
         extensions::events::INPUT_IME_ON_INPUT_METHOD_OPTIONS_CHANGED,
-        OnInputMethodOptionsChanged::kEventName,
-        OnInputMethodOptionsChanged::Create(params->engine_id),
+        OnInputMethodOptionsChanged::kEventName, std::move(event_args),
         browser_context());
     router->BroadcastEvent(std::move(event));
   }

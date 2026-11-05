@@ -212,7 +212,8 @@ void AutofillManager::OnLanguageDetermined(
 
   NotifyObservers(&Observer::OnBeforeLanguageDetermined);
 
-  // TODO(crbug.com/360322019):  Consider using `ReparseKnownForms()` instead.
+  // TODO(crbug.com/360322019): Consider using
+  // `TriggerFormExtractionInAllFrames()` instead.
   ParseFormsAsync(
       base::ToVector(form_structures_,
                      [](const auto& p) { return p.second->ToFormData(); }),
@@ -329,7 +330,9 @@ void AutofillManager::QueryServerPredictions(
     base::TimeTicks form_seen_timestamp) {
   std::vector<FormData> queryable_forms;
   for (const FormData& form : forms) {
-    if (ShouldBeQueried(form)) {
+    if (GetFormParsingPermissions(
+            form, /*ignore_small_forms=*/!client().IsTabInActorMode())
+            .contains(FormParsingPermission::kServerQuery)) {
       queryable_forms.push_back(form);
     }
   }
@@ -631,14 +634,10 @@ bool AutofillManager::CanShowAutofillUi() const {
 }
 
 void AutofillManager::TriggerFormExtractionInAllFrames(
+    bool force,
     base::OnceCallback<void(bool success)> form_extraction_finished_callback) {
   driver_->TriggerFormExtractionInAllFrames(
-      std::move(form_extraction_finished_callback));
-}
-
-void AutofillManager::ReparseKnownForms() {
-  driver_->ClearFormCacheInAllFrames();
-  TriggerFormExtractionInAllFrames(base::DoNothing());
+      force, std::move(form_extraction_finished_callback));
 }
 
 base::flat_map<FieldGlobalId, AutofillServerPrediction>
@@ -681,7 +680,10 @@ void AutofillManager::ParseFormsAsync(
                             << LogMessage::kAbortParsingTooManyForms << form;
       return true;
     }
-    if (!ShouldBeParsed(form, log_manager())) {
+    if (GetFormParsingPermissions(
+            form, /*ignore_small_forms=*/!client().IsTabInActorMode(),
+            log_manager())
+            .empty()) {
       LogCurrentFieldTypes(&form);
       return true;
     }
@@ -711,7 +713,10 @@ void AutofillManager::ParseFormAsync(
     return;
   }
 
-  if (!ShouldBeParsed(form, log_manager())) {
+  if (GetFormParsingPermissions(
+          form, /*ignore_small_forms=*/!client().IsTabInActorMode(),
+          log_manager())
+          .empty()) {
     LogCurrentFieldTypes(&form);
     // For Autocomplete, events need to be handled even for forms that cannot be
     // parsed.
@@ -1044,7 +1049,8 @@ void AutofillManager::UpdateFormCache(
          form_structure.fields()) {
       // This is set by running field classification heuristics and the ML
       // model.
-      for (int i = 0; i <= static_cast<int>(HeuristicSource::kMaxValue); ++i) {
+      for (int i = 0; i <= std::to_underlying(HeuristicSource::kMaxValue);
+           ++i) {
         HeuristicSource s = static_cast<HeuristicSource>(i);
         // Resetting all `HeuristicSource`s also resets the
         // `GetActiveHeuristicSource()`, which in turn resets
@@ -1159,21 +1165,25 @@ void AutofillManager::LogCurrentFieldTypes(
 
 void AutofillManager::SubscribeToMlModelChanges(
     FieldClassificationModelHandler& handler) {
+  auto reparse_forms = base::BindRepeating(
+      [](AutofillManager* self) {
+        self->TriggerFormExtractionInAllFrames(/*force=*/true,
+                                               base::DoNothing());
+      },
+      base::Unretained(this));
   switch (handler.optimization_target()) {
     case optimization_guide::proto::OptimizationTarget::
         OPTIMIZATION_TARGET_AUTOFILL_FIELD_CLASSIFICATION:
       if (!autofill_model_change_subscription_) {
         autofill_model_change_subscription_ =
-            handler.RegisterModelChangeCallback(base::BindRepeating(
-                &AutofillManager::ReparseKnownForms, base::Unretained(this)));
+            handler.RegisterModelChangeCallback(std::move(reparse_forms));
       }
       break;
     case optimization_guide::proto::OptimizationTarget::
         OPTIMIZATION_TARGET_PASSWORD_MANAGER_FORM_CLASSIFICATION:
       if (!password_manager_model_change_subscription_) {
         password_manager_model_change_subscription_ =
-            handler.RegisterModelChangeCallback(base::BindRepeating(
-                &AutofillManager::ReparseKnownForms, base::Unretained(this)));
+            handler.RegisterModelChangeCallback(std::move(reparse_forms));
       }
       break;
     default:

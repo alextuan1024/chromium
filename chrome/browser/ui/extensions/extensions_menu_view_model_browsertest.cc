@@ -9,6 +9,7 @@
 
 #include "base/files/file_util.h"
 #include "base/files/scoped_temp_dir.h"
+#include "base/functional/callback_helpers.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/test/allow_check_is_test_for_testing.h"
 #include "base/test/metrics/user_action_tester.h"
@@ -62,7 +63,9 @@ class FakeExtensionActionDelegate : public ExtensionActionDelegate {
   void UnregisterCommand() override {}
   bool IsShowingPopup() const override { return false; }
   void HidePopup() override {}
-  gfx::NativeView GetPopupNativeView() override { return gfx::NativeView(); }
+  gfx::NativeView GetPopupNativeViewForTesting() override {
+    return gfx::NativeView();
+  }
   void TriggerPopup(std::unique_ptr<extensions::ExtensionViewHost> host,
                     PopupShowAction show_action,
                     bool by_user,
@@ -512,7 +515,7 @@ IN_PROC_BROWSER_TEST_F(ExtensionsMenuViewModelBrowserTest,
   extensions::ExtensionActionRunner* action_runner =
       extensions::ExtensionActionRunner::GetForWebContents(web_contents);
   ASSERT_TRUE(action_runner);
-  action_runner->GrantTabPermissions({extension.get()});
+  action_runner->GrantTabPermissions({extension.get()}, base::DoNothing());
   EXPECT_EQ(permissions_helper()->GetSiteInteraction(*extension, web_contents),
             SitePermissionsHelper::SiteInteraction::kGranted);
   EXPECT_EQ(permissions_manager()->GetUserSiteAccess(

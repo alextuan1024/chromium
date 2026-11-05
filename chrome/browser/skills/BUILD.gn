@@ -22,6 +22,7 @@ source_set("skills") {
   ]
 
   deps = [
+    "//chrome/browser/glic",
     "//chrome/browser/optimization_guide",
     "//chrome/browser/profiles:profile",
     "//chrome/browser/signin",
@@ -131,7 +132,7 @@ source_set("browser_tests") {
     ":ui",
     "//chrome/browser/glic",
     "//chrome/browser/glic/test_support",
-    "//chrome/browser/ui",
+    "//chrome/browser/net",
     "//chrome/browser/ui/browser_window",
     "//chrome/test:test_support",
     "//components/skills:features",
@@ -145,6 +146,7 @@ source_set("browser_tests") {
       "//chrome/browser/ui:browser_window_header",
       "//chrome/browser/ui/toasts",
       "//chrome/browser/ui/toasts/api:toasts",
+      "//chrome/browser/ui/views/frame:browser_view_header",
       "//chrome/browser/ui/webui",
       "//chrome/browser/ui/webui/skills",
       "//components/signin/public/identity_manager:test_support",
@@ -219,6 +221,8 @@ source_set("unit_tests") {
     "//chrome/browser/optimization_guide:test_support",
     "//chrome/browser/profiles:profile",
     "//chrome/test:test_support",
+    "//chrome/test/base:chrome_render_view_host_test_harness",
+    "//chrome/test/base:testing_browser_process",
     "//components/keyed_service/core",
     "//components/skills:features",
     "//components/skills/mocks",

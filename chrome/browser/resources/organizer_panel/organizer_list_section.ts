@@ -2,30 +2,42 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-import '//resources/cr_elements/cr_expand_button/cr_expand_button.js';
+import '//resources/cr_elements/cr_collapse/cr_collapse.js';
+import './organizer_list_section_header.js';
 import './organizer_list_section_item.js';
 
 import {assert} from '//resources/js/assert.js';
-import type {PropertyValues} from '//resources/lit/v3_0/lit.rollup.js';
+import type {PropertyValues, TemplateResult} from '//resources/lit/v3_0/lit.rollup.js';
 import {CrLitElement} from '//resources/lit/v3_0/lit.rollup.js';
-import type {SearchOptions} from '/tab_group_shared/search.js';
-import {search} from '/tab_group_shared/search.js';
 
 import {getCss} from './organizer_list_section.css.js';
 import {getHtml} from './organizer_list_section.html.js';
-import type {OrganizerListSectionClient, OrganizerListSectionDelegate} from './organizer_list_section_delegate.js';
+import type {OrganizerAction, OrganizerListSectionClient, OrganizerListSectionDelegate} from './organizer_list_section_delegate.js';
+import type {OrganizerListSectionHeaderElement} from './organizer_list_section_header.js';
+import {OrganizerSectionMenuOption} from './organizer_list_section_header.js';
 import type {HighlightableOrganizerListSectionItem, OrganizerListSectionItem, OrganizerListSectionItemElement} from './organizer_list_section_item.js';
-import {SEARCH_PART_SEPARATOR} from './search_utils.js';
+import type {BrowserProxy, SectionState} from './organizer_panel.mojom-webui.js';
+import {browserProxyFactory} from './organizer_panel.mojom-webui.js';
+import type {SearchOptions} from './search_utils.js';
+import {search} from './search_utils.js';
 
-/**
- * This is the number of items in a section that are rendered before the "Show
- * more" option.
- */
 export const INITIAL_ITEM_COUNT = 3;
+
+// LINT.IfChange(OrganizerSectionToggleAction)
+/**
+ * These values are persisted to logs and should not be renumbered or reused.
+ * See tools/metrics/histograms/metadata/tab/enums.xml.
+ */
+export enum OrganizerSectionToggleAction {
+  EXPAND = 0,
+  COLLAPSE = 1,
+  COUNT = COLLAPSE + 1,
+}
+// LINT.ThenChange(//tools/metrics/histograms/metadata/tab/enums.xml:OrganizerSectionToggleAction)
 
 export interface OrganizerListSectionElement {
   $: {
-    header: HTMLElement,
+    header: OrganizerListSectionHeaderElement,
   };
 }
 
@@ -47,16 +59,30 @@ export class OrganizerListSectionElement extends CrLitElement implements
     return {
       delegate: {type: Object},
       items: {type: Array},
-      expanded_: {type: Boolean},
+      expanded: {
+        type: Boolean,
+        notify: true,
+      },
+      noAnimation_: {type: Boolean},
+      showAll_: {type: Boolean},
       searchQuery: {type: String},
       filteredItems_: {type: Array},
       filteredSearchQuery_: {type: String},
+      hidden: {
+        type: Boolean,
+        reflect: true,
+        notify: true,
+      },
     };
   }
 
+  private browserProxy_: BrowserProxy = browserProxyFactory.getInstance();
+  private sectionStateChangedListenerId_: number|null = null;
   accessor delegate: OrganizerListSectionDelegate<unknown>|null = null;
   accessor items: Array<OrganizerListSectionItem<unknown>> = [];
-  protected accessor expanded_: boolean = false;
+  accessor expanded: boolean = true;
+  protected accessor noAnimation_: boolean = false;
+  protected accessor showAll_: boolean = false;
   accessor searchQuery: string = '';
   protected accessor filteredItems_:
       Array<HighlightableOrganizerListSectionItem<unknown>> = [];
@@ -64,32 +90,38 @@ export class OrganizerListSectionElement extends CrLitElement implements
   // ensures that we don't show the full list of elements until after the search
   // has been applied and the list of items has been filtered.
   protected accessor filteredSearchQuery_: string = '';
+  override accessor hidden: boolean = false;
 
-  private searchOptions_: SearchOptions<
-      HighlightableOrganizerListSectionItem<unknown>> = {
-    includeScore: true,
-    includeMatches: true,
-    ignoreLocation: false,
-    threshold: 0.0,
-    distance: 200,
-    keys:
-        [
-          {
-            name: 'title',
-            // Parts are joined with SEARCH_PART_SEPARATOR (newline) rather than
-            // a space so queries cannot match across part boundaries (e.g. the
-            // end of one title and the start of another in a split view).
-            getter: item => item.title.join(SEARCH_PART_SEPARATOR),
-            weight: 2,
-          },
-          {
-            name: 'description',
-            getter: item =>
-                item.description?.map(d => d.text).join(SEARCH_PART_SEPARATOR),
-            weight: 1,
-          },
-        ],
-  };
+  private searchOptions_:
+      SearchOptions<HighlightableOrganizerListSectionItem<unknown>> = {
+        includeScore: true,
+        includeMatches: true,
+        ignoreLocation: false,
+        threshold: 0.0,
+        distance: 200,
+        keys:
+            [
+              {
+                name: 'title',
+                getter: item => item.title,
+                weight: 2,
+              },
+              {
+                name: 'description',
+                // Map non-matchable parts to empty strings instead of filtering
+                // them out so highlight range indices stay aligned with
+                // `item.description`.
+                getter: item => item.description?.map(
+                    d => (d.matchable ?? true) ? d.text : ''),
+                weight: 1,
+              },
+              {
+                name: 'extraSearchTerms',
+                getter: item => item.extraSearchTerms,
+                weight: 1,
+              },
+            ],
+      };
 
   // The panel WebUI will remain loaded but invisible when the panel is closed.
   // While invisible, the WebUI will not receive update events from the browser,
@@ -97,17 +129,27 @@ export class OrganizerListSectionElement extends CrLitElement implements
   private onVisibilityChange_: () => void = () => {
     if (document.visibilityState === 'visible') {
       this.updateItems_();
+      this.updateSectionState_();
     }
   };
 
   override connectedCallback() {
     super.connectedCallback();
     document.addEventListener('visibilitychange', this.onVisibilityChange_);
+    this.sectionStateChangedListenerId_ =
+        this.browserProxy_.callbackRouter.onSectionsStateChanged.addListener(
+            (sectionsState: Record<string, SectionState>) => {
+              this.onSectionsStateChanged_(sectionsState);
+            });
   }
 
   override disconnectedCallback() {
     super.disconnectedCallback();
     document.removeEventListener('visibilitychange', this.onVisibilityChange_);
+    assert(this.sectionStateChangedListenerId_ !== null);
+    this.browserProxy_.callbackRouter.removeListener(
+        this.sectionStateChangedListenerId_);
+    this.sectionStateChangedListenerId_ = null;
   }
 
   override willUpdate(changedProperties: PropertyValues<this>) {
@@ -116,12 +158,18 @@ export class OrganizerListSectionElement extends CrLitElement implements
     if (changedProperties.has('delegate')) {
       this.delegate?.init(this);
       this.updateItems_();
+      this.updateSectionState_();
     }
 
-    if (changedProperties.has('items') ||
-        changedProperties.has('searchQuery')) {
+    if (changedProperties.has('searchQuery') ||
+        (changedProperties.has('items') &&
+         (!this.isSearching_() ||
+          changedProperties.get('items')?.length !== this.items.length))) {
       this.updateFilteredItems_();
     }
+
+    this.hidden = !this.delegate || this.hasNoSearchResults_() ||
+        (this.delegate.shouldHide?.() ?? false);
   }
 
   onItemsChanged(items: Array<OrganizerListSectionItem<unknown>>) {
@@ -134,6 +182,32 @@ export class OrganizerListSectionElement extends CrLitElement implements
       return;
     }
     this.items = await this.delegate.getItems();
+  }
+
+  private async updateSectionState_() {
+    if (!this.delegate) {
+      return;
+    }
+    const delegate = this.delegate;
+    const {state} =
+        await this.browserProxy_.handler.getSectionState(delegate.getId());
+    if (this.delegate !== delegate) {
+      return;
+    }
+    // Disable the transition when the expanded state is loaded from prefs.
+    this.noAnimation_ = true;
+    this.expanded = state.expanded;
+    this.showAll_ = state.showAll;
+    await this.updateComplete;
+    this.noAnimation_ = false;
+  }
+
+  private onSectionsStateChanged_(sectionsState: Record<string, SectionState>) {
+    assert(this.delegate);
+    const state = sectionsState[this.delegate.getId()];
+    assert(state);
+    this.expanded = state.expanded;
+    this.showAll_ = state.showAll;
   }
 
   private async updateFilteredItems_() {
@@ -152,60 +226,172 @@ export class OrganizerListSectionElement extends CrLitElement implements
     }
   }
 
-  private isSearching_(): boolean {
+  protected hasContextMenu_(): boolean {
+    return !!this.delegate?.onItemContextMenuClicked;
+  }
+
+  protected isSearching_(): boolean {
     return this.filteredSearchQuery_.length > 0;
   }
 
-  protected getInitialItems_():
-      Array<HighlightableOrganizerListSectionItem<unknown>> {
-    if (this.isSearching_()) {
-      return this.getFilteredItems_();
-    }
-    return this.getFilteredItems_().slice(0, INITIAL_ITEM_COUNT);
+  protected isExpanded_(): boolean {
+    return this.expanded || this.isSearching_();
   }
 
-  protected getRemainingItems_():
-      Array<HighlightableOrganizerListSectionItem<unknown>> {
-    if (!this.expanded_ || this.isSearching_()) {
-      return [];
-    }
-    return this.getFilteredItems_().slice(INITIAL_ITEM_COUNT);
-  }
-
-  protected hasMoreItems_(): boolean {
-    return !this.isSearching_() &&
-        this.getFilteredItems_().length > INITIAL_ITEM_COUNT;
-  }
-
-  protected hasNoSearchResults_(): boolean {
+  private hasNoSearchResults_(): boolean {
     return this.isSearching_() && this.getFilteredItems_().length === 0;
   }
 
   protected onExpandedChanged_(e: CustomEvent<{value: boolean}>) {
-    this.expanded_ = e.detail.value;
+    if (this.isSearching_() || this.expanded === e.detail.value) {
+      return;
+    }
+    this.expanded = e.detail.value;
+    assert(this.delegate);
+    this.browserProxy_.handler.setSectionExpanded(
+        this.delegate.getId(), this.expanded);
+  }
+
+  protected onToggleAction_(e: CustomEvent<{expanded: boolean}>) {
+    assert(this.delegate);
+    chrome.histograms.recordEnumerationValue(
+        `Tabs.Organizer.Section.${
+            this.delegate.getHistogramSectionName()}.ToggleAction`,
+        e.detail.expanded ? OrganizerSectionToggleAction.EXPAND :
+                            OrganizerSectionToggleAction.COLLAPSE,
+        OrganizerSectionToggleAction.COUNT);
+  }
+
+  protected onMenuAction_(
+      e: CustomEvent<{option: OrganizerSectionMenuOption}>) {
+    assert(this.delegate);
+    const showAll = e.detail.option === OrganizerSectionMenuOption.SHOW_ALL;
+    if (this.showAll_ === showAll) {
+      return;
+    }
+    chrome.histograms.recordEnumerationValue(
+        `Tabs.Organizer.Section.${
+            this.delegate.getHistogramSectionName()}.MenuAction`,
+        e.detail.option, OrganizerSectionMenuOption.COUNT);
+  }
+
+  protected hasZeroState_(): boolean {
+    return !this.isSearching_() &&
+        (this.getFilteredItems_().length === 0 ||
+         !!this.delegate?.shouldAlwaysShowZeroState?.()) &&
+        !!this.getZeroState_();
+  }
+
+  protected getZeroState_(): TemplateResult|undefined {
+    return this.delegate?.getZeroState?.();
+  }
+
+  protected onShowAllChanged_(e: CustomEvent<{value: boolean}>) {
+    if (this.showAll_ === e.detail.value) {
+      return;
+    }
+    this.showAll_ = e.detail.value;
+    assert(this.delegate);
+    this.browserProxy_.handler.setSectionShowAll(
+        this.delegate.getId(), this.showAll_);
+  }
+
+  private recordIndexMetric_(action: OrganizerAction, index: number) {
+    chrome.histograms.recordSmallCount(
+        this.isSearching_() ?
+            `Tabs.Organizer.WebUI.IndexOf${action}InFilteredList` :
+            `Tabs.Organizer.WebUI.IndexOf${action}InUnfilteredList`,
+        index);
   }
 
   protected onItemClick_(e: Event) {
     const target = e.currentTarget as OrganizerListSectionItemElement;
     assert(target.item);
     assert(this.delegate);
+    this.recordIndexMetric_(
+        this.delegate.getItemClickAction(), Number(target.dataset['index']));
     this.delegate.onItemClick(target.item);
+    this.browserProxy_.handler.closePanel();
   }
 
-  protected onItemActionButtonClick_(e: CustomEvent<{
+  protected async onItemActionButtonClick_(e: CustomEvent<{
     item: HighlightableOrganizerListSectionItem<unknown>,
     buttonElement: HTMLElement,
   }>) {
     assert(e.detail.item);
     assert(e.detail.buttonElement);
     assert(this.delegate);
-    this.delegate.onItemActionButtonClicked?.(
+    const itemElement = e.currentTarget as OrganizerListSectionItemElement;
+    const action = this.delegate.getActionButtonClickAction?.();
+    if (action) {
+      this.recordIndexMetric_(action, Number(itemElement.dataset['index']));
+    }
+    await this.delegate.onItemActionButtonClicked?.(
         e.detail.item, e.detail.buttonElement);
+    itemElement.resetActionButtonStateIfNeeded();
+  }
+
+  protected async onItemContextMenuClick_(e: CustomEvent<{
+    item: HighlightableOrganizerListSectionItem<unknown>,
+    x: number,
+    y: number,
+  }>) {
+    assert(e.detail.item);
+    assert(this.delegate);
+    await this.delegate.onItemContextMenuClicked?.(
+        e.detail.item, e.detail.x, e.detail.y);
   }
 
   protected getFilteredItems_():
       Array<HighlightableOrganizerListSectionItem<unknown>> {
-    return this.filteredItems_;
+    if (this.showAll_ || this.isSearching_()) {
+      return this.filteredItems_;
+    }
+    const alwaysShowIndices: number[] = [];
+    const regularIndices: number[] = [];
+    for (let i = 0; i < this.filteredItems_.length; i++) {
+      if (this.filteredItems_[i]!.alwaysShow) {
+        alwaysShowIndices.push(i);
+      } else {
+        regularIndices.push(i);
+      }
+    }
+
+    const maxItems = alwaysShowIndices.length > 0 ? INITIAL_ITEM_COUNT + 1 :
+                                                    INITIAL_ITEM_COUNT;
+    const selectedAlwaysShow = alwaysShowIndices.slice(0, maxItems);
+    const selectedRegular =
+        regularIndices.slice(0, maxItems - selectedAlwaysShow.length);
+    const selectedIndices =
+        new Set([...selectedAlwaysShow, ...selectedRegular]);
+    return this.filteredItems_.filter((_, index) => selectedIndices.has(index));
+  }
+
+  override focus() {
+    if (this.isSearching_()) {
+      this.getVisibleItems()[0]?.focus();
+    } else {
+      this.$.header.focus();
+    }
+  }
+
+  getNavigableElements(): HTMLElement[] {
+    if (this.hidden) {
+      return [];
+    }
+    const elements: HTMLElement[] = this.isSearching_() ? [] : [this.$.header];
+    if (this.isExpanded_()) {
+      elements.push(
+          ...this.shadowRoot.querySelectorAll<OrganizerListSectionItemElement>(
+              'organizer-list-section-item'));
+    }
+    return elements;
+  }
+
+  getVisibleItems(): OrganizerListSectionItemElement[] {
+    return Array.from(
+        this.shadowRoot.querySelectorAll<OrganizerListSectionItemElement>(
+            'organizer-list-section-item'));
   }
 }
 

@@ -8,15 +8,25 @@
 #include <optional>
 #include <variant>
 
+#include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
 #include "base/memory/raw_ptr.h"
+#include "base/run_loop.h"
+#include "base/task/sequenced_task_runner.h"
+#include "base/test/bind.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/mock_callback.h"
 #include "base/test/run_until.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/test/test_future.h"
+#include "base/unguessable_token.h"
+#include "chrome/browser/actor/actor_keyed_service.h"
 #include "chrome/browser/actor/actor_keyed_service_factory.h"
+#include "chrome/browser/actor/actor_surface_registry.h"
+#include "chrome/browser/actor/actor_task.h"
+#include "chrome/browser/actor/ui/test_support/mock_actor_ui_tab_controller.h"
 #include "chrome/browser/enterprise/browser_management/management_service_factory.h"
+#include "chrome/browser/glic/actor/glic_actor_policy_checker.h"
 #include "chrome/browser/glic/actor/glic_actor_task_manager.h"
 #include "chrome/browser/glic/experimental_opt_in/glic_experimental_opt_in_controller.h"
 #include "chrome/browser/glic/experimental_triggering/glic_experimental_triggering_manager.h"
@@ -24,6 +34,7 @@
 #include "chrome/browser/glic/experimental_triggering/glic_experimental_triggering_types.h"
 #include "chrome/browser/glic/glic_pref_names.h"
 #include "chrome/browser/glic/glic_profile_manager.h"
+#include "chrome/browser/glic/public/features.h"
 #include "chrome/browser/glic/public/glic_enabling.h"
 #include "chrome/browser/glic/public/glic_instance.h"
 #include "chrome/browser/glic/public/glic_keyed_service.h"
@@ -39,6 +50,9 @@
 #include "chrome/test/base/testing_browser_process.h"
 #include "chrome/test/base/testing_profile.h"
 #include "chrome/test/base/testing_profile_manager.h"
+#include "components/actor/core/actor_features.h"
+#include "components/actor/public/mojom/actor_types.mojom.h"
+#include "components/optimization_guide/content/browser/page_content_proto_util.h"
 #include "components/policy/core/common/management/management_service.h"
 #include "components/policy/core/common/management/scoped_management_service_override_for_testing.h"
 #include "components/prefs/pref_service.h"
@@ -56,6 +70,8 @@ namespace glic {
 namespace {
 
 constexpr char kTestContextId[] = "test_context";
+constexpr char kTestConversationId[] = "conv_123";
+constexpr char kTestToolName[] = "test_tool";
 
 class TestExperimentalTriggeringManager
     : public GlicExperimentalTriggeringManager {
@@ -98,6 +114,11 @@ class TestExperimentalTriggeringManager
                    base::expected<std::string, ScreenshotResult::Status>)>),
               (override));
 
+  MOCK_METHOD(void,
+              SubmitConfirmationResponse,
+              (const std::vector<uint8_t>&, base::OnceCallback<void(bool)>),
+              (override));
+
  private:
   mojo::Remote<mojom::ExperimentalTriggeringUpdatesHandler> handler_;
   bool registration_success_ = true;
@@ -118,18 +139,30 @@ class TestGlicExperimentalTriggeringCoordinator
     browser_window_ = window;
   }
   void set_active_tab(tabs::TabInterface* tab) { active_tab_ = tab; }
+  bool IsChromeInBackground() const override {
+    return is_chrome_in_background_;
+  }
+  void set_is_chrome_in_background(bool in_background) {
+    is_chrome_in_background_ = in_background;
+  }
 
  private:
   raw_ptr<BrowserWindowInterface> browser_window_ = nullptr;
   raw_ptr<tabs::TabInterface> active_tab_ = nullptr;
+  bool is_chrome_in_background_ = false;
 };
-
-
 
 class GlicExperimentalTriggeringCoordinatorTest : public testing::Test {
  public:
   GlicExperimentalTriggeringCoordinatorTest() = default;
   ~GlicExperimentalTriggeringCoordinatorTest() override = default;
+
+  // Whether the actor policy checker should be exempted from the policy and
+  // account eligibility checks. Test profiles have no signed-in account, so
+  // without this CanActOnWeb() is false and requests get rejected before they
+  // reach the code under test. Subclasses override this to exercise the
+  // rejection path itself.
+  virtual bool ActorPolicyControlExemption() const { return true; }
 
   void SetUp() override {
     // glic_enabling.cc returns UNAVAILABLE for managed machines, so force
@@ -139,7 +172,19 @@ class GlicExperimentalTriggeringCoordinatorTest : public testing::Test {
             policy::ManagementServiceFactory::GetInstance()->GetForPlatform(),
             policy::EnterpriseManagementAuthority::NONE);
 
-    feature_list_.InitAndEnableFeature(features::kGlicExperimentalTriggering);
+    std::vector<base::test::FeatureRefAndParams> enabled_features = {
+        {features::kGlicActor, {}},
+        {features::kGlicExperimentalTriggering, {}},
+        {features::kGlicExperimentalTriggeringScriptTools, {}}};
+    std::vector<base::test::FeatureRef> disabled_features;
+    if (ActorPolicyControlExemption()) {
+      enabled_features.push_back(
+          {features::kGlicActorPolicyControlExemption, {}});
+    } else {
+      disabled_features.push_back(features::kGlicActorPolicyControlExemption);
+    }
+    feature_list_.InitWithFeaturesAndParameters(enabled_features,
+                                                disabled_features);
     ASSERT_TRUE(profile_manager_.SetUp());
 
     TestingProfile::TestingFactories testing_factories;
@@ -152,19 +197,29 @@ class GlicExperimentalTriggeringCoordinatorTest : public testing::Test {
     profile_ = profile_manager_.CreateTestingProfile(
         "test_profile", std::move(testing_factories));
 
-    coordinator_ = std::make_unique<TestGlicExperimentalTriggeringCoordinator>(
-        profile_);
+    coordinator_ =
+        std::make_unique<TestGlicExperimentalTriggeringCoordinator>(profile_);
     OptIn();
 
+    actor_policy_checker_ = std::make_unique<GlicActorPolicyChecker>(*profile_);
+    actor_task_manager_ = std::make_unique<GlicActorTaskManager>(
+        profile_,
+        actor::ActorKeyedServiceFactory::GetActorKeyedService(profile_),
+        *actor_policy_checker_,
+        /*instance_metrics=*/nullptr,
+        /*sharing_manager=*/nullptr,
+        /*delegate=*/nullptr);
+
     ON_CALL(mock_glic_instance_, GetActorTaskManager())
-        .WillByDefault(testing::Return(
-            reinterpret_cast<GlicActorTaskManager*>(dummy_task_manager_buf_)));
+        .WillByDefault(testing::Return(actor_task_manager_.get()));
     ON_CALL(mock_glic_instance_, GetExperimentalTriggeringManager())
         .WillByDefault(testing::Return(&test_triggering_manager_));
   }
 
   void TearDown() override {
     coordinator_.reset();
+    actor_task_manager_.reset();
+    actor_policy_checker_.reset();
     profile_ = nullptr;
   }
 
@@ -197,8 +252,8 @@ class GlicExperimentalTriggeringCoordinatorTest : public testing::Test {
   }
 
   void OptIn() {
-    auto* glic_service = GlicKeyedServiceFactory::GetGlicKeyedService(
-        profile_, /*create=*/true);
+    auto* glic_service =
+        GlicKeyedServiceFactory::GetGlicKeyedService(profile_, /*create=*/true);
     ASSERT_TRUE(glic_service);
     // This allows this test to run on managed (dev) machines.
     profile_->GetPrefs()->SetInteger(
@@ -210,6 +265,16 @@ class GlicExperimentalTriggeringCoordinatorTest : public testing::Test {
     glic_service->enabling().SetExperimentalTriggeringEnabled(true);
   }
 
+  void OptOut() {
+    auto* glic_service =
+        GlicKeyedServiceFactory::GetGlicKeyedService(profile_, /*create=*/true);
+    ASSERT_TRUE(glic_service);
+    glic_service->enabling().SetCompletedFre(
+        glic::prefs::FreStatus::kNotStarted);
+    glic_service->enabling().SetUserEnabledActuationOnWeb(false);
+    glic_service->enabling().SetExperimentalTriggeringEnabled(false);
+  }
+
   std::optional<ExperimentalTriggeringResponse> SendRequest(
       const ExperimentalTriggeringRequest& request,
       tabs::TabInterface* prepared_tab = nullptr) {
@@ -219,27 +284,36 @@ class GlicExperimentalTriggeringCoordinatorTest : public testing::Test {
     return coordinator_->OnRequest(
         kTestContextId, request,
         ScopedIncomingMessageResultLogger(
+            GlicMetricReporter(profile_),
             ScopedIncomingMessageResultLogger::Channel::kSharingMessage),
         base::DoNothing(), nullptr);
   }
 
  protected:
   GlicEnabling::ScopedBypassEnablementChecksForTesting scoped_glic_bypass_;
-  content::BrowserTaskEnvironment task_environment_;
+  content::BrowserTaskEnvironment task_environment_{
+      base::test::TaskEnvironment::TimeSource::MOCK_TIME};
   std::unique_ptr<policy::ScopedManagementServiceOverrideForTesting>
       scoped_platform_management_override_;
   base::test::ScopedFeatureList feature_list_;
+  base::HistogramTester histogram_tester_;
   TestingProfileManager profile_manager_{TestingBrowserProcess::GetGlobal()};
   raw_ptr<TestingProfile> profile_;
   GlicProfileManager glic_profile_manager_;
   std::unique_ptr<TestGlicExperimentalTriggeringCoordinator> coordinator_;
   testing::NiceMock<TestExperimentalTriggeringManager> test_triggering_manager_;
   testing::NiceMock<MockGlicInstance> mock_glic_instance_;
-  alignas(GlicActorTaskManager) char dummy_task_manager_buf_[sizeof(
-      GlicActorTaskManager)] = {0};
+  std::unique_ptr<GlicActorPolicyChecker> actor_policy_checker_;
+  std::unique_ptr<GlicActorTaskManager> actor_task_manager_;
 };
 
 TEST_F(GlicExperimentalTriggeringCoordinatorTest, NoTaskMetadata) {
+  auto* actor_service =
+      actor::ActorKeyedServiceFactory::GetActorKeyedService(profile_);
+  ASSERT_TRUE(actor_service);
+  actor_service->AddPendingTask(kTestContextId);
+  EXPECT_TRUE(actor_service->HasPendingTask(kTestContextId));
+
   ExperimentalTriggeringRequest request;
   request.version = 1;
   request.context_id = kTestContextId;
@@ -254,6 +328,13 @@ TEST_F(GlicExperimentalTriggeringCoordinatorTest, NoTaskMetadata) {
   EXPECT_EQ(response->task_update->data,
             "Received GlicExperimentalTriggering message with missing task "
             "metadata.");
+
+  ASSERT_TRUE(base::test::RunUntil([&]() {
+    return coordinator_->GetUpdatesHandlerMapSizeForTesting() == 0;
+  }));
+
+  EXPECT_FALSE(actor_service->HasPendingTask(kTestContextId));
+  EXPECT_EQ(actor_service->GetPendingTasksCount(), 0u);
 }
 
 TEST_F(GlicExperimentalTriggeringCoordinatorTest, NoServerChannelConfig) {
@@ -284,7 +365,13 @@ TEST_F(GlicExperimentalTriggeringCoordinatorTest, NoRequestPayload) {
   EXPECT_EQ(response->task_update->state, TaskUpdate::State::kFailed);
 }
 
-TEST_F(GlicExperimentalTriggeringCoordinatorTest, GetScreenshotRequest) {
+TEST_F(GlicExperimentalTriggeringCoordinatorTest,
+       GetScreenshotRequest_FeatureDisabled) {
+  base::test::ScopedFeatureList features;
+  features.InitAndDisableFeature(
+      features::kGlicExperimentalTriggeringScreenshot);
+
+  base::test::TestFuture<ExperimentalTriggeringResponse> update_future;
   ExperimentalTriggeringRequest request;
   request.version = 1;
   request.context_id = kTestContextId;
@@ -292,14 +379,96 @@ TEST_F(GlicExperimentalTriggeringCoordinatorTest, GetScreenshotRequest) {
   request.payload = GetScreenshotRequest{
       .public_key = {'k', 'e', 'y'},
       .auth_secret = {'s', 'e', 'c'},
+      .request_token = {'t', 'o', 'k', 'e', 'n'},
   };
 
-  auto response = SendRequest(request);
+  auto response = coordinator_->OnRequest(
+      kTestContextId, request,
+      ScopedIncomingMessageResultLogger(
+          GlicMetricReporter(profile_),
+          ScopedIncomingMessageResultLogger::Channel::kSharingMessage),
+      update_future.GetRepeatingCallback(), nullptr);
+
   ASSERT_TRUE(response.has_value());
-  ASSERT_TRUE(response->task_update.has_value());
-  EXPECT_EQ(response->task_update->state, TaskUpdate::State::kFailed);
-  EXPECT_EQ(response->task_update->data_type,
-            TaskUpdate::DataType::kErrorMessage);
+  ASSERT_TRUE(response->screenshot_result.has_value());
+  EXPECT_EQ(response->screenshot_result->status,
+            ScreenshotResult::Status::kErrorDisabled);
+  EXPECT_EQ(response->screenshot_result->request_token,
+            std::vector<uint8_t>({'t', 'o', 'k', 'e', 'n'}));
+  EXPECT_FALSE(response->task_update.has_value());
+  EXPECT_FALSE(update_future.IsReady());
+}
+
+TEST_F(GlicExperimentalTriggeringCoordinatorTest,
+       GetScreenshotRequest_FeatureEnabled_NoInstance) {
+  base::test::ScopedFeatureList features;
+  features.InitAndEnableFeature(
+      features::kGlicExperimentalTriggeringScreenshot);
+
+  base::test::TestFuture<ExperimentalTriggeringResponse> update_future;
+  ExperimentalTriggeringRequest request;
+  request.version = 1;
+  request.context_id = kTestContextId;
+  request.task_metadata = TaskMetadata{.conversation_id = "conv_123"};
+  request.payload = GetScreenshotRequest{
+      .public_key = {'k', 'e', 'y'},
+      .auth_secret = {'s', 'e', 'c'},
+      .request_token = {'t', 'o', 'k', 'e', 'n'},
+  };
+
+  auto response = coordinator_->OnRequest(
+      kTestContextId, request,
+      ScopedIncomingMessageResultLogger(
+          GlicMetricReporter(profile_),
+          ScopedIncomingMessageResultLogger::Channel::kSharingMessage),
+      update_future.GetRepeatingCallback(), nullptr);
+  ASSERT_TRUE(response.has_value());
+  ASSERT_TRUE(response->screenshot_result.has_value());
+  EXPECT_EQ(response->screenshot_result->status,
+            ScreenshotResult::Status::kErrorCapture);
+  EXPECT_EQ(response->screenshot_result->request_token,
+            std::vector<uint8_t>({'t', 'o', 'k', 'e', 'n'}));
+  EXPECT_FALSE(response->task_update.has_value());
+  EXPECT_FALSE(update_future.IsReady());
+}
+
+TEST_F(GlicExperimentalTriggeringCoordinatorTest,
+       GetScreenshotRequest_NotOptedIn) {
+  base::test::ScopedFeatureList features;
+  features.InitAndEnableFeature(
+      features::kGlicExperimentalTriggeringScreenshot);
+  auto* glic_service =
+      GlicKeyedServiceFactory::GetGlicKeyedService(profile_, /*create=*/true);
+  ASSERT_TRUE(glic_service);
+  glic_service->enabling().SetCompletedFre(glic::prefs::FreStatus::kNotStarted);
+  glic_service->enabling().SetUserEnabledActuationOnWeb(false);
+  glic_service->enabling().SetExperimentalTriggeringEnabled(false);
+
+  base::test::TestFuture<ExperimentalTriggeringResponse> update_future;
+  ExperimentalTriggeringRequest request;
+  request.version = 1;
+  request.context_id = kTestContextId;
+  request.task_metadata = TaskMetadata{.conversation_id = "conv_123"};
+  request.payload = GetScreenshotRequest{
+      .public_key = {'k', 'e', 'y'},
+      .auth_secret = {'s', 'e', 'c'},
+      .request_token = {'t', 'o', 'k', 'e', 'n'},
+  };
+
+  auto response = coordinator_->OnRequest(
+      kTestContextId, request,
+      ScopedIncomingMessageResultLogger(
+          GlicMetricReporter(profile_),
+          ScopedIncomingMessageResultLogger::Channel::kSharingMessage),
+      update_future.GetRepeatingCallback(), nullptr);
+  ASSERT_TRUE(response.has_value());
+  ASSERT_TRUE(response->screenshot_result.has_value());
+  EXPECT_EQ(response->screenshot_result->status,
+            ScreenshotResult::Status::kErrorDisabled);
+  EXPECT_EQ(response->screenshot_result->request_token,
+            std::vector<uint8_t>({'t', 'o', 'k', 'e', 'n'}));
+  EXPECT_FALSE(response->task_update.has_value());
+  EXPECT_FALSE(update_future.IsReady());
 }
 
 TEST_F(GlicExperimentalTriggeringCoordinatorTest, UnrecognizedStopActuation) {
@@ -476,6 +645,7 @@ TEST_F(GlicExperimentalTriggeringCoordinatorTest,
   auto response1 = coordinator_->OnRequest(
       "context_1", request1,
       ScopedIncomingMessageResultLogger(
+          GlicMetricReporter(profile_),
           ScopedIncomingMessageResultLogger::Channel::kSharingMessage),
       future1.GetRepeatingCallback(), nullptr);
   EXPECT_FALSE(response1.has_value());
@@ -483,6 +653,7 @@ TEST_F(GlicExperimentalTriggeringCoordinatorTest,
   auto response2 = coordinator_->OnRequest(
       "context_2", request2,
       ScopedIncomingMessageResultLogger(
+          GlicMetricReporter(profile_),
           ScopedIncomingMessageResultLogger::Channel::kSharingMessage),
       future2.GetRepeatingCallback(), nullptr);
   EXPECT_FALSE(response2.has_value());
@@ -537,6 +708,7 @@ TEST_F(GlicExperimentalTriggeringCoordinatorTest,
   auto response1 = coordinator_->OnRequest(
       "context_1", request1,
       ScopedIncomingMessageResultLogger(
+          GlicMetricReporter(profile_),
           ScopedIncomingMessageResultLogger::Channel::kSharingMessage),
       future1.GetRepeatingCallback(), nullptr);
   EXPECT_FALSE(response1.has_value());
@@ -544,6 +716,7 @@ TEST_F(GlicExperimentalTriggeringCoordinatorTest,
   auto response2 = coordinator_->OnRequest(
       "context_2", request2,
       ScopedIncomingMessageResultLogger(
+          GlicMetricReporter(profile_),
           ScopedIncomingMessageResultLogger::Channel::kSharingMessage),
       future2.GetRepeatingCallback(), nullptr);
   EXPECT_FALSE(response2.has_value());
@@ -574,7 +747,8 @@ TEST_F(GlicExperimentalTriggeringCoordinatorTest,
   base::HistogramTester histogram_tester;
   auto response = coordinator_->OnProtoMessage(
       kTestContextId, proto,
-      ScopedIncomingMessageResultLogger(ScopedIncomingMessageResultLogger::
+      ScopedIncomingMessageResultLogger(GlicMetricReporter(profile_),
+                                        ScopedIncomingMessageResultLogger::
                                             Channel::kBrowserActuatorTransport),
       base::DoNothing(), nullptr);
 
@@ -606,7 +780,8 @@ TEST_F(GlicExperimentalTriggeringCoordinatorTest,
   base::HistogramTester histogram_tester;
   auto response = coordinator_->OnProtoMessage(
       kTestContextId, proto,
-      ScopedIncomingMessageResultLogger(ScopedIncomingMessageResultLogger::
+      ScopedIncomingMessageResultLogger(GlicMetricReporter(profile_),
+                                        ScopedIncomingMessageResultLogger::
                                             Channel::kBrowserActuatorTransport),
       base::DoNothing(), nullptr);
 
@@ -634,7 +809,8 @@ TEST_F(GlicExperimentalTriggeringCoordinatorTest,
   base::HistogramTester histogram_tester;
   auto response = coordinator_->OnProtoMessage(
       kTestContextId, proto,
-      ScopedIncomingMessageResultLogger(ScopedIncomingMessageResultLogger::
+      ScopedIncomingMessageResultLogger(GlicMetricReporter(profile_),
+                                        ScopedIncomingMessageResultLogger::
                                             Channel::kBrowserActuatorTransport),
       base::DoNothing(), nullptr);
 
@@ -664,8 +840,12 @@ class GlicExperimentalTriggeringCoordinatorWithTabTest
   void SetUp() override {
     GlicExperimentalTriggeringCoordinatorTest::SetUp();
     coordinator_->set_browser_window(&mock_browser_window_);
-    web_contents_ = content::WebContents::Create(
-        content::WebContents::CreateParams(profile_));
+    content::WebContents::CreateParams params(profile_);
+    // Disable wake locks to avoid initializing device PowerSaveBlocker and
+    // D-Bus thread runners during unit tests.
+    params.enable_wake_locks = false;
+    web_contents_ = content::WebContents::Create(params);
+    ON_CALL(mock_tab_, GetProfile()).WillByDefault(testing::Return(profile_));
     ON_CALL(mock_tab_, GetContents())
         .WillByDefault(testing::Return(web_contents_.get()));
     ON_CALL(mock_tab_, GetWeakPtr())
@@ -673,10 +853,16 @@ class GlicExperimentalTriggeringCoordinatorWithTabTest
     ON_CALL(mock_tab_, GetUnownedUserDataHost())
         .WillByDefault(testing::ReturnRef(unowned_user_data_host_));
     instance_helper_ = std::make_unique<GlicInstanceHelper>(&mock_tab_);
+    actor::ActorKeyedServiceFactory::GetActorKeyedService(profile_)
+        ->GetSurfaceRegistry()
+        .OnTabCreated(mock_tab_);
     coordinator_->set_active_tab(&mock_tab_);
   }
 
   void TearDown() override {
+    // Destroy the coordinator, and with it any in-flight actor task, while the
+    // tab and its WebContents are still around for the task to unwind against.
+    coordinator_.reset();
     instance_helper_.reset();
     web_contents_.reset();
     GlicExperimentalTriggeringCoordinatorTest::TearDown();
@@ -697,7 +883,7 @@ class GlicExperimentalTriggeringCoordinatorWithTabTest
 
   ExperimentalTriggeringRequest CreateScreenshotRequest(
       std::vector<uint8_t> request_token = {'t', 'o', 'k', 'e', 'n'},
-      std::string_view conversation_id = "conv_123") {
+      std::string_view conversation_id = kTestConversationId) {
     ExperimentalTriggeringRequest screenshot_request;
     screenshot_request.version = 1;
     screenshot_request.context_id = kTestContextId;
@@ -709,6 +895,120 @@ class GlicExperimentalTriggeringCoordinatorWithTabTest
         .request_token = std::move(request_token),
     };
     return screenshot_request;
+  }
+
+  // Sends a GetScreenshotRequest on the active session and expects a
+  // synchronous ScreenshotResult error that keeps the session's handler alive.
+  void SendScreenshotRequestAndExpectSyncError(
+      const std::vector<uint8_t>& request_token,
+      ScreenshotResult::Status expected_status,
+      GlicExperimentalTriggeringIncomingMessageResult expected_metric) {
+    base::test::TestFuture<ExperimentalTriggeringResponse> update_future;
+    base::HistogramTester histogram_tester;
+    auto response = coordinator_->OnRequest(
+        kTestContextId, CreateScreenshotRequest(request_token),
+        ScopedIncomingMessageResultLogger(
+            GlicMetricReporter(profile_),
+            ScopedIncomingMessageResultLogger::Channel::kSharingMessage),
+        update_future.GetRepeatingCallback(), nullptr);
+
+    ASSERT_TRUE(response.has_value());
+    ASSERT_TRUE(response->screenshot_result.has_value());
+    EXPECT_EQ(response->screenshot_result->status, expected_status);
+    EXPECT_TRUE(response->screenshot_result->file_token.empty());
+    EXPECT_EQ(response->screenshot_result->request_token, request_token);
+    EXPECT_FALSE(response->task_update.has_value());
+    EXPECT_FALSE(update_future.IsReady());
+    EXPECT_EQ(coordinator_->GetUpdatesHandlerMapSizeForTesting(), 1u);
+    histogram_tester.ExpectUniqueSample(
+        "Glic.ExperimentalTriggering.IncomingMessageResult.SharingMessage",
+        expected_metric, 1);
+    histogram_tester.ExpectUniqueSample(
+        "Glic.Consumer.ExperimentalTriggering.IncomingMessageResult."
+        "SharingMessage",
+        expected_metric, 1);
+  }
+
+  ExperimentalTriggeringRequest CreateExecuteScriptToolRequest(
+      std::optional<int32_t> tab_id = std::nullopt,
+      std::optional<std::string> document_identifier = std::nullopt) {
+    ExperimentalTriggeringRequest request;
+    request.version = 1;
+    request.context_id = kTestContextId;
+    request.task_metadata =
+        TaskMetadata{.conversation_id = kTestConversationId};
+    ExecuteActionsRequest exec_req;
+    optimization_guide::proto::Action* action = exec_req.actions.add_actions();
+    optimization_guide::proto::ScriptToolAction* script_tool =
+        action->mutable_script_tool();
+    script_tool->set_tool_name(kTestToolName);
+    if (tab_id.has_value()) {
+      script_tool->set_tab_id(*tab_id);
+    }
+    if (document_identifier.has_value()) {
+      script_tool->mutable_document_identifier()->set_serialized_token(
+          *document_identifier);
+    }
+    request.payload = std::move(exec_req);
+    return request;
+  }
+
+  ExperimentalTriggeringRequest CreateConfirmationRequest(
+      std::vector<uint8_t> confirmation_response = {'r', 'e', 's', 'p'},
+      std::string_view conversation_id = "conv_123") {
+    ExperimentalTriggeringRequest confirmation_request;
+    confirmation_request.version = 1;
+    confirmation_request.context_id = kTestContextId;
+    confirmation_request.task_metadata =
+        TaskMetadata{.conversation_id = std::string(conversation_id)};
+    confirmation_request.payload = SubmitConfirmation{
+        .confirmation_response = std::move(confirmation_response),
+    };
+    return confirmation_request;
+  }
+
+  // Builds a request for kTestContextId with the given payload.
+  ExperimentalTriggeringRequest CreateRequest(
+      ExperimentalTriggeringRequest::Payload payload) {
+    ExperimentalTriggeringRequest request;
+    request.version = 1;
+    request.context_id = kTestContextId;
+    request.task_metadata =
+        TaskMetadata{.conversation_id = kTestConversationId};
+    request.payload = std::move(payload);
+    return request;
+  }
+
+  // Starts a direct action execution on kTestContextId that stays in flight
+  // until the test stops it.
+  void StartActionExecution() {
+    auto* user_data = optimization_guide::DocumentIdentifierUserData::
+        GetOrCreateForCurrentDocument(web_contents_->GetPrimaryMainFrame());
+    EXPECT_FALSE(
+        SendRequest(CreateExecuteScriptToolRequest(
+                        /*tab_id=*/std::nullopt, user_data->serialized_token()))
+            .has_value());
+    ASSERT_EQ(coordinator_->GetUpdatesHandlerMapSizeForTesting(), 1u);
+  }
+
+  // Sends `request` to kTestContextId, which must already own a live session,
+  // and expects that the request does not tear down the session's handler.
+  std::optional<ExperimentalTriggeringResponse> SendRequestToLiveSession(
+      const ExperimentalTriggeringRequest& request) {
+    EXPECT_EQ(coordinator_->GetUpdatesHandlerMapSizeForTesting(), 1u);
+    auto response = SendRequest(request);
+    EXPECT_EQ(coordinator_->GetUpdatesHandlerMapSizeForTesting(), 1u);
+    return response;
+  }
+
+  // Expects `response` to be a synchronous failed task update.
+  void ExpectFailedTaskUpdate(
+      const std::optional<ExperimentalTriggeringResponse>& response,
+      std::string_view expected_error) {
+    ASSERT_TRUE(response.has_value());
+    ASSERT_TRUE(response->task_update.has_value());
+    EXPECT_EQ(response->task_update->state, TaskUpdate::State::kFailed);
+    EXPECT_EQ(response->task_update->data, expected_error);
   }
 
  protected:
@@ -764,6 +1064,14 @@ TEST_F(GlicExperimentalTriggeringCoordinatorWithTabTest,
   histogram_tester.ExpectUniqueSample(
       "Glic.ExperimentalTriggering.IncomingMessageResult.SharingMessage",
       GlicExperimentalTriggeringIncomingMessageResult::kSuccess, 1);
+  histogram_tester.ExpectUniqueSample(
+      "Glic.Consumer.ExperimentalTriggering.IncomingMessageResult."
+      "SharingMessage",
+      GlicExperimentalTriggeringIncomingMessageResult::kSuccess, 1);
+  histogram_tester.ExpectTotalCount(
+      "Glic.Enterprise.ExperimentalTriggering.IncomingMessageResult."
+      "SharingMessage",
+      0);
 }
 
 TEST_F(GlicExperimentalTriggeringCoordinatorWithTabTest,
@@ -788,33 +1096,55 @@ TEST_F(GlicExperimentalTriggeringCoordinatorWithTabTest,
 
 TEST_F(GlicExperimentalTriggeringCoordinatorWithTabTest,
        GetScreenshotRequest_InvalidRequest_EmptyRequestToken) {
+  // The invalid-request path is only reachable once the screenshot feature is
+  // enabled; otherwise the request is rejected as disabled.
+  base::test::ScopedFeatureList features;
+  features.InitAndEnableFeature(
+      features::kGlicExperimentalTriggeringScreenshot);
+
   StartActuationSession();
 
   EXPECT_CALL(test_triggering_manager_, CaptureAndUploadEncryptedScreenshot)
       .Times(0);
 
-  base::test::TestFuture<ExperimentalTriggeringResponse> update_future;
-  base::HistogramTester histogram_tester;
-  auto response = coordinator_->OnRequest(
-      kTestContextId, CreateScreenshotRequest(/*request_token=*/{}),
-      ScopedIncomingMessageResultLogger(
-          ScopedIncomingMessageResultLogger::Channel::kSharingMessage),
-      update_future.GetRepeatingCallback(), nullptr);
-
-  ASSERT_TRUE(response.has_value());
-  ASSERT_TRUE(response->screenshot_result.has_value());
-  EXPECT_EQ(response->screenshot_result->status,
-            ScreenshotResult::Status::kErrorInvalidRequest);
-  EXPECT_TRUE(response->screenshot_result->file_token.empty());
-  EXPECT_TRUE(response->screenshot_result->request_token.empty());
-  EXPECT_FALSE(response->task_update.has_value());
-  EXPECT_FALSE(update_future.IsReady());
-
-  histogram_tester.ExpectUniqueSample(
-      "Glic.ExperimentalTriggering.IncomingMessageResult.SharingMessage",
+  SendScreenshotRequestAndExpectSyncError(
+      /*request_token=*/{}, ScreenshotResult::Status::kErrorInvalidRequest,
       GlicExperimentalTriggeringIncomingMessageResult::
-          kUnexpectedRequestPayload,
-      1);
+          kUnexpectedRequestPayload);
+}
+
+TEST_F(GlicExperimentalTriggeringCoordinatorWithTabTest,
+       GetScreenshotRequest_FeatureDisabled_PreservesActiveSession) {
+  base::test::ScopedFeatureList features;
+  features.InitAndDisableFeature(
+      features::kGlicExperimentalTriggeringScreenshot);
+
+  StartActuationSession();
+
+  EXPECT_CALL(test_triggering_manager_, CaptureAndUploadEncryptedScreenshot)
+      .Times(0);
+
+  SendScreenshotRequestAndExpectSyncError(
+      {'t', 'o', 'k', 'e', 'n'}, ScreenshotResult::Status::kErrorDisabled,
+      GlicExperimentalTriggeringIncomingMessageResult::
+          kUnexpectedRequestPayload);
+}
+
+TEST_F(GlicExperimentalTriggeringCoordinatorWithTabTest,
+       GetScreenshotRequest_NullTriggeringManager_PreservesActiveSession) {
+  base::test::ScopedFeatureList features;
+  features.InitAndEnableFeature(
+      features::kGlicExperimentalTriggeringScreenshot);
+
+  StartActuationSession();
+
+  ON_CALL(mock_glic_instance_, GetExperimentalTriggeringManager())
+      .WillByDefault(testing::Return(nullptr));
+
+  SendScreenshotRequestAndExpectSyncError(
+      {'t', 'o', 'k', 'e', 'n'}, ScreenshotResult::Status::kErrorCapture,
+      GlicExperimentalTriggeringIncomingMessageResult::
+          kTriggeringManagerUnavailable);
 }
 
 struct ScreenshotCaptureTestCase {
@@ -830,6 +1160,12 @@ class GlicExperimentalTriggeringCoordinatorScreenshotCaptureTest
 
 TEST_P(GlicExperimentalTriggeringCoordinatorScreenshotCaptureTest,
        HandlesCaptureResult) {
+  // The capture path is only reachable once the screenshot feature is enabled;
+  // otherwise the request is rejected up front as disabled.
+  base::test::ScopedFeatureList features;
+  features.InitAndEnableFeature(
+      features::kGlicExperimentalTriggeringScreenshot);
+
   StartActuationSession();
 
   const auto& test_case = GetParam();
@@ -847,12 +1183,13 @@ TEST_P(GlicExperimentalTriggeringCoordinatorScreenshotCaptureTest,
   auto response = coordinator_->OnRequest(
       kTestContextId, CreateScreenshotRequest(expected_token),
       ScopedIncomingMessageResultLogger(
+          GlicMetricReporter(profile_),
           ScopedIncomingMessageResultLogger::Channel::kSharingMessage),
       update_future.GetRepeatingCallback(), nullptr);
 
-  ASSERT_TRUE(response.has_value());
-  ASSERT_TRUE(response->task_update.has_value());
-  EXPECT_EQ(response->task_update->state, TaskUpdate::State::kStarting);
+  // The asynchronous ScreenshotResult is the only reply; emitting a synchronous
+  // task update would imply a state transition that didn't happen.
+  EXPECT_FALSE(response.has_value());
 
   auto async_response = update_future.Take();
   ASSERT_TRUE(async_response.screenshot_result.has_value());
@@ -904,6 +1241,459 @@ INSTANTIATE_TEST_SUITE_P(
       return info.param.test_name;
     });
 
+TEST_F(GlicExperimentalTriggeringCoordinatorWithTabTest,
+       SubmitConfirmation_InvalidRequest_EmptyPayload) {
+  StartActuationSession();
+
+  EXPECT_CALL(test_triggering_manager_, SubmitConfirmationResponse).Times(0);
+
+  base::test::TestFuture<ExperimentalTriggeringResponse> update_future;
+  base::HistogramTester histogram_tester;
+  auto response = coordinator_->OnRequest(
+      kTestContextId, CreateConfirmationRequest(/*confirmation_response=*/{}),
+      ScopedIncomingMessageResultLogger(
+          GlicMetricReporter(profile_),
+          ScopedIncomingMessageResultLogger::Channel::kSharingMessage),
+      update_future.GetRepeatingCallback(), nullptr);
+
+  ASSERT_TRUE(response.has_value());
+  ASSERT_TRUE(response->confirmation_result.has_value());
+  EXPECT_EQ(response->confirmation_result->status,
+            ConfirmationResult::Status::kErrorInvalidRequest);
+  // Delivery failures must not masquerade as actuation task failures or tear
+  // down the active updates handler.
+  EXPECT_FALSE(response->task_update.has_value());
+  EXPECT_FALSE(update_future.IsReady());
+  EXPECT_EQ(coordinator_->GetUpdatesHandlerMapSizeForTesting(), 1u);
+
+  histogram_tester.ExpectUniqueSample(
+      "Glic.ExperimentalTriggering.IncomingMessageResult.SharingMessage",
+      GlicExperimentalTriggeringIncomingMessageResult::
+          kUnexpectedRequestPayload,
+      1);
+  histogram_tester.ExpectUniqueSample(
+      "Glic.Consumer.ExperimentalTriggering.IncomingMessageResult."
+      "SharingMessage",
+      GlicExperimentalTriggeringIncomingMessageResult::
+          kUnexpectedRequestPayload,
+      1);
+}
+
+struct ConfirmationTestCase {
+  const char* test_name;
+  bool manager_accepted;
+  ConfirmationResult::Status expected_status;
+};
+
+class GlicExperimentalTriggeringCoordinatorConfirmationTest
+    : public GlicExperimentalTriggeringCoordinatorWithTabTest,
+      public testing::WithParamInterface<ConfirmationTestCase> {};
+
+TEST_P(GlicExperimentalTriggeringCoordinatorConfirmationTest,
+       HandlesConfirmationResult) {
+  StartActuationSession();
+
+  const auto& test_case = GetParam();
+  const std::vector<uint8_t> expected_payload = {'r', 'e', 's', 'p'};
+  std::vector<uint8_t> received_payload;
+  EXPECT_CALL(test_triggering_manager_, SubmitConfirmationResponse)
+      .WillOnce([&](const std::vector<uint8_t>& response,
+                    base::OnceCallback<void(bool)> callback) {
+        received_payload = response;
+        std::move(callback).Run(test_case.manager_accepted);
+      });
+
+  base::test::TestFuture<ExperimentalTriggeringResponse> update_future;
+  auto response = coordinator_->OnRequest(
+      kTestContextId, CreateConfirmationRequest(expected_payload),
+      ScopedIncomingMessageResultLogger(
+          GlicMetricReporter(profile_),
+          ScopedIncomingMessageResultLogger::Channel::kSharingMessage),
+      update_future.GetRepeatingCallback(), nullptr);
+
+  // The asynchronous ConfirmationResult is the only reply; emitting a
+  // synchronous task update would imply a state transition that didn't happen.
+  EXPECT_FALSE(response.has_value());
+  // The opaque payload must reach the manager byte-for-byte.
+  EXPECT_EQ(received_payload, expected_payload);
+
+  auto async_response = update_future.Take();
+  ASSERT_TRUE(async_response.confirmation_result.has_value());
+  EXPECT_EQ(async_response.confirmation_result->status,
+            test_case.expected_status);
+  EXPECT_FALSE(async_response.task_update.has_value());
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    SubmitConfirmation,
+    GlicExperimentalTriggeringCoordinatorConfirmationTest,
+    testing::Values(
+        ConfirmationTestCase{
+            .test_name = "Applied",
+            .manager_accepted = true,
+            .expected_status = ConfirmationResult::Status::kApplied,
+        },
+        ConfirmationTestCase{
+            .test_name = "NotApplied",
+            .manager_accepted = false,
+            .expected_status = ConfirmationResult::Status::kNotApplied,
+        }),
+    [](const testing::TestParamInfo<ConfirmationTestCase>& info) {
+      return info.param.test_name;
+    });
+
+// Handlers are shared per context id, so a request that fails early must not
+// tear down a live session on the same context (b/574916669). The tests below
+// cover one early failure per request type, first on an actuation session and
+// then on a direct action execution.
+
+// Regression test for the user-visible symptoms: if the failure tore the
+// handler down, web client updates would be dropped, and the next reply would
+// come from a new handler that restarts at sequence number 0, which the server
+// discards as stale.
+TEST_F(GlicExperimentalTriggeringCoordinatorWithTabTest,
+       EarlyFailureDuringActuation_KeepsUpdatesAndSequenceNumbers) {
+  auto send = [&](const ExperimentalTriggeringRequest& request,
+                  GlicExperimentalTriggeringUpdateCallback update_callback) {
+    return coordinator_->OnRequest(
+        kTestContextId, request,
+        ScopedIncomingMessageResultLogger(
+            GlicMetricReporter(profile_),
+            ScopedIncomingMessageResultLogger::Channel::kSharingMessage),
+        std::move(update_callback), nullptr);
+  };
+
+  base::test::TestFuture<ExperimentalTriggeringResponse> update_future;
+  auto start_response =
+      send(CreateRequest(TriggerActuationRequest{.initial_prompt = "hello"}),
+           update_future.GetRepeatingCallback());
+  ASSERT_TRUE(start_response.has_value());
+  EXPECT_EQ(start_response->task_metadata->sender_sequence_number, 0);
+
+  auto failure_response = send(CreateRequest(RequestPayloadNotSet{}),
+                               GlicExperimentalTriggeringUpdateCallback());
+  ASSERT_TRUE(failure_response.has_value());
+  EXPECT_EQ(failure_response->task_metadata->sender_sequence_number, 1);
+  EXPECT_EQ(coordinator_->GetUpdatesHandlerMapSizeForTesting(), 1u);
+
+  // A recreated handler would restart this at 0.
+  auto next_response = send(CreateRequest(std::monostate()),
+                            GlicExperimentalTriggeringUpdateCallback());
+  ASSERT_TRUE(next_response.has_value());
+  EXPECT_EQ(next_response->task_metadata->sender_sequence_number, 2);
+
+  auto update = mojom::ExperimentalTriggeringUpdate::New();
+  update->type = mojom::ExperimentalTriggeringUpdateType::kWorklog;
+  update->data = "still running";
+  test_triggering_manager_.SendUpdate(
+      std::move(update), mojom::SubscriberObservationType::kUpdate);
+  test_triggering_manager_.FlushForTesting();
+  ASSERT_TRUE(update_future.IsReady());
+  auto async_response = update_future.Take();
+  ASSERT_TRUE(async_response.task_update.has_value());
+  EXPECT_EQ(async_response.task_update->data, "still running");
+  EXPECT_EQ(async_response.task_metadata->sender_sequence_number, 3);
+}
+
+TEST_F(GlicExperimentalTriggeringCoordinatorWithTabTest,
+       MissingTaskMetadataDuringActuation_KeepsHandler) {
+  base::test::TestFuture<ExperimentalTriggeringResponse> update_future;
+  auto start_response = coordinator_->OnRequest(
+      kTestContextId,
+      CreateRequest(TriggerActuationRequest{.initial_prompt = "hello"}),
+      ScopedIncomingMessageResultLogger(
+          GlicMetricReporter(profile_),
+          ScopedIncomingMessageResultLogger::Channel::kSharingMessage),
+      update_future.GetRepeatingCallback(), nullptr);
+  ASSERT_TRUE(start_response.has_value());
+  ASSERT_EQ(coordinator_->GetUpdatesHandlerMapSizeForTesting(), 1u);
+
+  ExperimentalTriggeringRequest request =
+      CreateRequest(TriggerActuationRequest{.initial_prompt = "hello"});
+  request.task_metadata.reset();
+  auto failure_response = coordinator_->OnRequest(
+      kTestContextId, request,
+      ScopedIncomingMessageResultLogger(
+          GlicMetricReporter(profile_),
+          ScopedIncomingMessageResultLogger::Channel::kSharingMessage),
+      GlicExperimentalTriggeringUpdateCallback(), nullptr);
+  ExpectFailedTaskUpdate(
+      failure_response,
+      "Received GlicExperimentalTriggering message with missing task "
+      "metadata.");
+  EXPECT_EQ(coordinator_->GetUpdatesHandlerMapSizeForTesting(), 1u);
+
+  // Subsequent updates on the active actuation session must still be delivered
+  // rather than muted by `terminal_update_sent_`.
+  auto update = mojom::ExperimentalTriggeringUpdate::New();
+  update->type = mojom::ExperimentalTriggeringUpdateType::kWorklog;
+  update->data = "still running";
+  test_triggering_manager_.SendUpdate(
+      std::move(update), mojom::SubscriberObservationType::kUpdate);
+  test_triggering_manager_.FlushForTesting();
+  ASSERT_TRUE(update_future.IsReady());
+  auto worklog = update_future.Take();
+  ASSERT_TRUE(worklog.task_update.has_value());
+  EXPECT_EQ(worklog.task_update->state, TaskUpdate::State::kRunning);
+  EXPECT_EQ(worklog.task_update->data, "still running");
+
+  auto complete = mojom::ExperimentalTriggeringUpdate::New();
+  complete->type =
+      mojom::ExperimentalTriggeringUpdateType::kTerminalCompletion;
+  complete->data = "done";
+  test_triggering_manager_.SendUpdate(
+      std::move(complete), mojom::SubscriberObservationType::kUpdate);
+  test_triggering_manager_.FlushForTesting();
+  ASSERT_TRUE(update_future.IsReady());
+  auto terminal = update_future.Take();
+  ASSERT_TRUE(terminal.task_update.has_value());
+  EXPECT_EQ(terminal.task_update->state, TaskUpdate::State::kComplete);
+}
+
+TEST_F(GlicExperimentalTriggeringCoordinatorWithTabTest,
+       RequestPayloadNotSetDuringActuation_KeepsHandler) {
+  StartActuationSession();
+
+  ExpectFailedTaskUpdate(
+      SendRequestToLiveSession(CreateRequest(RequestPayloadNotSet{})),
+      "Received GlicExperimentalTriggering message with no actionable "
+      "request.");
+}
+
+TEST_F(GlicExperimentalTriggeringCoordinatorWithTabTest,
+       MonostatePayloadDuringActuation_KeepsHandler) {
+  StartActuationSession();
+
+  ExpectFailedTaskUpdate(
+      SendRequestToLiveSession(CreateRequest(std::monostate())),
+      "Received GlicExperimentalTriggering message with no actionable "
+      "request.");
+}
+
+TEST_F(GlicExperimentalTriggeringCoordinatorWithTabTest,
+       ContinueActuationNotOptedInDuringActuation_KeepsHandler) {
+  StartActuationSession();
+  OptOut();
+
+  ExpectFailedTaskUpdate(
+      SendRequestToLiveSession(CreateRequest(
+          ContinueActuationRequest{.continuation_prompt = "keep going"})),
+      "User is not opted in to experimental triggering.");
+}
+
+TEST_F(GlicExperimentalTriggeringCoordinatorWithTabTest,
+       ContinueActuationNoBrowserWindowDuringActuation_KeepsHandler) {
+  StartActuationSession();
+  coordinator_->set_browser_window(nullptr);
+
+  ExpectFailedTaskUpdate(
+      SendRequestToLiveSession(CreateRequest(
+          ContinueActuationRequest{.continuation_prompt = "keep going"})),
+      "No browser window found for current profile.");
+}
+
+TEST_F(GlicExperimentalTriggeringCoordinatorWithTabTest,
+       DeviceOptInFailureDuringActuation_KeepsHandler) {
+  base::test::ScopedFeatureList features;
+  features.InitAndDisableFeature(
+      features::kGlicExperimentalTriggeringOptInTabFocus);
+  StartActuationSession();
+  // Without a tab there is no WebContents to show the opt-in dialog in.
+  coordinator_->set_active_tab(nullptr);
+
+  EXPECT_TRUE(SendRequestToLiveSession(CreateRequest(DeviceOptInRequest{}))
+                  .has_value());
+}
+
+TEST_F(GlicExperimentalTriggeringCoordinatorWithTabTest,
+       ExecuteActionsDisabledDuringActuation_KeepsHandler) {
+  StartActuationSession();
+  base::test::ScopedFeatureList features;
+  features.InitAndDisableFeature(
+      features::kGlicExperimentalTriggeringScriptTools);
+
+  ExpectFailedTaskUpdate(
+      SendRequestToLiveSession(CreateExecuteScriptToolRequest()),
+      "Script tool execution is not enabled.");
+}
+
+TEST_F(GlicExperimentalTriggeringCoordinatorWithTabTest,
+       ExecuteActionsDuringActuation_RejectedAndKeepsHandler) {
+  StartActuationSession();
+
+  ExpectFailedTaskUpdate(
+      SendRequestToLiveSession(CreateExecuteScriptToolRequest()),
+      "Another task is already executing for this context.");
+}
+
+TEST_F(GlicExperimentalTriggeringCoordinatorWithTabTest,
+       SubmitConfirmationNotOptedInDuringActuation_KeepsHandler) {
+  StartActuationSession();
+  OptOut();
+
+  auto response = SendRequestToLiveSession(CreateConfirmationRequest());
+  ASSERT_TRUE(response.has_value());
+  ASSERT_TRUE(response->confirmation_result.has_value());
+  EXPECT_EQ(response->confirmation_result->status,
+            ConfirmationResult::Status::kErrorUnavailable);
+}
+
+TEST_F(GlicExperimentalTriggeringCoordinatorWithTabTest,
+       StopActuationDuringActuation_TearsDownHandler) {
+  StartActuationSession();
+
+  auto response = SendRequest(
+      CreateRequest(StopActuationRequest{.stop_reason = "STOPPED_BY_USER"}));
+  ASSERT_TRUE(response.has_value());
+  ASSERT_TRUE(response->task_update.has_value());
+  EXPECT_EQ(response->task_update->state, TaskUpdate::State::kStopped);
+  EXPECT_EQ(coordinator_->GetUpdatesHandlerMapSizeForTesting(), 0u);
+}
+
+TEST_F(GlicExperimentalTriggeringCoordinatorWithTabTest,
+       TaskMetadataUpdatedDuringActionExecution_KeepsHandler) {
+  StartActionExecution();
+
+  // There is no Glic instance to relay the metadata to, but the in-flight
+  // execution still needs the handler to report its result.
+  EXPECT_FALSE(SendRequestToLiveSession(CreateRequest(TaskMetadataUpdated{}))
+                   .has_value());
+
+  EXPECT_TRUE(SendRequest(CreateRequest(StopActuationRequest{
+                              .stop_reason = "STOPPED_BY_USER"}))
+                  .has_value());
+  EXPECT_EQ(coordinator_->GetUpdatesHandlerMapSizeForTesting(), 0u);
+}
+
+TEST_F(GlicExperimentalTriggeringCoordinatorWithTabTest,
+       GetScreenshotFailureDuringActionExecution_KeepsHandler) {
+  base::test::ScopedFeatureList features;
+  features.InitAndDisableFeature(
+      features::kGlicExperimentalTriggeringScreenshot);
+  StartActionExecution();
+
+  auto response = SendRequestToLiveSession(CreateScreenshotRequest());
+  ASSERT_TRUE(response.has_value());
+  ASSERT_TRUE(response->screenshot_result.has_value());
+  EXPECT_EQ(response->screenshot_result->status,
+            ScreenshotResult::Status::kErrorDisabled);
+
+  EXPECT_TRUE(SendRequest(CreateRequest(StopActuationRequest{
+                              .stop_reason = "STOPPED_BY_USER"}))
+                  .has_value());
+}
+
+// A handler created for a request that fails early has no live work, so it
+// must not leak.
+TEST_F(GlicExperimentalTriggeringCoordinatorWithTabTest,
+       TaskMetadataUpdatedWithoutSession_CleansUpHandler) {
+  EXPECT_FALSE(SendRequest(CreateRequest(TaskMetadataUpdated{})).has_value());
+  EXPECT_EQ(coordinator_->GetUpdatesHandlerMapSizeForTesting(), 0u);
+}
+
+// The tests below cover a pending device opt-in. The user is already opted
+// in, so ShowDialog() posts its `accepted` answer instead of showing UI. Until
+// that task runs, the opt-in is pending, as if the dialog were open.
+class GlicExperimentalTriggeringCoordinatorOptInTest
+    : public GlicExperimentalTriggeringCoordinatorWithTabTest {
+ public:
+  void SetUp() override {
+    GlicExperimentalTriggeringCoordinatorWithTabTest::SetUp();
+    // Show the opt-in on the test tab instead of looking for a Gemini tab.
+    // Initialized after the base fixture's list, so it is destroyed first.
+    opt_in_features_.InitAndDisableFeature(
+        features::kGlicExperimentalTriggeringOptInTabFocus);
+  }
+
+  // Sends `request` with replies going to `update_callback`. Every request on
+  // a context replaces the handler's update callback, so tests that wait for
+  // a reply must pass the same callback to each request.
+  std::optional<ExperimentalTriggeringResponse> SendRequestWithCallback(
+      const ExperimentalTriggeringRequest& request,
+      GlicExperimentalTriggeringUpdateCallback update_callback) {
+    return coordinator_->OnRequest(
+        kTestContextId, request,
+        ScopedIncomingMessageResultLogger(
+            GlicMetricReporter(profile_),
+            ScopedIncomingMessageResultLogger::Channel::kSharingMessage),
+        std::move(update_callback), nullptr);
+  }
+
+ private:
+  base::test::ScopedFeatureList opt_in_features_;
+};
+
+// A request that arrives while the opt-in is pending must not destroy the
+// handler, or the user's answer is dropped.
+TEST_F(GlicExperimentalTriggeringCoordinatorOptInTest,
+       OptInPending_OtherRequestKeepsHandlerAndResult) {
+  base::test::TestFuture<ExperimentalTriggeringResponse> result_future;
+  EXPECT_FALSE(SendRequestWithCallback(CreateRequest(DeviceOptInRequest{}),
+                                       result_future.GetRepeatingCallback())
+                   .has_value());
+  ASSERT_EQ(coordinator_->GetUpdatesHandlerMapSizeForTesting(), 1u);
+
+  // Fails without a Glic instance, before the posted answer runs.
+  EXPECT_FALSE(SendRequestWithCallback(CreateRequest(TaskMetadataUpdated{}),
+                                       result_future.GetRepeatingCallback())
+                   .has_value());
+  EXPECT_EQ(coordinator_->GetUpdatesHandlerMapSizeForTesting(), 1u);
+
+  ASSERT_TRUE(result_future.Wait());
+  auto result = result_future.Take();
+  ASSERT_TRUE(result.device_opt_in_result.has_value());
+  EXPECT_EQ(*result.device_opt_in_result, DeviceOptInResult::kAccepted);
+  // Nothing else runs on this context, so the answer ends the handler.
+  EXPECT_EQ(coordinator_->GetUpdatesHandlerMapSizeForTesting(), 0u);
+}
+
+// Answering an opt-in on a context that already has a live session must not
+// destroy that session's handler.
+TEST_F(GlicExperimentalTriggeringCoordinatorOptInTest,
+       OptInAnsweredDuringActuation_KeepsHandler) {
+  StartActuationSession();
+
+  base::test::TestFuture<ExperimentalTriggeringResponse> result_future;
+  EXPECT_FALSE(SendRequestWithCallback(CreateRequest(DeviceOptInRequest{}),
+                                       result_future.GetRepeatingCallback())
+                   .has_value());
+  ASSERT_TRUE(result_future.Wait());
+  auto result = result_future.Take();
+  ASSERT_TRUE(result.device_opt_in_result.has_value());
+  EXPECT_EQ(*result.device_opt_in_result, DeviceOptInResult::kAccepted);
+  EXPECT_EQ(coordinator_->GetUpdatesHandlerMapSizeForTesting(), 1u);
+}
+
+// The server resends DeviceOptInRequest after it pauses and resumes. Both
+// requests wait on one answer, and only one result is sent.
+TEST_F(GlicExperimentalTriggeringCoordinatorOptInTest,
+       ResentOptIn_SendsOneResult) {
+  // Keep the handler alive after the first answer, so that a second result
+  // would be sent if the handler did not drop it.
+  StartActuationSession();
+
+  std::vector<ExperimentalTriggeringResponse> results;
+  auto record =
+      base::BindLambdaForTesting([&](ExperimentalTriggeringResponse response) {
+        if (response.device_opt_in_result.has_value()) {
+          results.push_back(std::move(response));
+        }
+      });
+  for (int i = 0; i < 2; ++i) {
+    EXPECT_FALSE(
+        SendRequestWithCallback(CreateRequest(DeviceOptInRequest{}), record)
+            .has_value());
+  }
+  // Both answers were posted already, so this task runs after them.
+  base::RunLoop run_loop;
+  base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
+      FROM_HERE, run_loop.QuitClosure());
+  run_loop.Run();
+
+  ASSERT_EQ(results.size(), 1u);
+  EXPECT_EQ(*results[0].device_opt_in_result, DeviceOptInResult::kAccepted);
+}
+
 TEST_F(GlicExperimentalTriggeringCoordinatorTest,
        RecordsInitialMessageDeliveryLatency) {
   base::HistogramTester histogram_tester;
@@ -920,6 +1710,7 @@ TEST_F(GlicExperimentalTriggeringCoordinatorTest,
   coordinator_->OnProtoMessage(
       kTestContextId, proto,
       ScopedIncomingMessageResultLogger(
+          GlicMetricReporter(profile_),
           ScopedIncomingMessageResultLogger::Channel::kSharingMessage),
       base::DoNothing(), nullptr);
 
@@ -941,6 +1732,7 @@ TEST_F(GlicExperimentalTriggeringCoordinatorTest,
   coordinator_->OnProtoMessage(
       kTestContextId, proto,
       ScopedIncomingMessageResultLogger(
+          GlicMetricReporter(profile_),
           ScopedIncomingMessageResultLogger::Channel::kSharingMessage),
       base::DoNothing(), nullptr);
 
@@ -965,6 +1757,7 @@ TEST_F(GlicExperimentalTriggeringCoordinatorTest,
   coordinator_->OnProtoMessage(
       kTestContextId, proto,
       ScopedIncomingMessageResultLogger(
+          GlicMetricReporter(profile_),
           ScopedIncomingMessageResultLogger::Channel::kSharingMessage),
       base::DoNothing(), nullptr);
 
@@ -989,6 +1782,7 @@ TEST_F(GlicExperimentalTriggeringCoordinatorWithTabTest,
   coordinator_->OnProtoMessage(
       kTestContextId, proto,
       ScopedIncomingMessageResultLogger(
+          GlicMetricReporter(profile_),
           ScopedIncomingMessageResultLogger::Channel::kSharingMessage),
       base::DoNothing(), nullptr);
   histogram_tester.ExpectTotalCount(
@@ -1007,6 +1801,7 @@ TEST_F(GlicExperimentalTriggeringCoordinatorWithTabTest,
   coordinator_->OnProtoMessage(
       kTestContextId, proto2,
       ScopedIncomingMessageResultLogger(
+          GlicMetricReporter(profile_),
           ScopedIncomingMessageResultLogger::Channel::kSharingMessage),
       base::DoNothing(), nullptr);
   histogram_tester.ExpectTotalCount(
@@ -1054,11 +1849,179 @@ TEST_F(GlicExperimentalTriggeringCoordinatorWithTabTest,
       "Glic.ExperimentalTriggering.ExecutionOutcome",
       GlicExperimentalTriggeringExecutionOutcome::kSuccess, 1);
   histogram_tester.ExpectUniqueSample(
+      "Glic.Consumer.ExperimentalTriggering.ExecutionOutcome",
+      GlicExperimentalTriggeringExecutionOutcome::kSuccess, 1);
+  histogram_tester.ExpectUniqueSample(
       "Glic.ExperimentalTriggering.SidePanelOpened", true, 1);
   histogram_tester.ExpectUniqueSample(
       "Glic.ExperimentalTriggering.ClientConnected", true, 1);
   histogram_tester.ExpectTotalCount(
       "Glic.ExperimentalTriggering.Latency.ToTerminalCompletion", 1);
+}
+
+TEST_F(GlicExperimentalTriggeringCoordinatorWithTabTest,
+       RemovesPendingTaskOnActuationStart) {
+  auto* actor_service =
+      actor::ActorKeyedServiceFactory::GetActorKeyedService(profile_);
+  ASSERT_TRUE(actor_service);
+  actor_service->AddPendingTask(kTestContextId);
+  EXPECT_TRUE(actor_service->HasPendingTask(kTestContextId));
+
+  ExperimentalTriggeringRequest request;
+  request.version = 1;
+  request.context_id = kTestContextId;
+  request.task_metadata = TaskMetadata{.conversation_id = "conv_123"};
+  request.payload = TriggerActuationRequest{.initial_prompt = "test"};
+
+  auto response = SendRequest(request);
+  ASSERT_TRUE(response.has_value());
+  ASSERT_TRUE(response->task_update.has_value());
+  EXPECT_EQ(response->task_update->state, TaskUpdate::State::kStarting);
+
+  // Still pending because the actor task hasn't started actuating yet.
+  EXPECT_TRUE(actor_service->HasPendingTask(kTestContextId));
+  EXPECT_EQ(actor_service->GetPendingTasksCount(), 1u);
+
+  // A false notification alone does not resolve the pending task.
+  actor_task_manager_->NotifyActuatingChangedForTesting(false);
+  EXPECT_TRUE(actor_service->HasPendingTask(kTestContextId));
+  EXPECT_EQ(actor_service->GetPendingTasksCount(), 1u);
+
+  // Actuating starts: pending task is now removed.
+  actor_task_manager_->NotifyActuatingChangedForTesting(true);
+  EXPECT_FALSE(actor_service->HasPendingTask(kTestContextId));
+  EXPECT_EQ(actor_service->GetPendingTasksCount(), 0u);
+}
+
+TEST_F(GlicExperimentalTriggeringCoordinatorWithTabTest,
+       ContinueActuationDoesNotObserveActorTaskCreation) {
+  auto* actor_service =
+      actor::ActorKeyedServiceFactory::GetActorKeyedService(profile_);
+  ASSERT_TRUE(actor_service);
+  actor_service->AddPendingTask(kTestContextId);
+  EXPECT_TRUE(actor_service->HasPendingTask(kTestContextId));
+
+  ExperimentalTriggeringRequest continue_request;
+  continue_request.version = 1;
+  continue_request.context_id = kTestContextId;
+  continue_request.task_metadata = TaskMetadata{.conversation_id = "conv_123"};
+  continue_request.payload =
+      ContinueActuationRequest{.continuation_prompt = "keep going"};
+
+  auto response = SendRequest(continue_request);
+  ASSERT_TRUE(response.has_value());
+  ASSERT_TRUE(response->task_update.has_value());
+  EXPECT_EQ(response->task_update->state, TaskUpdate::State::kStarting);
+
+  // Continuation requests do not observe actor task creation for pending tasks.
+  actor_task_manager_->NotifyActuatingChangedForTesting(true);
+  EXPECT_TRUE(actor_service->HasPendingTask(kTestContextId));
+  EXPECT_EQ(actor_service->GetPendingTasksCount(), 1u);
+}
+
+TEST_F(GlicExperimentalTriggeringCoordinatorWithTabTest,
+       RemovesPendingTaskOnInvokeError) {
+  auto* actor_service =
+      actor::ActorKeyedServiceFactory::GetActorKeyedService(profile_);
+  ASSERT_TRUE(actor_service);
+  actor_service->AddPendingTask(kTestContextId);
+  EXPECT_TRUE(actor_service->HasPendingTask(kTestContextId));
+
+  auto* service = static_cast<MockGlicKeyedService*>(
+      GlicKeyedServiceFactory::GetGlicKeyedService(profile_, false));
+  EXPECT_CALL(*service,
+              InvokeWithAutoSubmit(testing::_, testing::_, testing::_))
+      .WillOnce([this](InvokeWithAutoSubmitPasskey passkey,
+                       GlicInvokeOptions options,
+                       GlicInvokeWithAutoSubmitOptions auto_submit_options) {
+        std::move(options.on_error).Run(GlicInvokeError::kTimeout);
+        return mock_glic_instance_.GetWeakPtr();
+      });
+
+  ExperimentalTriggeringRequest request;
+  request.version = 1;
+  request.context_id = kTestContextId;
+  request.task_metadata = TaskMetadata{.conversation_id = "conv_123"};
+  request.payload = TriggerActuationRequest{.initial_prompt = "test"};
+
+  auto response = SendRequest(request);
+  ASSERT_TRUE(response.has_value());
+
+  ASSERT_TRUE(base::test::RunUntil([&]() {
+    return coordinator_->GetUpdatesHandlerMapSizeForTesting() == 0;
+  }));
+
+  EXPECT_FALSE(actor_service->HasPendingTask(kTestContextId));
+  EXPECT_EQ(actor_service->GetPendingTasksCount(), 0u);
+}
+
+TEST_F(GlicExperimentalTriggeringCoordinatorWithTabTest,
+       TriggerActuation_AttachesPaymentMetadataPayload) {
+  auto* service = static_cast<MockGlicKeyedService*>(
+      GlicKeyedServiceFactory::GetGlicKeyedService(profile_, false));
+  std::optional<std::vector<uint8_t>> captured_metadata;
+  std::optional<mojom::InvocationSource> captured_source;
+  EXPECT_CALL(*service,
+              InvokeWithAutoSubmit(testing::_, testing::_, testing::_))
+      .WillOnce([&](InvokeWithAutoSubmitPasskey passkey,
+                    GlicInvokeOptions options,
+                    GlicInvokeWithAutoSubmitOptions auto_submit_options) {
+        captured_source = options.GetInvocationSource();
+        auto* payload = std::get_if<mojom::InvocationPayloadPtr>(
+            &options.source_or_payload);
+        if (payload && *payload && (*payload)->is_experimental_triggering()) {
+          captured_metadata =
+              (*payload)->get_experimental_triggering()->payment_metadata;
+        }
+        return mock_glic_instance_.GetWeakPtr();
+      });
+
+  ExperimentalTriggeringRequest request;
+  request.version = 1;
+  request.context_id = kTestContextId;
+  request.task_metadata = TaskMetadata{.conversation_id = "conv_123"};
+  request.payload = TriggerActuationRequest{
+      .initial_prompt = "test", .payment_metadata = {0x01, 0x02, 0x03}};
+
+  SendRequest(request);
+
+  ASSERT_TRUE(
+      base::test::RunUntil([&]() { return captured_metadata.has_value(); }));
+  EXPECT_EQ(captured_source, mojom::InvocationSource::kExperimentalTriggering);
+  EXPECT_EQ(*captured_metadata, (std::vector<uint8_t>{0x01, 0x02, 0x03}));
+}
+
+TEST_F(GlicExperimentalTriggeringCoordinatorWithTabTest,
+       TriggerActuation_AttachesPayloadWithEmptyPaymentMetadata) {
+  auto* service = static_cast<MockGlicKeyedService*>(
+      GlicKeyedServiceFactory::GetGlicKeyedService(profile_, false));
+  std::optional<std::vector<uint8_t>> captured_metadata;
+  EXPECT_CALL(*service,
+              InvokeWithAutoSubmit(testing::_, testing::_, testing::_))
+      .WillOnce([&](InvokeWithAutoSubmitPasskey passkey,
+                    GlicInvokeOptions options,
+                    GlicInvokeWithAutoSubmitOptions auto_submit_options) {
+        auto* payload = std::get_if<mojom::InvocationPayloadPtr>(
+            &options.source_or_payload);
+        if (payload && *payload && (*payload)->is_experimental_triggering()) {
+          captured_metadata =
+              (*payload)->get_experimental_triggering()->payment_metadata;
+        }
+        return mock_glic_instance_.GetWeakPtr();
+      });
+
+  ExperimentalTriggeringRequest request;
+  request.version = 1;
+  request.context_id = kTestContextId;
+  request.task_metadata = TaskMetadata{.conversation_id = "conv_123"};
+  request.payload = TriggerActuationRequest{.initial_prompt = "test"};
+
+  SendRequest(request);
+
+  // The payload is always attached for trigger requests, even when empty.
+  ASSERT_TRUE(
+      base::test::RunUntil([&]() { return captured_metadata.has_value(); }));
+  EXPECT_TRUE(captured_metadata->empty());
 }
 
 TEST_F(GlicExperimentalTriggeringCoordinatorWithTabTest,
@@ -1091,6 +2054,9 @@ TEST_F(GlicExperimentalTriggeringCoordinatorWithTabTest,
 
   histogram_tester.ExpectUniqueSample(
       "Glic.ExperimentalTriggering.ExecutionOutcome",
+      GlicExperimentalTriggeringExecutionOutcome::kTimeoutWaitingForClient, 1);
+  histogram_tester.ExpectUniqueSample(
+      "Glic.Consumer.ExperimentalTriggering.ExecutionOutcome",
       GlicExperimentalTriggeringExecutionOutcome::kTimeoutWaitingForClient, 1);
   histogram_tester.ExpectUniqueSample(
       "Glic.ExperimentalTriggering.SidePanelOpened", false, 1);
@@ -1136,6 +2102,10 @@ TEST_F(GlicExperimentalTriggeringCoordinatorWithTabTest,
       GlicExperimentalTriggeringExecutionOutcome::kTimeoutWaitingForActuation,
       1);
   histogram_tester.ExpectUniqueSample(
+      "Glic.Consumer.ExperimentalTriggering.ExecutionOutcome",
+      GlicExperimentalTriggeringExecutionOutcome::kTimeoutWaitingForActuation,
+      1);
+  histogram_tester.ExpectUniqueSample(
       "Glic.ExperimentalTriggering.SidePanelOpened", true, 1);
   histogram_tester.ExpectUniqueSample(
       "Glic.ExperimentalTriggering.ClientConnected", true, 1);
@@ -1171,6 +2141,10 @@ TEST_F(GlicExperimentalTriggeringCoordinatorWithTabTest,
       "Glic.ExperimentalTriggering.ExecutionOutcome",
       GlicExperimentalTriggeringExecutionOutcome::kInvokeErrorInvokeInProgress,
       1);
+  histogram_tester.ExpectUniqueSample(
+      "Glic.Consumer.ExperimentalTriggering.ExecutionOutcome",
+      GlicExperimentalTriggeringExecutionOutcome::kInvokeErrorInvokeInProgress,
+      1);
 }
 
 TEST_F(GlicExperimentalTriggeringCoordinatorWithTabTest,
@@ -1201,6 +2175,9 @@ TEST_F(GlicExperimentalTriggeringCoordinatorWithTabTest,
 
   histogram_tester.ExpectUniqueSample(
       "Glic.ExperimentalTriggering.ExecutionOutcome",
+      GlicExperimentalTriggeringExecutionOutcome::kInvokeErrorTabClosed, 1);
+  histogram_tester.ExpectUniqueSample(
+      "Glic.Consumer.ExperimentalTriggering.ExecutionOutcome",
       GlicExperimentalTriggeringExecutionOutcome::kInvokeErrorTabClosed, 1);
 }
 
@@ -1233,20 +2210,24 @@ TEST_F(GlicExperimentalTriggeringCoordinatorWithTabTest,
   histogram_tester.ExpectUniqueSample(
       "Glic.ExperimentalTriggering.ExecutionOutcome",
       GlicExperimentalTriggeringExecutionOutcome::kInvokeErrorOther, 1);
+  histogram_tester.ExpectUniqueSample(
+      "Glic.Consumer.ExperimentalTriggering.ExecutionOutcome",
+      GlicExperimentalTriggeringExecutionOutcome::kInvokeErrorOther, 1);
 }
 
 TEST_F(GlicExperimentalTriggeringCoordinatorWithTabTest,
-       ActuationSuperseded_DoesNotRecordDestroyedOutcome) {
+       ActuationSuperseded_EmitsFailedUpdateWithoutRecordingOutcome) {
   base::HistogramTester histogram_tester;
 
   auto* service = static_cast<MockGlicKeyedService*>(
       GlicKeyedServiceFactory::GetGlicKeyedService(profile_, false));
+  base::OnceCallback<void(GlicInvokeError)> on_error;
   EXPECT_CALL(*service,
               InvokeWithAutoSubmit(testing::_, testing::_, testing::_))
-      .WillOnce([this](InvokeWithAutoSubmitPasskey passkey,
-                       GlicInvokeOptions options,
-                       GlicInvokeWithAutoSubmitOptions auto_submit_options) {
-        std::move(options.on_error).Run(GlicInvokeError::kSuperseded);
+      .WillOnce([&](InvokeWithAutoSubmitPasskey passkey,
+                    GlicInvokeOptions options,
+                    GlicInvokeWithAutoSubmitOptions auto_submit_options) {
+        on_error = std::move(options.on_error);
         return mock_glic_instance_.GetWeakPtr();
       });
 
@@ -1256,13 +2237,187 @@ TEST_F(GlicExperimentalTriggeringCoordinatorWithTabTest,
   request.task_metadata = TaskMetadata{.conversation_id = "conv_123"};
   request.payload = TriggerActuationRequest{.initial_prompt = "test"};
 
-  SendRequest(request);
+  base::test::TestFuture<ExperimentalTriggeringResponse> update_future;
+  auto response = coordinator_->OnRequest(
+      kTestContextId, request,
+      ScopedIncomingMessageResultLogger(
+          GlicMetricReporter(profile_),
+          ScopedIncomingMessageResultLogger::Channel::kSharingMessage),
+      update_future.GetRepeatingCallback(), nullptr);
+  ASSERT_TRUE(response.has_value());
+  ASSERT_TRUE(response->task_update.has_value());
+  EXPECT_EQ(response->task_update->state, TaskUpdate::State::kStarting);
+
+  // Simulate the invocation being superseded by some other, unrelated
+  // invocation (i.e. not from within this handler's own invoke call).
+  ASSERT_TRUE(on_error);
+  std::move(on_error).Run(GlicInvokeError::kSuperseded);
+
+  auto failure = update_future.Take();
+  ASSERT_TRUE(failure.task_update.has_value());
+  EXPECT_EQ(failure.task_update->state, TaskUpdate::State::kFailed);
+  EXPECT_EQ(failure.task_update->data_type,
+            TaskUpdate::DataType::kErrorMessage);
+  EXPECT_EQ(failure.task_update->data,
+            "Glic invocation failed: Invocation was superseded");
+
+  ASSERT_TRUE(base::test::RunUntil([&]() {
+    return coordinator_->GetUpdatesHandlerMapSizeForTesting() == 0;
+  }));
+  EXPECT_FALSE(update_future.IsReady());
+
+  histogram_tester.ExpectTotalCount(
+      "Glic.ExperimentalTriggering.ExecutionOutcome", 0);
+}
+
+// Regression test: a continuation request supersedes the in-flight invocation
+// started by the trigger request on the same context. Since both requests share
+// one updates handler, the superseded invocation's error must not tear down the
+// handler, otherwise updates for the continuation are dropped.
+TEST_F(GlicExperimentalTriggeringCoordinatorWithTabTest,
+       ContinuationSupersedingOwnInvocation_KeepsReceivingUpdates) {
+  base::HistogramTester histogram_tester;
+
+  auto* service = static_cast<MockGlicKeyedService*>(
+      GlicKeyedServiceFactory::GetGlicKeyedService(profile_, false));
+  base::OnceCallback<void(GlicInvokeError)> trigger_on_error;
+  EXPECT_CALL(*service,
+              InvokeWithAutoSubmit(testing::_, testing::_, testing::_))
+      .WillOnce([&](InvokeWithAutoSubmitPasskey passkey,
+                    GlicInvokeOptions options,
+                    GlicInvokeWithAutoSubmitOptions auto_submit_options) {
+        EXPECT_FALSE(options.supersede_if_in_progress);
+        std::move(options.on_panel_opened).Run();
+        std::move(options.on_client_connected)
+            .Run(mock_glic_instance_.GetWeakPtr());
+        // The trigger invocation stays in progress.
+        trigger_on_error = std::move(options.on_error);
+        return mock_glic_instance_.GetWeakPtr();
+      })
+      .WillOnce([&](InvokeWithAutoSubmitPasskey passkey,
+                    GlicInvokeOptions options,
+                    GlicInvokeWithAutoSubmitOptions auto_submit_options) {
+        EXPECT_TRUE(options.supersede_if_in_progress);
+        // Mirrors GlicInstanceCoordinatorImpl, which cancels the in-progress
+        // invocation before starting the superseding one. Like
+        // GlicInvokeHandler::OnError(), the error callback is posted.
+        base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
+            FROM_HERE, base::BindOnce(std::move(trigger_on_error),
+                                      GlicInvokeError::kSuperseded));
+        std::move(options.on_panel_opened).Run();
+        std::move(options.on_client_connected)
+            .Run(mock_glic_instance_.GetWeakPtr());
+        return mock_glic_instance_.GetWeakPtr();
+      });
+
+  StartActuationSession();
+
+  ExperimentalTriggeringRequest continue_request;
+  continue_request.version = 1;
+  continue_request.context_id = kTestContextId;
+  continue_request.task_metadata = TaskMetadata{.conversation_id = "conv_123"};
+  continue_request.payload =
+      ContinueActuationRequest{.continuation_prompt = "keep going"};
+
+  base::test::TestFuture<ExperimentalTriggeringResponse> update_future;
+  auto response = coordinator_->OnRequest(
+      kTestContextId, continue_request,
+      ScopedIncomingMessageResultLogger(
+          GlicMetricReporter(profile_),
+          ScopedIncomingMessageResultLogger::Channel::kSharingMessage),
+      update_future.GetRepeatingCallback(), nullptr);
+  ASSERT_TRUE(response.has_value());
+  ASSERT_TRUE(response->task_update.has_value());
+  EXPECT_EQ(response->task_update->state, TaskUpdate::State::kStarting);
+
+  // Updates for the continuation must still be delivered. If the handler had
+  // been torn down, its receiver would already be disconnected and this update
+  // would never arrive.
+  auto update = mojom::ExperimentalTriggeringUpdate::New();
+  update->type = mojom::ExperimentalTriggeringUpdateType::kWorklog;
+  update->data = "continuing";
+  test_triggering_manager_.SendUpdate(
+      std::move(update), mojom::SubscriberObservationType::kUpdate);
+
+  // Flushing runs the loop until the update is dispatched, so any posted
+  // cleanup has also run by now.
+  test_triggering_manager_.FlushForTesting();
+  ASSERT_TRUE(update_future.IsReady());
+  auto async_response = update_future.Take();
+  ASSERT_TRUE(async_response.task_update.has_value());
+  EXPECT_EQ(async_response.task_update->state, TaskUpdate::State::kRunning);
+  EXPECT_EQ(async_response.task_update->data_type,
+            TaskUpdate::DataType::kWorklog);
+  EXPECT_EQ(async_response.task_update->data, "continuing");
+
+  EXPECT_EQ(coordinator_->GetUpdatesHandlerMapSizeForTesting(), 1u);
+
+  // The self-supersede must not have been recorded as an outcome.
+  histogram_tester.ExpectTotalCount(
+      "Glic.ExperimentalTriggering.ExecutionOutcome", 0);
+}
+
+// A duplicate trigger request while the first invocation is still in flight
+// fails with kInvokeInProgress. Unlike kSuperseded, that error must still be
+// surfaced as a FAILED update even though another invocation is pending.
+TEST_F(GlicExperimentalTriggeringCoordinatorWithTabTest,
+       DuplicateTriggerWhileInvocationInFlight_ReportsFailure) {
+  base::HistogramTester histogram_tester;
+
+  auto* service = static_cast<MockGlicKeyedService*>(
+      GlicKeyedServiceFactory::GetGlicKeyedService(profile_, false));
+  base::OnceCallback<void(GlicInvokeError)> trigger_on_error;
+  EXPECT_CALL(*service,
+              InvokeWithAutoSubmit(testing::_, testing::_, testing::_))
+      .WillOnce([&](InvokeWithAutoSubmitPasskey passkey,
+                    GlicInvokeOptions options,
+                    GlicInvokeWithAutoSubmitOptions auto_submit_options) {
+        // The first invocation stays in progress.
+        trigger_on_error = std::move(options.on_error);
+        return mock_glic_instance_.GetWeakPtr();
+      })
+      .WillOnce([&](InvokeWithAutoSubmitPasskey passkey,
+                    GlicInvokeOptions options,
+                    GlicInvokeWithAutoSubmitOptions auto_submit_options) {
+        std::move(options.on_error).Run(GlicInvokeError::kInvokeInProgress);
+        return mock_glic_instance_.GetWeakPtr();
+      });
+
+  ExperimentalTriggeringRequest request;
+  request.version = 1;
+  request.context_id = kTestContextId;
+  request.task_metadata = TaskMetadata{.conversation_id = "conv_123"};
+  request.payload = TriggerActuationRequest{.initial_prompt = "test"};
+
+  base::test::TestFuture<ExperimentalTriggeringResponse> update_future;
+  for (int i = 0; i < 2; ++i) {
+    auto response = coordinator_->OnRequest(
+        kTestContextId, request,
+        ScopedIncomingMessageResultLogger(
+            GlicMetricReporter(profile_),
+            ScopedIncomingMessageResultLogger::Channel::kSharingMessage),
+        update_future.GetRepeatingCallback(), nullptr);
+    ASSERT_TRUE(response.has_value());
+    ASSERT_TRUE(response->task_update.has_value());
+    EXPECT_EQ(response->task_update->state, TaskUpdate::State::kStarting);
+  }
+  ASSERT_TRUE(trigger_on_error);
+
+  auto failure = update_future.Take();
+  ASSERT_TRUE(failure.task_update.has_value());
+  EXPECT_EQ(failure.task_update->state, TaskUpdate::State::kFailed);
   ASSERT_TRUE(base::test::RunUntil([&]() {
     return coordinator_->GetUpdatesHandlerMapSizeForTesting() == 0;
   }));
 
-  histogram_tester.ExpectTotalCount(
-      "Glic.ExperimentalTriggering.ExecutionOutcome", 0);
+  histogram_tester.ExpectUniqueSample(
+      "Glic.ExperimentalTriggering.ExecutionOutcome",
+      GlicExperimentalTriggeringExecutionOutcome::kInvokeErrorInvokeInProgress,
+      1);
+  histogram_tester.ExpectUniqueSample(
+      "Glic.Consumer.ExperimentalTriggering.ExecutionOutcome",
+      GlicExperimentalTriggeringExecutionOutcome::kInvokeErrorInvokeInProgress,
+      1);
 }
 
 TEST_F(GlicExperimentalTriggeringCoordinatorWithTabTest,
@@ -1284,6 +2439,10 @@ TEST_F(GlicExperimentalTriggeringCoordinatorWithTabTest,
 
   histogram_tester.ExpectUniqueSample(
       "Glic.ExperimentalTriggering.ExecutionOutcome",
+      GlicExperimentalTriggeringExecutionOutcome::kUpdatesRegistrationFailed,
+      1);
+  histogram_tester.ExpectUniqueSample(
+      "Glic.Consumer.ExperimentalTriggering.ExecutionOutcome",
       GlicExperimentalTriggeringExecutionOutcome::kUpdatesRegistrationFailed,
       1);
 }
@@ -1310,6 +2469,9 @@ TEST_F(GlicExperimentalTriggeringCoordinatorWithTabTest,
   histogram_tester.ExpectUniqueSample(
       "Glic.ExperimentalTriggering.ExecutionOutcome",
       GlicExperimentalTriggeringExecutionOutcome::kTerminalFailed, 1);
+  histogram_tester.ExpectUniqueSample(
+      "Glic.Consumer.ExperimentalTriggering.ExecutionOutcome",
+      GlicExperimentalTriggeringExecutionOutcome::kTerminalFailed, 1);
 }
 
 TEST_F(GlicExperimentalTriggeringCoordinatorWithTabTest,
@@ -1333,6 +2495,9 @@ TEST_F(GlicExperimentalTriggeringCoordinatorWithTabTest,
 
   histogram_tester.ExpectUniqueSample(
       "Glic.ExperimentalTriggering.ExecutionOutcome",
+      GlicExperimentalTriggeringExecutionOutcome::kTerminalStopped, 1);
+  histogram_tester.ExpectUniqueSample(
+      "Glic.Consumer.ExperimentalTriggering.ExecutionOutcome",
       GlicExperimentalTriggeringExecutionOutcome::kTerminalStopped, 1);
 }
 
@@ -1359,6 +2524,11 @@ TEST_F(GlicExperimentalTriggeringCoordinatorWithTabTest,
       GlicExperimentalTriggeringExecutionOutcome::
           kClientDisconnectedBeforeResponse,
       1);
+  histogram_tester.ExpectUniqueSample(
+      "Glic.Consumer.ExperimentalTriggering.ExecutionOutcome",
+      GlicExperimentalTriggeringExecutionOutcome::
+          kClientDisconnectedBeforeResponse,
+      1);
 }
 
 TEST_F(GlicExperimentalTriggeringCoordinatorWithTabTest,
@@ -1371,16 +2541,588 @@ TEST_F(GlicExperimentalTriggeringCoordinatorWithTabTest,
   request.task_metadata = TaskMetadata{.conversation_id = "conv_123"};
   request.payload = TriggerActuationRequest{.initial_prompt = "test"};
 
-  SendRequest(request);
+  base::test::TestFuture<ExperimentalTriggeringResponse> update_future;
+  auto response = coordinator_->OnRequest(
+      kTestContextId, request,
+      ScopedIncomingMessageResultLogger(
+          GlicMetricReporter(profile_),
+          ScopedIncomingMessageResultLogger::Channel::kSharingMessage),
+      update_future.GetRepeatingCallback(), nullptr);
+  ASSERT_TRUE(response.has_value());
+  ASSERT_TRUE(response->task_update.has_value());
+  EXPECT_EQ(response->task_update->state, TaskUpdate::State::kStarting);
+  EXPECT_FALSE(update_future.IsReady());
 
-  // Destroying coordinator triggers handler destructor.
+  // Destroying coordinator mid-flight triggers the handler destructor, which
+  // emits a best-effort terminal kFailed update and records the outcome.
   coordinator_.reset();
+
+  ASSERT_TRUE(update_future.IsReady());
+  auto failure = update_future.Take();
+  ASSERT_TRUE(failure.task_update.has_value());
+  EXPECT_EQ(failure.task_update->state, TaskUpdate::State::kFailed);
+  EXPECT_EQ(failure.task_update->data_type,
+            TaskUpdate::DataType::kErrorMessage);
+  EXPECT_EQ(failure.task_update->data,
+            "Experimental triggering handler destroyed before completion.");
+  EXPECT_FALSE(update_future.IsReady());
 
   histogram_tester.ExpectUniqueSample(
       "Glic.ExperimentalTriggering.ExecutionOutcome",
       GlicExperimentalTriggeringExecutionOutcome::kDestroyedBeforeCompletion,
       1);
+  histogram_tester.ExpectUniqueSample(
+      "Glic.Consumer.ExperimentalTriggering.ExecutionOutcome",
+      GlicExperimentalTriggeringExecutionOutcome::kDestroyedBeforeCompletion,
+      1);
 }
+
+TEST_F(GlicExperimentalTriggeringCoordinatorWithTabTest,
+       ActuationTeardownAfterTerminalCompletion_DoesNotEmitDuplicateUpdate) {
+  base::HistogramTester histogram_tester;
+
+  ExperimentalTriggeringRequest request;
+  request.version = 1;
+  request.context_id = kTestContextId;
+  request.task_metadata = TaskMetadata{.conversation_id = "conv_123"};
+  request.payload = TriggerActuationRequest{.initial_prompt = "test"};
+
+  base::test::TestFuture<ExperimentalTriggeringResponse> update_future;
+  auto response = coordinator_->OnRequest(
+      kTestContextId, request,
+      ScopedIncomingMessageResultLogger(
+          GlicMetricReporter(profile_),
+          ScopedIncomingMessageResultLogger::Channel::kSharingMessage),
+      update_future.GetRepeatingCallback(), nullptr);
+  ASSERT_TRUE(response.has_value());
+
+  auto complete_update = mojom::ExperimentalTriggeringUpdate::New();
+  complete_update->type =
+      mojom::ExperimentalTriggeringUpdateType::kTerminalCompletion;
+  complete_update->data = "done";
+  test_triggering_manager_.SendUpdate(
+      std::move(complete_update), mojom::SubscriberObservationType::kUpdate);
+  test_triggering_manager_.FlushForTesting();
+
+  ASSERT_TRUE(update_future.IsReady());
+  auto completion = update_future.Take();
+  ASSERT_TRUE(completion.task_update.has_value());
+  EXPECT_EQ(completion.task_update->state, TaskUpdate::State::kComplete);
+
+  // Destroying coordinator after a terminal update was already sent must not
+  // emit an extra kFailed update or overwrite the recorded outcome.
+  coordinator_.reset();
+  EXPECT_FALSE(update_future.IsReady());
+
+  histogram_tester.ExpectUniqueSample(
+      "Glic.ExperimentalTriggering.ExecutionOutcome",
+      GlicExperimentalTriggeringExecutionOutcome::kSuccess, 1);
+}
+
+TEST_F(
+    GlicExperimentalTriggeringCoordinatorWithTabTest,
+    StopActuationDuringActiveSession_DoesNotEmitDuplicateFailedUpdateOnTeardown) {
+  ExperimentalTriggeringRequest trigger_request;
+  trigger_request.version = 1;
+  trigger_request.context_id = kTestContextId;
+  trigger_request.task_metadata = TaskMetadata{.conversation_id = "conv_123"};
+  trigger_request.payload = TriggerActuationRequest{.initial_prompt = "test"};
+
+  base::test::TestFuture<ExperimentalTriggeringResponse> update_future;
+  auto start_response = coordinator_->OnRequest(
+      kTestContextId, trigger_request,
+      ScopedIncomingMessageResultLogger(
+          GlicMetricReporter(profile_),
+          ScopedIncomingMessageResultLogger::Channel::kSharingMessage),
+      update_future.GetRepeatingCallback(), nullptr);
+  ASSERT_TRUE(start_response.has_value());
+  ASSERT_TRUE(start_response->task_update.has_value());
+  EXPECT_EQ(start_response->task_update->state, TaskUpdate::State::kStarting);
+
+  ExperimentalTriggeringRequest stop_request;
+  stop_request.version = 1;
+  stop_request.context_id = kTestContextId;
+  stop_request.task_metadata = TaskMetadata{.conversation_id = "conv_123"};
+  stop_request.payload = StopActuationRequest{.stop_reason = "user cancelled"};
+
+  auto stop_response = coordinator_->OnRequest(
+      kTestContextId, stop_request,
+      ScopedIncomingMessageResultLogger(
+          GlicMetricReporter(profile_),
+          ScopedIncomingMessageResultLogger::Channel::kSharingMessage),
+      update_future.GetRepeatingCallback(), nullptr);
+  ASSERT_TRUE(stop_response.has_value());
+  ASSERT_TRUE(stop_response->task_update.has_value());
+  EXPECT_EQ(stop_response->task_update->state, TaskUpdate::State::kStopped);
+  EXPECT_EQ(coordinator_->GetUpdatesHandlerMapSizeForTesting(), 0u);
+  EXPECT_FALSE(update_future.IsReady());
+}
+
+TEST_F(GlicExperimentalTriggeringCoordinatorWithTabTest,
+       ExecuteActions_FeatureDisabled) {
+  base::test::ScopedFeatureList scoped_features;
+  scoped_features.InitAndDisableFeature(
+      features::kGlicExperimentalTriggeringScriptTools);
+
+  auto response = SendRequest(CreateExecuteScriptToolRequest());
+  ASSERT_TRUE(response.has_value());
+  ASSERT_TRUE(response->task_update.has_value());
+  EXPECT_EQ(response->task_update->state, TaskUpdate::State::kFailed);
+  EXPECT_EQ(response->task_update->data,
+            "Script tool execution is not enabled.");
+  histogram_tester_.ExpectUniqueSample(
+      "Glic.ExperimentalTriggering.IncomingMessageResult.SharingMessage",
+      GlicExperimentalTriggeringIncomingMessageResult::kScriptToolsDisabled, 1);
+  histogram_tester_.ExpectUniqueSample(
+      "Glic.Consumer.ExperimentalTriggering.IncomingMessageResult."
+      "SharingMessage",
+      GlicExperimentalTriggeringIncomingMessageResult::kScriptToolsDisabled, 1);
+}
+
+TEST_F(GlicExperimentalTriggeringCoordinatorWithTabTest,
+       ExecuteActions_NonScriptToolAction) {
+  ExperimentalTriggeringRequest request;
+  request.version = 1;
+  request.context_id = kTestContextId;
+  request.task_metadata = TaskMetadata{.conversation_id = kTestConversationId};
+  ExecuteActionsRequest exec_req;
+  optimization_guide::proto::Action* action = exec_req.actions.add_actions();
+  action->mutable_click();
+  request.payload = std::move(exec_req);
+
+  auto response = SendRequest(request);
+  ASSERT_TRUE(response.has_value());
+  ASSERT_TRUE(response->task_update.has_value());
+  EXPECT_EQ(response->task_update->state, TaskUpdate::State::kFailed);
+  EXPECT_EQ(response->task_update->data,
+            "ExecuteActions contained non-ScriptTool actions.");
+  histogram_tester_.ExpectUniqueSample(
+      "Glic.ExperimentalTriggering.IncomingMessageResult.SharingMessage",
+      GlicExperimentalTriggeringIncomingMessageResult::kNonScriptToolAction, 1);
+  histogram_tester_.ExpectUniqueSample(
+      "Glic.Consumer.ExperimentalTriggering.IncomingMessageResult."
+      "SharingMessage",
+      GlicExperimentalTriggeringIncomingMessageResult::kNonScriptToolAction, 1);
+}
+
+// Fixture without the actor policy control exemption, so that the profile is
+// not allowed to act on the web.
+class GlicExperimentalTriggeringCoordinatorCannotActOnWebTest
+    : public GlicExperimentalTriggeringCoordinatorWithTabTest {
+ public:
+  bool ActorPolicyControlExemption() const override { return false; }
+};
+
+TEST_F(GlicExperimentalTriggeringCoordinatorCannotActOnWebTest,
+       ExecuteActions_CannotActOnWeb) {
+  // Experimental triggering is unavailable for profiles that cannot act on the
+  // web, so the request is rejected before any action-specific checks.
+  auto response = SendRequest(CreateExecuteScriptToolRequest());
+  ASSERT_TRUE(response.has_value());
+  ASSERT_TRUE(response->task_update.has_value());
+  EXPECT_EQ(response->task_update->state, TaskUpdate::State::kFailed);
+  EXPECT_EQ(response->task_update->data,
+            "User is not opted in to experimental triggering.");
+  histogram_tester_.ExpectUniqueSample(
+      "Glic.ExperimentalTriggering.StateOnActuationRequest",
+      syncer::DeviceInfo::GlicExperimentalTriggeringState::kUnavailable, 1);
+  histogram_tester_.ExpectUniqueSample(
+      "Glic.ExperimentalTriggering.IncomingMessageResult.SharingMessage",
+      GlicExperimentalTriggeringIncomingMessageResult::kUserNotOptedIn, 1);
+  histogram_tester_.ExpectUniqueSample(
+      "Glic.Consumer.ExperimentalTriggering.IncomingMessageResult."
+      "SharingMessage",
+      GlicExperimentalTriggeringIncomingMessageResult::kUserNotOptedIn, 1);
+}
+
+TEST_F(GlicExperimentalTriggeringCoordinatorCannotActOnWebTest,
+       TriggerActuation_CannotActOnWeb) {
+  ExperimentalTriggeringRequest request;
+  request.version = 1;
+  request.context_id = kTestContextId;
+  request.task_metadata = TaskMetadata{.conversation_id = "conv_123"};
+  request.payload = TriggerActuationRequest{.initial_prompt = "hello"};
+
+  // The request must fail immediately rather than invoking Glic, which would
+  // be unable to actuate.
+  auto response = SendRequest(request);
+  ASSERT_TRUE(response.has_value());
+  ASSERT_TRUE(response->task_update.has_value());
+  EXPECT_EQ(response->task_update->state, TaskUpdate::State::kFailed);
+  EXPECT_EQ(response->task_update->data,
+            "User is not opted in to experimental triggering.");
+  histogram_tester_.ExpectUniqueSample(
+      "Glic.ExperimentalTriggering.StateOnActuationRequest",
+      syncer::DeviceInfo::GlicExperimentalTriggeringState::kUnavailable, 1);
+  EXPECT_EQ(coordinator_->GetUpdatesHandlerMapSizeForTesting(), 0u);
+}
+
+TEST_F(GlicExperimentalTriggeringCoordinatorWithTabTest,
+       ExecuteActions_SuccessAndStop) {
+  auto* user_data = optimization_guide::DocumentIdentifierUserData::
+      GetOrCreateForCurrentDocument(web_contents_->GetPrimaryMainFrame());
+
+  ExperimentalTriggeringRequest request = CreateExecuteScriptToolRequest(
+      /*tab_id=*/std::nullopt, user_data->serialized_token());
+
+  auto response = SendRequest(request);
+  EXPECT_FALSE(response.has_value());
+  histogram_tester_.ExpectUniqueSample(
+      "Glic.ExperimentalTriggering.IncomingMessageResult.SharingMessage",
+      GlicExperimentalTriggeringIncomingMessageResult::kSuccess, 1);
+  histogram_tester_.ExpectUniqueSample(
+      "Glic.Consumer.ExperimentalTriggering.IncomingMessageResult."
+      "SharingMessage",
+      GlicExperimentalTriggeringIncomingMessageResult::kSuccess, 1);
+  EXPECT_EQ(coordinator_->GetUpdatesHandlerMapSizeForTesting(), 1u);
+
+  ExperimentalTriggeringRequest stop_request;
+  stop_request.version = 1;
+  stop_request.context_id = kTestContextId;
+  stop_request.task_metadata =
+      TaskMetadata{.conversation_id = kTestConversationId};
+  stop_request.payload = StopActuationRequest{.stop_reason = "STOPPED_BY_USER"};
+
+  auto stop_response = SendRequest(stop_request);
+  ASSERT_TRUE(stop_response.has_value());
+  ASSERT_TRUE(stop_response->task_update.has_value());
+  EXPECT_EQ(stop_response->task_update->state, TaskUpdate::State::kStopped);
+  EXPECT_EQ(coordinator_->GetUpdatesHandlerMapSizeForTesting(), 0u);
+}
+
+TEST_F(GlicExperimentalTriggeringCoordinatorWithTabTest,
+       ExecuteActions_AlreadyExecuting) {
+  auto* user_data = optimization_guide::DocumentIdentifierUserData::
+      GetOrCreateForCurrentDocument(web_contents_->GetPrimaryMainFrame());
+
+  ExperimentalTriggeringRequest request = CreateExecuteScriptToolRequest(
+      /*tab_id=*/std::nullopt, user_data->serialized_token());
+
+  auto response1 = SendRequest(request);
+  EXPECT_FALSE(response1.has_value());
+  EXPECT_EQ(coordinator_->GetUpdatesHandlerMapSizeForTesting(), 1u);
+
+  auto response2 = SendRequest(request);
+  ASSERT_TRUE(response2.has_value());
+  ASSERT_TRUE(response2->task_update.has_value());
+  EXPECT_EQ(response2->task_update->state, TaskUpdate::State::kFailed);
+  EXPECT_EQ(response2->task_update->data,
+            "Another task is already executing for this context.");
+  histogram_tester_.ExpectBucketCount(
+      "Glic.ExperimentalTriggering.IncomingMessageResult.SharingMessage",
+      GlicExperimentalTriggeringIncomingMessageResult::kTaskAlreadyRunning, 1);
+  histogram_tester_.ExpectBucketCount(
+      "Glic.Consumer.ExperimentalTriggering.IncomingMessageResult."
+      "SharingMessage",
+      GlicExperimentalTriggeringIncomingMessageResult::kTaskAlreadyRunning, 1);
+  // Rejecting the second request must not tear down the first execution.
+  EXPECT_EQ(coordinator_->GetUpdatesHandlerMapSizeForTesting(), 1u);
+
+  // Clean up the in-flight execution.
+  ExperimentalTriggeringRequest stop_request;
+  stop_request.version = 1;
+  stop_request.context_id = kTestContextId;
+  stop_request.task_metadata =
+      TaskMetadata{.conversation_id = kTestConversationId};
+  stop_request.payload = StopActuationRequest{.stop_reason = "STOPPED_BY_USER"};
+  EXPECT_TRUE(SendRequest(stop_request).has_value());
+}
+
+TEST_F(GlicExperimentalTriggeringCoordinatorWithTabTest,
+       TriggerActuationWhileExecutingActions_Rejected) {
+  auto* user_data = optimization_guide::DocumentIdentifierUserData::
+      GetOrCreateForCurrentDocument(web_contents_->GetPrimaryMainFrame());
+
+  ExperimentalTriggeringRequest request = CreateExecuteScriptToolRequest(
+      /*tab_id=*/std::nullopt, user_data->serialized_token());
+
+  EXPECT_FALSE(SendRequest(request).has_value());
+  EXPECT_EQ(coordinator_->GetUpdatesHandlerMapSizeForTesting(), 1u);
+
+  auto* service = static_cast<MockGlicKeyedService*>(
+      GlicKeyedServiceFactory::GetGlicKeyedService(profile_, false));
+  EXPECT_CALL(*service,
+              InvokeWithAutoSubmit(testing::_, testing::_, testing::_))
+      .Times(0);
+
+  ExperimentalTriggeringRequest actuation_request;
+  actuation_request.version = 1;
+  actuation_request.context_id = kTestContextId;
+  actuation_request.task_metadata =
+      TaskMetadata{.conversation_id = kTestConversationId};
+  actuation_request.payload = TriggerActuationRequest{.initial_prompt = "test"};
+
+  auto response = SendRequest(actuation_request);
+  ASSERT_TRUE(response.has_value());
+  ASSERT_TRUE(response->task_update.has_value());
+  EXPECT_EQ(response->task_update->state, TaskUpdate::State::kFailed);
+  EXPECT_EQ(response->task_update->data,
+            "Direct action execution is already in progress for this "
+            "context.");
+  histogram_tester_.ExpectBucketCount(
+      "Glic.ExperimentalTriggering.IncomingMessageResult.SharingMessage",
+      GlicExperimentalTriggeringIncomingMessageResult::kTaskAlreadyRunning, 1);
+  histogram_tester_.ExpectBucketCount(
+      "Glic.Consumer.ExperimentalTriggering.IncomingMessageResult."
+      "SharingMessage",
+      GlicExperimentalTriggeringIncomingMessageResult::kTaskAlreadyRunning, 1);
+  // The in-flight execution and its handler must survive the rejection.
+  EXPECT_EQ(coordinator_->GetUpdatesHandlerMapSizeForTesting(), 1u);
+
+  // Clean up the in-flight execution.
+  ExperimentalTriggeringRequest stop_request;
+  stop_request.version = 1;
+  stop_request.context_id = kTestContextId;
+  stop_request.task_metadata =
+      TaskMetadata{.conversation_id = kTestConversationId};
+  stop_request.payload = StopActuationRequest{.stop_reason = "STOPPED_BY_USER"};
+  EXPECT_TRUE(SendRequest(stop_request).has_value());
+}
+
+TEST_F(GlicExperimentalTriggeringCoordinatorWithTabTest,
+       ExecuteActions_Complete) {
+  auto* user_data = optimization_guide::DocumentIdentifierUserData::
+      GetOrCreateForCurrentDocument(web_contents_->GetPrimaryMainFrame());
+
+  ExperimentalTriggeringRequest request = CreateExecuteScriptToolRequest(
+      mock_tab_.GetHandle().raw_value(), user_data->serialized_token());
+
+  base::test::TestFuture<ExperimentalTriggeringResponse> update_future;
+  coordinator_->OnRequest(
+      kTestContextId, request,
+      ScopedIncomingMessageResultLogger(
+          GlicMetricReporter(profile_),
+          ScopedIncomingMessageResultLogger::Channel::kSharingMessage),
+      update_future.GetRepeatingCallback(), &mock_tab_);
+
+  EXPECT_EQ(coordinator_->GetUpdatesHandlerMapSizeForTesting(), 1u);
+
+  auto response = update_future.Take();
+  EXPECT_EQ(response.context_id, kTestContextId);
+  EXPECT_TRUE(response.task_metadata.has_value());
+  EXPECT_EQ(response.task_metadata->conversation_id, kTestConversationId);
+  ASSERT_TRUE(response.execute_actions_response.has_value());
+  // In unit tests, the mock WebContents has no active RenderFrameHost, so tool
+  // time-of-use validation returns kTabWentAway.
+  EXPECT_EQ(response.execute_actions_response->actions_result.action_result(),
+            static_cast<int32_t>(actor::mojom::ActionResultCode::kTabWentAway));
+  EXPECT_EQ(coordinator_->GetUpdatesHandlerMapSizeForTesting(), 0u);
+}
+
+TEST_F(GlicExperimentalTriggeringCoordinatorWithTabTest,
+       ExecuteActions_WithDocumentIdentifier_Success) {
+  auto* user_data = optimization_guide::DocumentIdentifierUserData::
+      GetOrCreateForCurrentDocument(web_contents_->GetPrimaryMainFrame());
+
+  ExperimentalTriggeringRequest request = CreateExecuteScriptToolRequest(
+      /*tab_id=*/std::nullopt, user_data->serialized_token());
+
+  base::test::TestFuture<ExperimentalTriggeringResponse> update_future;
+  coordinator_->OnRequest(
+      kTestContextId, request,
+      ScopedIncomingMessageResultLogger(
+          GlicMetricReporter(profile_),
+          ScopedIncomingMessageResultLogger::Channel::kSharingMessage),
+      update_future.GetRepeatingCallback(), &mock_tab_);
+
+  EXPECT_EQ(coordinator_->GetUpdatesHandlerMapSizeForTesting(), 1u);
+
+  auto response = update_future.Take();
+  EXPECT_EQ(response.context_id, kTestContextId);
+  EXPECT_TRUE(response.task_metadata.has_value());
+  EXPECT_EQ(response.task_metadata->conversation_id, kTestConversationId);
+  ASSERT_TRUE(response.execute_actions_response.has_value());
+  // In unit tests, the mock WebContents has no active RenderFrameHost, so tool
+  // time-of-use validation returns kTabWentAway.
+  EXPECT_EQ(response.execute_actions_response->actions_result.action_result(),
+            static_cast<int32_t>(actor::mojom::ActionResultCode::kTabWentAway));
+  EXPECT_EQ(coordinator_->GetUpdatesHandlerMapSizeForTesting(), 0u);
+  histogram_tester_.ExpectUniqueSample(
+      "Glic.ExperimentalTriggering.IncomingMessageResult.SharingMessage",
+      GlicExperimentalTriggeringIncomingMessageResult::kSuccess, 1);
+  histogram_tester_.ExpectUniqueSample(
+      "Glic.Consumer.ExperimentalTriggering.IncomingMessageResult."
+      "SharingMessage",
+      GlicExperimentalTriggeringIncomingMessageResult::kSuccess, 1);
+}
+
+TEST_F(GlicExperimentalTriggeringCoordinatorWithTabTest,
+       ExecuteActions_MissingTabIdAndDocumentIdentifier_Fails) {
+  auto response = SendRequest(CreateExecuteScriptToolRequest());
+  ASSERT_TRUE(response.has_value());
+  ASSERT_TRUE(response->task_update.has_value());
+  EXPECT_EQ(response->task_update->state, TaskUpdate::State::kFailed);
+  EXPECT_EQ(response->task_update->data,
+            "Target tab for document identifier could not be found.");
+  histogram_tester_.ExpectUniqueSample(
+      "Glic.ExperimentalTriggering.IncomingMessageResult.SharingMessage",
+      GlicExperimentalTriggeringIncomingMessageResult::kTabNotFound, 1);
+  histogram_tester_.ExpectUniqueSample(
+      "Glic.Consumer.ExperimentalTriggering.IncomingMessageResult."
+      "SharingMessage",
+      GlicExperimentalTriggeringIncomingMessageResult::kTabNotFound, 1);
+  EXPECT_EQ(coordinator_->GetUpdatesHandlerMapSizeForTesting(), 0u);
+}
+
+TEST_F(GlicExperimentalTriggeringCoordinatorWithTabTest,
+       ExecuteActions_WithUnknownDocumentIdentifier_Fails) {
+  ExperimentalTriggeringRequest request = CreateExecuteScriptToolRequest(
+      /*tab_id=*/std::nullopt, base::UnguessableToken::Create().ToString());
+
+  auto response = SendRequest(request);
+  ASSERT_TRUE(response.has_value());
+  ASSERT_TRUE(response->task_update.has_value());
+  EXPECT_EQ(response->task_update->state, TaskUpdate::State::kFailed);
+  EXPECT_EQ(response->task_update->data,
+            "Target tab for document identifier could not be found.");
+  histogram_tester_.ExpectUniqueSample(
+      "Glic.ExperimentalTriggering.IncomingMessageResult.SharingMessage",
+      GlicExperimentalTriggeringIncomingMessageResult::kTabNotFound, 1);
+  histogram_tester_.ExpectUniqueSample(
+      "Glic.Consumer.ExperimentalTriggering.IncomingMessageResult."
+      "SharingMessage",
+      GlicExperimentalTriggeringIncomingMessageResult::kTabNotFound, 1);
+  EXPECT_EQ(coordinator_->GetUpdatesHandlerMapSizeForTesting(), 0u);
+}
+
+TEST_F(GlicExperimentalTriggeringCoordinatorWithTabTest,
+       ExecuteActions_Timeout) {
+  base::test::ScopedFeatureList scoped_features;
+  scoped_features.InitAndEnableFeatureWithParameters(
+      features::kGlicExperimentalTriggeringScriptTools, {{"timeout", "5s"}});
+
+  // NiceMock suppresses warnings for ActorUiStateManager calling GetWeakPtr()
+  // on the controller during tab registration (configured via ON_CALL in
+  // MockActorUiTabController's constructor).
+  testing::NiceMock<actor::ui::MockActorUiTabController> mock_tab_controller(
+      mock_tab_);
+  // Never complete the async UI event so that the actions hang and trigger
+  // the coordinator timeout.
+  EXPECT_CALL(mock_tab_controller, OnUiTabStateChange)
+      .WillRepeatedly(
+          [](const actor::ui::UiTabState&, actor::ui::UiResultCallback) {});
+
+  ExperimentalTriggeringRequest request = CreateExecuteScriptToolRequest(
+      mock_tab_.GetHandle().raw_value(),
+      base::UnguessableToken::Create().ToString());
+
+  base::test::TestFuture<ExperimentalTriggeringResponse> update_future;
+  coordinator_->OnRequest(
+      kTestContextId, request,
+      ScopedIncomingMessageResultLogger(
+          GlicMetricReporter(profile_),
+          ScopedIncomingMessageResultLogger::Channel::kSharingMessage),
+      update_future.GetRepeatingCallback(), &mock_tab_);
+
+  EXPECT_EQ(coordinator_->GetUpdatesHandlerMapSizeForTesting(), 1u);
+  EXPECT_FALSE(update_future.IsReady());
+
+  task_environment_.FastForwardBy(base::Seconds(6));
+
+  auto response = update_future.Take();
+  EXPECT_EQ(response.context_id, kTestContextId);
+  EXPECT_TRUE(response.task_metadata.has_value());
+  EXPECT_EQ(response.task_metadata->conversation_id, kTestConversationId);
+  ASSERT_TRUE(response.execute_actions_response.has_value());
+  EXPECT_EQ(response.execute_actions_response->actions_result.action_result(),
+            static_cast<int32_t>(actor::mojom::ActionResultCode::kToolTimeout));
+  EXPECT_EQ(coordinator_->GetUpdatesHandlerMapSizeForTesting(), 0u);
+}
+
+#if BUILDFLAG(IS_ANDROID)
+TEST_F(GlicExperimentalTriggeringCoordinatorWithTabTest,
+       PreparedTabShowsPanelOnlyWhenChromeInForeground) {
+  auto* glic_service = static_cast<MockGlicKeyedService*>(
+      GlicKeyedServiceFactory::GetGlicKeyedService(profile_, /*create=*/false));
+  ASSERT_TRUE(glic_service);
+
+  std::optional<bool> captured_show_panel;
+  EXPECT_CALL(*glic_service,
+              InvokeWithAutoSubmit(testing::_, testing::_, testing::_))
+      .WillRepeatedly([this, &captured_show_panel](
+                          InvokeWithAutoSubmitPasskey passkey,
+                          GlicInvokeOptions options,
+                          GlicInvokeWithAutoSubmitOptions auto_submit_options) {
+        captured_show_panel = auto_submit_options.show_panel;
+        if (options.on_panel_opened) {
+          std::move(options.on_panel_opened).Run();
+        }
+        if (options.on_client_connected) {
+          std::move(options.on_client_connected)
+              .Run(mock_glic_instance_.GetWeakPtr());
+        }
+        return mock_glic_instance_.GetWeakPtr();
+      });
+
+  // Background: show_panel should be false for prepared tab.
+  coordinator_->set_is_chrome_in_background(true);
+  ExperimentalTriggeringRequest request;
+  request.version = 1;
+  request.context_id = kTestContextId;
+  request.task_metadata = TaskMetadata{.conversation_id = "conv_1"};
+  request.payload = TriggerActuationRequest{.initial_prompt = "test"};
+
+  base::test::TestFuture<ExperimentalTriggeringResponse> update_future;
+  auto response = coordinator_->OnRequest(
+      kTestContextId, request,
+      ScopedIncomingMessageResultLogger(
+          GlicMetricReporter(profile_),
+          ScopedIncomingMessageResultLogger::Channel::kSharingMessage),
+      update_future.GetRepeatingCallback(), &mock_tab_);
+  ASSERT_TRUE(response.has_value());
+  EXPECT_EQ(captured_show_panel, false);
+
+  // Foreground: show_panel should be true for prepared tab.
+  coordinator_->set_is_chrome_in_background(false);
+  request.context_id = "context_2";
+  request.task_metadata = TaskMetadata{.conversation_id = "conv_2"};
+  base::test::TestFuture<ExperimentalTriggeringResponse> update_future2;
+  auto response2 = coordinator_->OnRequest(
+      "context_2", request,
+      ScopedIncomingMessageResultLogger(
+          GlicMetricReporter(profile_),
+          ScopedIncomingMessageResultLogger::Channel::kSharingMessage),
+      update_future2.GetRepeatingCallback(), &mock_tab_);
+  ASSERT_TRUE(response2.has_value());
+  EXPECT_EQ(captured_show_panel, true);
+}
+
+TEST_F(GlicExperimentalTriggeringCoordinatorTest,
+       DeviceOptInRequestFailsWhenChromeInBackground) {
+  coordinator_->set_is_chrome_in_background(true);
+
+  ExperimentalTriggeringRequest request;
+  request.version = 1;
+  request.context_id = kTestContextId;
+  request.task_metadata = TaskMetadata{.sender_sequence_number = 42};
+  request.payload = DeviceOptInRequest{.triggering_source = "Android"};
+
+  base::HistogramTester histogram_tester;
+  base::test::TestFuture<ExperimentalTriggeringResponse> update_future;
+  auto response = coordinator_->OnRequest(
+      kTestContextId, request,
+      ScopedIncomingMessageResultLogger(
+          GlicMetricReporter(profile_),
+          ScopedIncomingMessageResultLogger::Channel::kSharingMessage),
+      update_future.GetRepeatingCallback(), nullptr);
+
+  // The opt-in UI can't be shown, so the reply is synchronous.
+  ASSERT_TRUE(response.has_value());
+  EXPECT_EQ(response->context_id, kTestContextId);
+  ASSERT_TRUE(response->device_opt_in_result.has_value());
+  EXPECT_EQ(*response->device_opt_in_result, DeviceOptInResult::kFailed);
+  EXPECT_FALSE(response->task_update.has_value());
+  ASSERT_TRUE(response->task_metadata.has_value());
+  EXPECT_EQ(response->task_metadata->last_seen_sequence_number, 42);
+  EXPECT_FALSE(update_future.IsReady());
+  EXPECT_EQ(coordinator_->GetUpdatesHandlerMapSizeForTesting(), 0u);
+
+  histogram_tester.ExpectUniqueSample(
+      "Glic.ExperimentalTriggering.IncomingMessageResult.SharingMessage",
+      GlicExperimentalTriggeringIncomingMessageResult::kAndroidOptInUnsupported,
+      1);
+}
+#endif
 
 }  // namespace
 }  // namespace glic

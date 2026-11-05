@@ -46,6 +46,7 @@ class TestGpuChannelHost : public GpuChannelHost {
  public:
   explicit TestGpuChannelHost(mojom::GpuChannel& gpu_channel)
       : GpuChannelHost(0 /* channel_id */,
+                       viz::mojom::GpuClientType::kBrowser,
                        mojo::ScopedMessagePipeHandle(
                            mojo::MessagePipeHandle(mojo::kInvalidHandleValue))),
         gpu_channel_(gpu_channel) {}
@@ -372,6 +373,17 @@ TEST_P(CommandBufferProxyImplTest, DisconnectChannelDoesNotIssueSyncFlush) {
       .Times(1)
       .WillOnce(Return(true));
   EXPECT_CALL(mock_gpu_channel_, Flush()).Times(0);
+
+  proxy.reset();
+}
+
+TEST_P(CommandBufferProxyImplTest,
+       DisconnectChannelUsesAsyncDestroyWhenChannelShuttingDown) {
+  auto proxy = CreateAndInitializeProxy();
+  proxy->SetChannelShuttingDown();
+
+  EXPECT_CALL(mock_gpu_channel_, DestroyCommandBuffer(_)).Times(0);
+  EXPECT_CALL(mock_gpu_channel_, DestroyCommandBuffer(_, _)).Times(1);
 
   proxy.reset();
 }

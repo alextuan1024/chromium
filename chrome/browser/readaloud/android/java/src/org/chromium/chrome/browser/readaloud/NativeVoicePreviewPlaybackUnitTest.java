@@ -29,6 +29,7 @@ import org.chromium.chrome.modules.readaloud.PlaybackListener;
 public class NativeVoicePreviewPlaybackUnitTest {
     private static final String VOICE_ID = "voice_ruby";
     private static final String LANGUAGE_CODE = "en";
+    private static final String PREVIEW_TEXT = "Preview sample text";
 
     @Rule public final MockitoRule mMockitoRule = MockitoJUnit.rule();
 
@@ -40,7 +41,8 @@ public class NativeVoicePreviewPlaybackUnitTest {
 
     @Before
     public void setUp() {
-        mPlayback = new NativeVoicePreviewPlayback(mBridgeMock, LANGUAGE_CODE, VOICE_ID);
+        mPlayback =
+                new NativeVoicePreviewPlayback(mBridgeMock, LANGUAGE_CODE, VOICE_ID, PREVIEW_TEXT);
     }
 
     @Test
@@ -79,13 +81,13 @@ public class NativeVoicePreviewPlaybackUnitTest {
     @Test
     public void testPlay() {
         mPlayback.play();
-        verify(mBridgeMock).previewVoice(VOICE_ID);
+        verify(mBridgeMock).previewVoice(VOICE_ID, PREVIEW_TEXT);
     }
 
     @Test
     public void testPause() {
         mPlayback.pause();
-        verify(mBridgeMock).stopVoicePreview();
+        verify(mBridgeMock).pauseVoicePreview();
     }
 
     @Test

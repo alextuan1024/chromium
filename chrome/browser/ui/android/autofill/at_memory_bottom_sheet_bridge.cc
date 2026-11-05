@@ -5,6 +5,7 @@
 #include "chrome/browser/ui/android/autofill/at_memory_bottom_sheet_bridge.h"
 
 #include <memory>
+#include <optional>
 #include <utility>
 
 #include "base/android/jni_android.h"
@@ -14,13 +15,12 @@
 #include "base/containers/to_vector.h"
 #include "base/strings/string_util.h"
 #include "chrome/browser/android/resource_mapper.h"
-#include "chrome/browser/personal_context/first_run/personal_context_first_run_service_factory.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/ui/autofill/at_memory_suggestion_controller.h"
+#include "chrome/browser/ui/android/autofill/at_memory_suggestion_controller.h"
 #include "chrome/browser/ui/autofill/autofill_suggestion_controller_utils.h"
 #include "components/autofill/core/browser/ui/autofill_resource_util.h"
-#include "components/personal_context/first_run/personal_context_first_run_service.h"
 #include "content/public/browser/web_contents.h"
+#include "third_party/jni_zero/default_conversions.h"
 #include "ui/android/window_android.h"
 
 // Must come after all headers that specialize FromJniType() / ToJniType().
@@ -88,13 +88,6 @@ AtMemoryBottomSheetBridge::AtMemoryBottomSheetBridge(
     : controller_(CHECK_DEREF(controller)) {
   CHECK(window_android);
   CHECK(profile);
-  // AtMemoryBottomSheetBridge creates Java bottom sheet UI which depends on
-  // `PersonalContextFirstRunService` to determine whether to show a notice
-  // to the user.
-  //
-  // If AtMemory bottom sheet is shown, then `PersonalContextFirstRunService`
-  // must exist for that profile.
-  CHECK(PersonalContextFirstRunServiceFactory::GetForProfile(profile));
 
   java_object_ = Java_AtMemoryBottomSheetBridge_create(
       base::android::AttachCurrentThread(), reinterpret_cast<intptr_t>(this),
@@ -113,7 +106,8 @@ AtMemoryBottomSheetBridge::~AtMemoryBottomSheetBridge() {
 }
 
 void AtMemoryBottomSheetBridge::RequestShowContent(
-    base::span<const Suggestion> suggestions) {
+    base::span<const Suggestion> suggestions,
+    std::optional<std::u16string> search_bar_initial_value) {
   if (!java_object_) {
     controller_->OnDismissed();
     return;
@@ -126,8 +120,8 @@ void AtMemoryBottomSheetBridge::RequestShowContent(
         return CreateJavaSuggestion(env, suggestion);
       });
 
-  Java_AtMemoryBottomSheetBridge_show(env, java_object_,
-                                      std::move(java_suggestions));
+  Java_AtMemoryBottomSheetBridge_show(
+      env, java_object_, std::move(java_suggestions), search_bar_initial_value);
 }
 
 void AtMemoryBottomSheetBridge::Hide() {
@@ -167,10 +161,10 @@ void AtMemoryBottomSheetBridge::OnChildSuggestionsShown(JNIEnv* env,
   controller_->OnChildSuggestionsShown(parent_position);
 }
 
-void AtMemoryBottomSheetBridge::OnChildSuggestionSelected(JNIEnv* env,
+void AtMemoryBottomSheetBridge::OnChildSuggestionAccepted(JNIEnv* env,
                                                           int parent_position,
                                                           int child_position) {
-  controller_->OnChildSuggestionSelected(parent_position, child_position);
+  controller_->OnChildSuggestionAccepted(parent_position, child_position);
 }
 
 bool AtMemoryBottomSheetBridge::IsSearching(JNIEnv* env) {

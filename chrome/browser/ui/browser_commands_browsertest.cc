@@ -4,11 +4,17 @@
 
 #include "chrome/browser/ui/browser_commands.h"
 
+#include <string>
+#include <string_view>
+
 #include "base/path_service.h"
+#include "base/strings/utf_string_conversions.h"
 #include "base/task/current_thread.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/metrics/user_action_tester.h"
 #include "base/test/scoped_feature_list.h"
+#include "build/branding_buildflags.h"
+#include "build/build_config.h"
 #include "chrome/app/chrome_command_ids.h"
 #include "chrome/browser/lifetime/browser_shutdown.h"
 #include "chrome/browser/prefs/incognito_mode_prefs.h"
@@ -18,9 +24,9 @@
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/browser_window/public/create_browser_window.h"
 #include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
+#include "chrome/browser/ui/commerce/commerce_ui_tab_helper.h"
 #include "chrome/browser/ui/side_panel/side_panel_entry_id.h"
 #include "chrome/browser/ui/side_panel/side_panel_ui.h"
-#include "chrome/browser/ui/tabs/public/tab_features.h"
 #include "chrome/browser/ui/tabs/split_tab_metrics.h"
 #include "chrome/browser/ui/tabs/tab_group_model.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
@@ -41,15 +47,23 @@
 #include "components/split_tabs/split_tab_id.h"
 #include "components/tab_groups/tab_group_id.h"
 #include "components/tabs/public/tab_group.h"
+#include "components/tabs/public/tab_interface.h"
 #include "content/public/common/content_paths.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
 #include "content/public/test/test_navigation_observer.h"
 #include "net/dns/mock_host_resolver.h"
+#include "testing/gtest/include/gtest/gtest.h"
 #include "ui/base/clipboard/clipboard.h"
+#include "ui/base/clipboard/clipboard_buffer.h"
 #include "ui/base/clipboard/scoped_clipboard_writer.h"
 #include "ui/base/page_transition_types.h"
 #include "ui/base/ui_base_features.h"
+#include "url/gurl.h"
+
+#if BUILDFLAG(GOOGLE_CHROME_BRANDING) && !BUILDFLAG(IS_CHROMEOS)
+#include "chrome/test/base/scoped_channel_override.h"
+#endif  // BUILDFLAG(GOOGLE_CHROME_BRANDING) && !BUILDFLAG(IS_CHROMEOS)
 
 namespace chrome {
 
@@ -865,42 +879,17 @@ IN_PROC_BROWSER_TEST_F(
 }
 
 #if BUILDFLAG(IS_LINUX)
-// Tests that unsafe schemes are not allowed when opening new tabs from a
-// clipboard URL.
-IN_PROC_BROWSER_TEST_F(BrowserCommandsTest,
-                       NewTabFromClipboardURLBlocksUnsafeSchemes) {
-  if (!ui::Clipboard::IsSupportedClipboardBuffer(
+IN_PROC_BROWSER_TEST_F(BrowserCommandsTest, NewTabFromClipboardURL) {
+  content::BrowserTestClipboardScope clipboard_scope;
+  if (!ui::Clipboard::IsMiddleClickPasteEnabled() ||
+      !ui::Clipboard::IsSupportedClipboardBuffer(
           ui::ClipboardBuffer::kSelection)) {
     return;
   }
 
-  TabStripModel* tab_strip_model = browser()->tab_strip_model();
-  int initial_tab_count = tab_strip_model->count();
-
-  // Try file:// URL. Note: ui::Clipboard::ReadText is asynchronous on Linux, so
-  // we must pump the runloop to allow the callback to run and be rejected.
-  {
-    ui::ScopedClipboardWriter writer(ui::ClipboardBuffer::kSelection);
-    writer.WriteText(u"file:///etc/passwd");
-  }
-
-  chrome::NewTabFromClipboardURL(browser());
-  base::RunLoop().RunUntilIdle();
-  EXPECT_EQ(initial_tab_count, tab_strip_model->count());
-
-  // Try chrome:// URL.
-  {
-    ui::ScopedClipboardWriter writer(ui::ClipboardBuffer::kSelection);
-    writer.WriteText(u"chrome://version");
-  }
-
-  chrome::NewTabFromClipboardURL(browser());
-  base::RunLoop().RunUntilIdle();
-  EXPECT_EQ(initial_tab_count, tab_strip_model->count());
-
-  // Try a safe URL (http). We explicitly observe both the new tab addition and
-  // the navigation completion instead of guessing runloop cycles.
-  GURL safe_url = https_server_.GetURL("a.test", "/title1.html");
+  TabStripModel* const tab_strip_model = browser()->tab_strip_model();
+  const int initial_tab_count = tab_strip_model->count();
+  const GURL safe_url = https_server_.GetURL("a.test", "/title1.html");
   {
     ui::ScopedClipboardWriter writer(ui::ClipboardBuffer::kSelection);
     writer.WriteText(base::UTF8ToUTF16(safe_url.spec()));
@@ -918,6 +907,74 @@ IN_PROC_BROWSER_TEST_F(BrowserCommandsTest,
   EXPECT_EQ(safe_url,
             tab_strip_model->GetActiveWebContents()->GetLastCommittedURL());
 }
+
+struct BlockedClipboardUrlTestCase {
+  std::string_view test_name;
+  std::u16string_view clipboard_text;
+};
+
+class BrowserCommandsBlockedClipboardUrlTest
+    : public BrowserCommandsTest,
+      public testing::WithParamInterface<BlockedClipboardUrlTestCase> {};
+
+// Tests that non-HTTP(S) schemes (including web-safe schemes such as
+// filesystem:, blob:, data:, chrome-extension:, and ws:) are not allowed when
+// opening new tabs from a clipboard URL.
+IN_PROC_BROWSER_TEST_P(BrowserCommandsBlockedClipboardUrlTest,
+                       NewTabFromClipboardURLBlocksUnsafeScheme) {
+  content::BrowserTestClipboardScope clipboard_scope;
+  if (!ui::Clipboard::IsMiddleClickPasteEnabled() ||
+      !ui::Clipboard::IsSupportedClipboardBuffer(
+          ui::ClipboardBuffer::kSelection)) {
+    return;
+  }
+
+  TabStripModel* const tab_strip_model = browser()->tab_strip_model();
+  const int initial_tab_count = tab_strip_model->count();
+  {
+    ui::ScopedClipboardWriter writer(ui::ClipboardBuffer::kSelection);
+    writer.WriteText(GetParam().clipboard_text);
+  }
+
+  chrome::NewTabFromClipboardURL(browser());
+  EXPECT_EQ(initial_tab_count, tab_strip_model->count());
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    ,
+    BrowserCommandsBlockedClipboardUrlTest,
+    testing::Values(
+        BlockedClipboardUrlTestCase{"File", u"file:///etc/passwd"},
+        BlockedClipboardUrlTestCase{"ChromeUI", u"chrome://version"},
+        BlockedClipboardUrlTestCase{"ChromeUntrusted",
+                                    u"chrome-untrusted://terminal"},
+        BlockedClipboardUrlTestCase{
+            "ChromeExtension",
+            u"chrome-extension://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/"
+            u"manifest.json"},
+        BlockedClipboardUrlTestCase{
+            "ChromeSearch", u"chrome-search://local-ntp/local-ntp.html"},
+        BlockedClipboardUrlTestCase{
+            "Filesystem", u"filesystem:https://a.test/temporary/test.html"},
+        BlockedClipboardUrlTestCase{
+            "Blob",
+            u"blob:https://a.test/550e8400-e29b-41d4-a716-446655440000"},
+        BlockedClipboardUrlTestCase{"Data", u"data:text/html,<h1>hi</h1>"},
+        BlockedClipboardUrlTestCase{
+            "JavascriptFilesystem",
+            u"javascript:filesystem:https://a.test/temporary/test.html"},
+        BlockedClipboardUrlTestCase{"JavascriptEmpty", u"javascript:"},
+        BlockedClipboardUrlTestCase{"AboutBlank", u"about:blank"},
+        BlockedClipboardUrlTestCase{"ViewSource",
+                                    u"view-source:https://a.test/title1.html"},
+        BlockedClipboardUrlTestCase{"Ws", u"ws://a.test/socket"},
+        BlockedClipboardUrlTestCase{"Wss", u"wss://a.test/socket"},
+        BlockedClipboardUrlTestCase{
+            "DevTools", u"devtools://devtools/bundled/inspector.html"},
+        BlockedClipboardUrlTestCase{"Whitespace", u"   "}),
+    [](const testing::TestParamInfo<BlockedClipboardUrlTestCase>& info) {
+      return std::string(info.param.test_name);
+    });
 #endif
 
 IN_PROC_BROWSER_TEST_F(BrowserCommandsTest, NewIncognitoWindowMetrics) {
@@ -938,7 +995,49 @@ IN_PROC_BROWSER_TEST_F(BrowserCommandsTest,
   tabs::TabInterface* incognito_tab =
       incognito_browser->GetTabStripModel()->GetActiveTab();
   ASSERT_NE(incognito_tab, nullptr);
-  EXPECT_EQ(incognito_tab->GetTabFeatures()->commerce_ui_tab_helper(), nullptr);
+  EXPECT_EQ(commerce::CommerceUiTabHelper::From(incognito_tab), nullptr);
+}
+
+class NonGroupFocusMoveToWindowTest : public BrowserCommandsTest {
+ public:
+  NonGroupFocusMoveToWindowTest() {
+    focus_feature_list_.InitWithFeatures(
+        {features::kTabGroupsFocusing, features::kNonGroupFocus}, {});
+  }
+
+ private:
+  base::test::ScopedFeatureList focus_feature_list_;
+};
+
+// Selecting every tab of a group normally moves the group itself to the new
+// window. That must not happen for an ephemeral group, or the destination
+// window ends up showing a tab group the user never created.
+IN_PROC_BROWSER_TEST_F(NonGroupFocusMoveToWindowTest,
+                       MoveAllTabsOfEphemeralGroupToNewWindow) {
+  AddTabs(1);
+  TabStripModel* const model = browser()->GetTabStripModel();
+
+  // Focus tab 1 on its own, which wraps it in an ephemeral group.
+  model->ExecuteContextMenuCommand(1, TabStripModel::CommandToggleFocusGroup);
+  const std::optional<tab_groups::TabGroupId> ephemeral_group =
+      model->GetFocusedGroup();
+  ASSERT_TRUE(ephemeral_group.has_value());
+  ASSERT_TRUE(model->IsEphemeralTabGroup(ephemeral_group.value()));
+
+  ui_test_utils::BrowserCreatedObserver browser_created_observer;
+  chrome::MoveTabsToNewWindow(browser(), {1});
+  BrowserWindowInterface* const second_browser =
+      browser_created_observer.Wait();
+
+  // The tab arrives on its own, not wrapped in the ephemeral group.
+  TabStripModel* const second_model = second_browser->GetTabStripModel();
+  ASSERT_EQ(1, second_model->count());
+  EXPECT_EQ(std::nullopt, second_model->GetTabAtIndex(0)->GetGroup());
+  EXPECT_TRUE(second_model->group_model()->ListTabGroups().empty());
+
+  // The source window has left focus mode with no leftover group.
+  EXPECT_EQ(model->GetFocusedGroup(), std::nullopt);
+  EXPECT_FALSE(model->group_model()->ContainsTabGroup(ephemeral_group.value()));
 }
 
 class BrowserCommandsIsolatedModeTest : public InProcessBrowserTest {
@@ -948,6 +1047,12 @@ class BrowserCommandsIsolatedModeTest : public InProcessBrowserTest {
         enterprise_isolated_mode::switches::
             kForceEnterpriseIsolatedModeReplacesIncognito);
   }
+
+ private:
+#if BUILDFLAG(GOOGLE_CHROME_BRANDING) && !BUILDFLAG(IS_CHROMEOS)
+  chrome::ScopedChannelOverride channel_override_{
+      chrome::ScopedChannelOverride::Channel::kDev};
+#endif  // BUILDFLAG(GOOGLE_CHROME_BRANDING) && !BUILDFLAG(IS_CHROMEOS)
 };
 
 IN_PROC_BROWSER_TEST_F(BrowserCommandsIsolatedModeTest,
@@ -980,7 +1085,7 @@ IN_PROC_BROWSER_TEST_F(BrowserCommandsIsolatedModeTest,
   tabs::TabInterface* regular_tab =
       browser()->tab_strip_model()->GetActiveTab();
   ASSERT_NE(regular_tab, nullptr);
-  EXPECT_NE(regular_tab->GetTabFeatures()->commerce_ui_tab_helper(), nullptr);
+  EXPECT_NE(commerce::CommerceUiTabHelper::From(regular_tab), nullptr);
 
   BrowserWindowInterface* isolated_browser = CreateIncognitoBrowser();
   ASSERT_TRUE(
@@ -989,7 +1094,7 @@ IN_PROC_BROWSER_TEST_F(BrowserCommandsIsolatedModeTest,
   tabs::TabInterface* isolated_tab =
       isolated_browser->GetTabStripModel()->GetActiveTab();
   ASSERT_NE(isolated_tab, nullptr);
-  EXPECT_EQ(isolated_tab->GetTabFeatures()->commerce_ui_tab_helper(), nullptr);
+  EXPECT_EQ(commerce::CommerceUiTabHelper::From(isolated_tab), nullptr);
 }
 
 IN_PROC_BROWSER_TEST_F(BrowserCommandsIsolatedModeTest,

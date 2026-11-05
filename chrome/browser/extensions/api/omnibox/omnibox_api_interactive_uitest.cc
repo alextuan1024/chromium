@@ -44,7 +44,7 @@
 #include "testing/gmock/include/gmock/gmock.h"
 #include "third_party/metrics_proto/omnibox_event.pb.h"
 #include "third_party/metrics_proto/omnibox_focus_type.pb.h"
-#include "ui/base/window_open_disposition.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
 #include "ui/gfx/image/image_unittest_util.h"
 
 #if BUILDFLAG(IS_ANDROID)
@@ -243,7 +243,7 @@ IN_PROC_BROWSER_TEST_F(OmniboxApiTest, MAYBE_SendSuggestions) {
     const AutocompleteResult& result = autocomplete_controller->result();
     ASSERT_EQ(2U, result.size()) << AutocompleteResultAsString(result);
     AutocompleteMatch match = result.match_at(0);
-    EXPECT_EQ(AutocompleteMatchType::SEARCH_WHAT_YOU_TYPED, match.type);
+    EXPECT_EQ(omnibox::AutocompleteMatchType::kSearchWhatYouTyped, match.type);
     EXPECT_FALSE(match.deletable);
 
     match = result.match_at(1);
@@ -267,16 +267,16 @@ IN_PROC_BROWSER_TEST_F(OmniboxApiTest, MAYBE_SendSuggestions) {
   // Invoke the keyword with what we typed.
   EXPECT_EQ(u"alpha", result.match_at(0).keyword);
   EXPECT_EQ(u"alpha input", result.match_at(0).fill_into_edit);
-  EXPECT_EQ(AutocompleteMatchType::SEARCH_OTHER_ENGINE,
+  EXPECT_EQ(omnibox::AutocompleteMatchType::kSearchOtherEngine,
             result.match_at(0).type);
-  EXPECT_EQ(AutocompleteProvider::TYPE_KEYWORD,
+  EXPECT_EQ(AutocompleteProvider::Type::kKeyword,
             result.match_at(0).provider->type());
 
   // First suggestion, complete with rich description.
   {
     EXPECT_EQ(u"alpha", result.match_at(1).keyword);
     EXPECT_EQ(u"alpha input first", result.match_at(1).fill_into_edit);
-    EXPECT_EQ(AutocompleteProvider::TYPE_KEYWORD,
+    EXPECT_EQ(AutocompleteProvider::Type::kKeyword,
               result.match_at(1).provider->type());
 
     std::u16string rich_description =
@@ -304,7 +304,7 @@ IN_PROC_BROWSER_TEST_F(OmniboxApiTest, MAYBE_SendSuggestions) {
 
     EXPECT_EQ(u"alpha", result.match_at(2).keyword);
     EXPECT_EQ(u"alpha input second", result.match_at(2).fill_into_edit);
-    EXPECT_EQ(AutocompleteProvider::TYPE_KEYWORD,
+    EXPECT_EQ(AutocompleteProvider::Type::kKeyword,
               result.match_at(2).provider->type());
     EXPECT_EQ(simple_description, result.match_at(2).contents);
     EXPECT_EQ(first_match_relevance - 2, result.match_at(2).relevance);
@@ -312,7 +312,7 @@ IN_PROC_BROWSER_TEST_F(OmniboxApiTest, MAYBE_SendSuggestions) {
 
     EXPECT_EQ(u"alpha", result.match_at(3).keyword);
     EXPECT_EQ(u"alpha input third", result.match_at(3).fill_into_edit);
-    EXPECT_EQ(AutocompleteProvider::TYPE_KEYWORD,
+    EXPECT_EQ(AutocompleteProvider::Type::kKeyword,
               result.match_at(3).provider->type());
     EXPECT_EQ(simple_description, result.match_at(3).contents);
     EXPECT_EQ(first_match_relevance - 3, result.match_at(3).relevance);
@@ -352,7 +352,7 @@ IN_PROC_BROWSER_TEST_F(OmniboxApiTest, OnInputEntered) {
 
   auto send_input = [this, autocomplete_controller, extension](
                         std::u16string input_string,
-                        WindowOpenDisposition disposition) {
+                        ui::mojom::WindowOpenDisposition disposition) {
     (void)extension;  // used only on Android
 
     AutocompleteInput input(input_string, metrics::OmniboxEventProto::NTP,
@@ -378,11 +378,14 @@ IN_PROC_BROWSER_TEST_F(OmniboxApiTest, OnInputEntered) {
 #endif  // BUILDFLAG(IS_ANDROID)
   };
 
-  send_input(u"alpha current tab", WindowOpenDisposition::CURRENT_TAB);
-  send_input(u"alpha new tab", WindowOpenDisposition::NEW_FOREGROUND_TAB);
+  send_input(u"alpha current tab",
+             ui::mojom::WindowOpenDisposition::kCurrentTab);
+  send_input(u"alpha new tab",
+             ui::mojom::WindowOpenDisposition::kNewForegroundTab);
 
   ExtensionTestMessageListener listener;
-  send_input(u"alpha send results", WindowOpenDisposition::CURRENT_TAB);
+  send_input(u"alpha send results",
+             ui::mojom::WindowOpenDisposition::kCurrentTab);
   ASSERT_TRUE(listener.WaitUntilSatisfied());
 
   static constexpr char kExpectedResult[] =
@@ -460,13 +463,13 @@ IN_PROC_BROWSER_TEST_F(OmniboxApiTest, IncognitoSplitMode) {
   // First result.
   EXPECT_EQ(u"alpha", result.match_at(0).keyword);
   EXPECT_EQ(u"alpha input", result.match_at(0).fill_into_edit);
-  EXPECT_EQ(AutocompleteMatchType::SEARCH_OTHER_ENGINE,
+  EXPECT_EQ(omnibox::AutocompleteMatchType::kSearchOtherEngine,
             result.match_at(0).type);
 
   // Second result: incognito-specific.
   EXPECT_EQ(u"alpha", result.match_at(1).keyword);
   EXPECT_EQ(u"alpha input incognito", result.match_at(1).fill_into_edit);
-  EXPECT_EQ(AutocompleteProvider::TYPE_KEYWORD,
+  EXPECT_EQ(AutocompleteProvider::Type::kKeyword,
             result.match_at(1).provider->type());
 
   // Split-mode test: Send different input to the on-the-record and off-the-
@@ -607,22 +610,22 @@ IN_PROC_BROWSER_TEST_F(OmniboxApiTest, MAYBE_DeleteOmniboxSuggestionResult) {
   ASSERT_EQ(4u, result.size()) << AutocompleteResultAsString(result);
 
   EXPECT_EQ(u"alpha input", result.match_at(0).fill_into_edit);
-  EXPECT_EQ(AutocompleteProvider::TYPE_KEYWORD,
+  EXPECT_EQ(AutocompleteProvider::Type::kKeyword,
             result.match_at(0).provider->type());
   EXPECT_FALSE(result.match_at(0).deletable);
 
   EXPECT_EQ(u"alpha input first", result.match_at(1).fill_into_edit);
-  EXPECT_EQ(AutocompleteProvider::TYPE_KEYWORD,
+  EXPECT_EQ(AutocompleteProvider::Type::kKeyword,
             result.match_at(1).provider->type());
   EXPECT_FALSE(result.match_at(1).deletable);
 
   EXPECT_EQ(u"alpha input second", result.match_at(2).fill_into_edit);
-  EXPECT_EQ(AutocompleteProvider::TYPE_KEYWORD,
+  EXPECT_EQ(AutocompleteProvider::Type::kKeyword,
             result.match_at(2).provider->type());
   EXPECT_TRUE(result.match_at(2).deletable);
 
   EXPECT_EQ(u"alpha input third", result.match_at(3).fill_into_edit);
-  EXPECT_EQ(AutocompleteProvider::TYPE_KEYWORD,
+  EXPECT_EQ(AutocompleteProvider::Type::kKeyword,
             result.match_at(3).provider->type());
   EXPECT_FALSE(result.match_at(3).deletable);
 
@@ -693,19 +696,19 @@ IN_PROC_BROWSER_TEST_F(OmniboxApiTest,
     ASSERT_EQ(4U, result.size()) << AutocompleteResultAsString(result);
 
     EXPECT_EQ(u"kw d", result.match_at(0).fill_into_edit);
-    EXPECT_EQ(AutocompleteProvider::TYPE_KEYWORD,
+    EXPECT_EQ(AutocompleteProvider::Type::kKeyword,
               result.match_at(0).provider->type());
 
     EXPECT_EQ(u"kw d first", result.match_at(1).fill_into_edit);
-    EXPECT_EQ(AutocompleteProvider::TYPE_KEYWORD,
+    EXPECT_EQ(AutocompleteProvider::Type::kKeyword,
               result.match_at(1).provider->type());
 
     EXPECT_EQ(u"kw d second", result.match_at(2).fill_into_edit);
-    EXPECT_EQ(AutocompleteProvider::TYPE_KEYWORD,
+    EXPECT_EQ(AutocompleteProvider::Type::kKeyword,
               result.match_at(2).provider->type());
 
     EXPECT_EQ(u"kw d", result.match_at(3).fill_into_edit);
-    EXPECT_EQ(AutocompleteMatchType::SEARCH_WHAT_YOU_TYPED,
+    EXPECT_EQ(omnibox::AutocompleteMatchType::kSearchWhatYouTyped,
               result.match_at(3).type);
   }
 
@@ -733,11 +736,11 @@ IN_PROC_BROWSER_TEST_F(OmniboxApiTest,
     ASSERT_EQ(2U, result.size()) << AutocompleteResultAsString(result);
 
     EXPECT_EQ(u"kw d", result.match_at(0).fill_into_edit);
-    EXPECT_EQ(AutocompleteMatchType::SEARCH_WHAT_YOU_TYPED,
+    EXPECT_EQ(omnibox::AutocompleteMatchType::kSearchWhatYouTyped,
               result.match_at(0).type);
 
     EXPECT_EQ(u"kw d", result.match_at(1).fill_into_edit);
-    EXPECT_EQ(AutocompleteProvider::TYPE_KEYWORD,
+    EXPECT_EQ(AutocompleteProvider::Type::kKeyword,
               result.match_at(1).provider->type());
   }
 }
@@ -852,8 +855,8 @@ IN_PROC_BROWSER_TEST_F(OmniboxApiTest, MAYBE_SetDefaultSuggestion) {
 
   {
     const AutocompleteMatch& match = result.match_at(0);
-    EXPECT_EQ(AutocompleteMatchType::SEARCH_OTHER_ENGINE, match.type);
-    EXPECT_EQ(AutocompleteProvider::TYPE_KEYWORD, match.provider->type());
+    EXPECT_EQ(omnibox::AutocompleteMatchType::kSearchOtherEngine, match.type);
+    EXPECT_EQ(AutocompleteProvider::Type::kKeyword, match.provider->type());
 
     // The "description" given by the extension is shown as the "contents" in
     // the AutocompleteMatch. The XML-marked string is
@@ -924,11 +927,11 @@ IN_PROC_BROWSER_TEST_F(OmniboxApiTest, MAYBE_PassEmptySuggestions) {
     ASSERT_EQ(2u, result.size()) << AutocompleteResultAsString(result);
 
     EXPECT_EQ(u"alpha d", result.match_at(0).fill_into_edit);
-    EXPECT_EQ(AutocompleteProvider::TYPE_KEYWORD,
+    EXPECT_EQ(AutocompleteProvider::Type::kKeyword,
               result.match_at(0).provider->type());
 
     EXPECT_EQ(u"alpha foo", result.match_at(1).fill_into_edit);
-    EXPECT_EQ(AutocompleteProvider::TYPE_KEYWORD,
+    EXPECT_EQ(AutocompleteProvider::Type::kKeyword,
               result.match_at(1).provider->type());
   }
 
@@ -952,12 +955,12 @@ IN_PROC_BROWSER_TEST_F(OmniboxApiTest, MAYBE_PassEmptySuggestions) {
     ASSERT_EQ(2u, result.size()) << AutocompleteResultAsString(result);
 
     EXPECT_EQ(u"alpha ", result.match_at(0).fill_into_edit);
-    EXPECT_EQ(AutocompleteProvider::TYPE_KEYWORD,
+    EXPECT_EQ(AutocompleteProvider::Type::kKeyword,
               result.match_at(0).provider->type());
 
     AutocompleteMatch match = result.match_at(1);
-    EXPECT_EQ(AutocompleteMatchType::SEARCH_WHAT_YOU_TYPED, match.type);
-    EXPECT_EQ(AutocompleteProvider::TYPE_SEARCH,
+    EXPECT_EQ(omnibox::AutocompleteMatchType::kSearchWhatYouTyped, match.type);
+    EXPECT_EQ(AutocompleteProvider::Type::kSearch,
               result.match_at(1).provider->type());
   }
 }
@@ -1105,7 +1108,6 @@ IN_PROC_BROWSER_TEST_F(UnscopedOmniboxApiTest, UnscopedSendSuggestions) {
   ASSERT_TRUE(extension);
 
   AutocompleteController* autocomplete_controller = GetAutocompleteController();
-  chrome::FocusLocationBar(browser());
 
   // Test that our extension can send suggestions back to us.
   AutocompleteInput input(u"input", metrics::OmniboxEventProto::NTP,
@@ -1121,14 +1123,14 @@ IN_PROC_BROWSER_TEST_F(UnscopedOmniboxApiTest, UnscopedSendSuggestions) {
   // First suggestion, complete with rich description.
   {
     EXPECT_EQ(u"first", result.match_at(1).fill_into_edit);
-    EXPECT_EQ(AutocompleteProvider::TYPE_UNSCOPED_EXTENSION,
+    EXPECT_EQ(AutocompleteProvider::Type::kUnscopedExtension,
               result.match_at(1).provider->type());
 
     std::u16string rich_description =
         u"Description with style: <match>, [dim], (url)";
     EXPECT_EQ(rich_description, result.match_at(1).contents);
     EXPECT_EQ(result.match_at(1).provider->type(),
-              AutocompleteProvider::TYPE_UNSCOPED_EXTENSION);
+              AutocompleteProvider::Type::kUnscopedExtension);
     const ExpectedMatchComponents expected_components = {
         {u"Description with style: ", ACMatchClassification::NONE},
         {u"<match>", ACMatchClassification::MATCH},
@@ -1148,13 +1150,13 @@ IN_PROC_BROWSER_TEST_F(UnscopedOmniboxApiTest, UnscopedSendSuggestions) {
     };
 
     EXPECT_EQ(u"second", result.match_at(2).fill_into_edit);
-    EXPECT_EQ(AutocompleteProvider::TYPE_UNSCOPED_EXTENSION,
+    EXPECT_EQ(AutocompleteProvider::Type::kUnscopedExtension,
               result.match_at(2).provider->type());
     EXPECT_EQ(simple_description, result.match_at(2).contents);
     VerifyMatchComponents(expected_components, result.match_at(2));
 
     EXPECT_EQ(u"third", result.match_at(3).fill_into_edit);
-    EXPECT_EQ(AutocompleteProvider::TYPE_UNSCOPED_EXTENSION,
+    EXPECT_EQ(AutocompleteProvider::Type::kUnscopedExtension,
               result.match_at(3).provider->type());
     EXPECT_EQ(simple_description, result.match_at(3).contents);
     VerifyMatchComponents(expected_components, result.match_at(3));
@@ -1194,7 +1196,6 @@ IN_PROC_BROWSER_TEST_F(UnscopedOmniboxApiTest, UnscopedDeleteSuggestions) {
   ASSERT_TRUE(extension);
 
   AutocompleteController* autocomplete_controller = GetAutocompleteController();
-  chrome::FocusLocationBar(browser());
 
   // Test that our extension can send suggestions back to us.
   AutocompleteInput input(u"input", metrics::OmniboxEventProto::NTP,
@@ -1286,7 +1287,7 @@ IN_PROC_BROWSER_TEST_F(UnscopedOmniboxApiTest, OnInputEntered) {
 #if BUILDFLAG(IS_ANDROID)
   ExtensionOmniboxEventRouter::OnInputEntered(
       GetActiveWebContents(), extension->id(), "sending input",
-      WindowOpenDisposition::CURRENT_TAB);
+      ui::mojom::WindowOpenDisposition::kCurrentTab);
 #else   // BUILDFLAG(IS_ANDROID)
   chrome::FocusLocationBar(browser());
 
@@ -1301,7 +1302,7 @@ IN_PROC_BROWSER_TEST_F(UnscopedOmniboxApiTest, OnInputEntered) {
   // Select the suggestion created by the extension, which will trigger the
   // `onInputEntered` event.
   location_bar->GetOmniboxController()->edit_model()->OpenCurrentSelection(
-      base::TimeTicks(), WindowOpenDisposition::CURRENT_TAB);
+      base::TimeTicks(), ui::mojom::WindowOpenDisposition::kCurrentTab);
 #endif  // BUILDFLAG(IS_ANDROID)
 
   ASSERT_TRUE(listener.WaitUntilSatisfied());
@@ -1337,7 +1338,6 @@ IN_PROC_BROWSER_TEST_F(UnscopedOmniboxApiTest, UnscopedSuggestionGrouping) {
   ASSERT_TRUE(extension);
 
   AutocompleteController* autocomplete_controller = GetAutocompleteController();
-  chrome::FocusLocationBar(browser());
 
   // Test that our extension can send suggestions back to us.
   AutocompleteInput input(u"input", metrics::OmniboxEventProto::NTP,
@@ -1353,7 +1353,7 @@ IN_PROC_BROWSER_TEST_F(UnscopedOmniboxApiTest, UnscopedSuggestionGrouping) {
   // Second suggestion is given the first extension group and has a header of
   // "alpha".
   {
-    EXPECT_EQ(AutocompleteProvider::TYPE_UNSCOPED_EXTENSION,
+    EXPECT_EQ(AutocompleteProvider::Type::kUnscopedExtension,
               result.match_at(1).provider->type());
     EXPECT_EQ(omnibox::GROUP_UNSCOPED_EXTENSION_1,
               result.match_at(1).suggestion_group_id);
@@ -1394,7 +1394,6 @@ IN_PROC_BROWSER_TEST_F(UnscopedOmniboxApiTest, LimitSuggestions) {
   ASSERT_TRUE(extension);
 
   AutocompleteController* autocomplete_controller = GetAutocompleteController();
-  chrome::FocusLocationBar(browser());
 
   // Test that our extension can send suggestions back to us.
   AutocompleteInput input(u"input", metrics::OmniboxEventProto::NTP,
@@ -1410,14 +1409,14 @@ IN_PROC_BROWSER_TEST_F(UnscopedOmniboxApiTest, LimitSuggestions) {
   // Second suggestion is given the first extension group and has a header of
   // "alpha".
   {
-    EXPECT_EQ(AutocompleteProvider::TYPE_UNSCOPED_EXTENSION,
+    EXPECT_EQ(AutocompleteProvider::Type::kUnscopedExtension,
               result.match_at(1).provider->type());
     EXPECT_EQ(u"alpha", result.GetHeaderForSuggestionGroup(
                             *result.match_at(1).suggestion_group_id));
     EXPECT_EQ(u"first", result.match_at(1).fill_into_edit);
   }
   {
-    EXPECT_EQ(AutocompleteProvider::TYPE_UNSCOPED_EXTENSION,
+    EXPECT_EQ(AutocompleteProvider::Type::kUnscopedExtension,
               result.match_at(4).provider->type());
     EXPECT_EQ(omnibox::GROUP_UNSCOPED_EXTENSION_1,
               result.match_at(4).suggestion_group_id);
@@ -1469,7 +1468,6 @@ IN_PROC_BROWSER_TEST_F(UnscopedOmniboxApiTest, OnActionExecuted) {
 
   ExtensionTestMessageListener listener("do_something-sending input");
   AutocompleteController* autocomplete_controller = GetAutocompleteController();
-  chrome::FocusLocationBar(browser());
 
   // Send an input to the extension and wait for the sggestion to arrive before
   // we can select it.
@@ -1485,9 +1483,10 @@ IN_PROC_BROWSER_TEST_F(UnscopedOmniboxApiTest, OnActionExecuted) {
   // omnibox suggestion created by the extension.
   location_bar->GetOmniboxController()->edit_model()->OpenSelection(
       OmniboxPopupSelection(
-          /*line=*/1, /*state=*/OmniboxPopupSelection::FOCUSED_BUTTON_ACTION,
+          /*line=*/1,
+          /*state=*/OmniboxPopupSelection::LineState::kFocusedButtonAction,
           /*action_index=*/0),
-      base::TimeTicks(), WindowOpenDisposition::CURRENT_TAB);
+      base::TimeTicks(), ui::mojom::WindowOpenDisposition::kCurrentTab);
 
   ASSERT_TRUE(listener.WaitUntilSatisfied());
   EXPECT_EQ("do_something-sending input", listener.message());
@@ -1542,7 +1541,6 @@ IN_PROC_BROWSER_TEST_F(UnscopedOmniboxApiTest, ActionIconAppliedToMatch) {
 
   ExtensionTestMessageListener listener("do_something-sending input");
   AutocompleteController* autocomplete_controller = GetAutocompleteController();
-  chrome::FocusLocationBar(browser());
 
   // Send an input to the extension and wait for the sggestion to arrive before
   // we can select it.
@@ -1617,7 +1615,6 @@ IN_PROC_BROWSER_TEST_F(UnscopedOmniboxApiTest, MultipleUnscopedExtensions) {
   ASSERT_TRUE(extension2);
 
   AutocompleteController* autocomplete_controller = GetAutocompleteController();
-  chrome::FocusLocationBar(browser());
 
   // Prevent the stop timer from killing the hints fetch early, which might
   // cause test flakiness due to timeout.
@@ -1638,7 +1635,7 @@ IN_PROC_BROWSER_TEST_F(UnscopedOmniboxApiTest, MultipleUnscopedExtensions) {
   // it came from.
   std::set<std::u16string> extension_names = {u"alpha", u"dog"};
   {
-    EXPECT_EQ(AutocompleteProvider::TYPE_UNSCOPED_EXTENSION,
+    EXPECT_EQ(AutocompleteProvider::Type::kUnscopedExtension,
               result.match_at(1).provider->type());
     EXPECT_EQ(omnibox::GROUP_UNSCOPED_EXTENSION_1,
               result.match_at(1).suggestion_group_id);
@@ -1648,7 +1645,7 @@ IN_PROC_BROWSER_TEST_F(UnscopedOmniboxApiTest, MultipleUnscopedExtensions) {
         *result.match_at(1).suggestion_group_id));
   }
   {
-    EXPECT_EQ(AutocompleteProvider::TYPE_UNSCOPED_EXTENSION,
+    EXPECT_EQ(AutocompleteProvider::Type::kUnscopedExtension,
               result.match_at(2).provider->type());
     EXPECT_EQ(omnibox::GROUP_UNSCOPED_EXTENSION_2,
               result.match_at(2).suggestion_group_id);
@@ -1686,7 +1683,6 @@ IN_PROC_BROWSER_TEST_F(UnscopedOmniboxApiTest, UnscopedExtensionZeroSuggest) {
   ASSERT_TRUE(extension);
 
   AutocompleteController* autocomplete_controller = GetAutocompleteController();
-  chrome::FocusLocationBar(browser());
 
   // Test that our extension can send suggestions back to us on NTP.
   AutocompleteInput input_ntp(u"", metrics::OmniboxEventProto::NTP,
@@ -1701,7 +1697,7 @@ IN_PROC_BROWSER_TEST_F(UnscopedOmniboxApiTest, UnscopedExtensionZeroSuggest) {
       std::ranges::find_if(result_ntp, [](const AutocompleteMatch& match) {
         return match.provider &&
                match.provider->type() ==
-                   AutocompleteProvider::TYPE_UNSCOPED_EXTENSION;
+                   AutocompleteProvider::Type::kUnscopedExtension;
       });
   ASSERT_NE(match_ntp, result_ntp.end())
       << AutocompleteResultAsString(result_ntp);
@@ -1729,7 +1725,7 @@ IN_PROC_BROWSER_TEST_F(UnscopedOmniboxApiTest, UnscopedExtensionZeroSuggest) {
       std::ranges::find_if(result_srp, [](const AutocompleteMatch& match) {
         return match.provider &&
                match.provider->type() ==
-                   AutocompleteProvider::TYPE_UNSCOPED_EXTENSION;
+                   AutocompleteProvider::Type::kUnscopedExtension;
       });
   ASSERT_NE(match_srp, result_srp.end())
       << AutocompleteResultAsString(result_srp);
@@ -1793,7 +1789,6 @@ IN_PROC_BROWSER_TEST_F(UnscopedOmniboxApiTest,
   ASSERT_TRUE(extension2);
 
   AutocompleteController* autocomplete_controller = GetAutocompleteController();
-  chrome::FocusLocationBar(browser());
 
   // Test that our extension can send suggestions back to us.
   AutocompleteInput input(u"", metrics::OmniboxEventProto::NTP,
@@ -1807,7 +1802,7 @@ IN_PROC_BROWSER_TEST_F(UnscopedOmniboxApiTest,
   std::vector<const AutocompleteMatch*> extension_matches;
   for (const auto& match : result) {
     if (match.provider && match.provider->type() ==
-                              AutocompleteProvider::TYPE_UNSCOPED_EXTENSION) {
+                              AutocompleteProvider::Type::kUnscopedExtension) {
       extension_matches.push_back(&match);
     }
   }
@@ -1825,7 +1820,7 @@ IN_PROC_BROWSER_TEST_F(UnscopedOmniboxApiTest,
                 testing::Contains(result.GetHeaderForSuggestionGroup(
                     extension_matches[0]->suggestion_group_id.value())));
 
-    EXPECT_THAT(AutocompleteProvider::TYPE_UNSCOPED_EXTENSION,
+    EXPECT_THAT(AutocompleteProvider::Type::kUnscopedExtension,
                 testing::Eq(result.match_at(1).provider->type()));
     EXPECT_THAT(extension_group_ids,
                 testing::Contains(result.match_at(1).suggestion_group_id));
@@ -1839,7 +1834,7 @@ IN_PROC_BROWSER_TEST_F(UnscopedOmniboxApiTest,
       result.match_at(1).suggestion_group_id.value()));
 
   {
-    EXPECT_THAT(AutocompleteProvider::TYPE_UNSCOPED_EXTENSION,
+    EXPECT_THAT(AutocompleteProvider::Type::kUnscopedExtension,
                 testing::Eq(result.match_at(2).provider->type()));
     EXPECT_THAT(extension_group_ids,
                 testing::Contains(result.match_at(2).suggestion_group_id));
@@ -1847,7 +1842,7 @@ IN_PROC_BROWSER_TEST_F(UnscopedOmniboxApiTest,
                 testing::Contains(result.GetHeaderForSuggestionGroup(
                     result.match_at(2).suggestion_group_id.value())));
 
-    EXPECT_THAT(AutocompleteProvider::TYPE_UNSCOPED_EXTENSION,
+    EXPECT_THAT(AutocompleteProvider::Type::kUnscopedExtension,
                 testing::Eq(result.match_at(3).provider->type()));
     EXPECT_THAT(extension_group_ids,
                 testing::Contains(result.match_at(3).suggestion_group_id));

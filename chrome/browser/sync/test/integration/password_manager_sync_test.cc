@@ -74,7 +74,7 @@
 #include "net/http/http_status_code.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
-#include "ui/base/window_open_disposition.h"
+#include "ui/base/mojom/window_open_disposition.mojom-shared.h"
 
 namespace {
 
@@ -140,6 +140,8 @@ class SyncActiveWithoutPasswordsChecker
 
   // StatusChangeChecker implementation.
   bool IsExitConditionSatisfied(std::ostream* os) override {
+    *os << "Waiting for PASSWORDS to become inactive and Sync to become "
+           "active.";
     // DEVICE_INFO is another arbitrary type supported for signed-in users,
     // just so we rule out no type at all is active.
     return !service()->GetActiveDataTypes().Has(syncer::PASSWORDS) &&
@@ -153,7 +155,7 @@ class SyncActiveWithoutPasswordsChecker
 content::WebContents* GetNewTab(BrowserWindowInterface* browser) {
   ui_test_utils::NavigateToURLWithDisposition(
       browser, GURL("data:text/html"),
-      WindowOpenDisposition::NEW_FOREGROUND_TAB,
+      ui::mojom::WindowOpenDisposition::kNewForegroundTab,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_TAB);
   return browser->GetTabStripModel()->GetActiveWebContents();
 }

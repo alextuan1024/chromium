@@ -8,9 +8,12 @@
 #import <Foundation/Foundation.h>
 
 #import "base/ios/block_types.h"
+#import "ios/chrome/app/background_mode_buildflags.h"
 
 @class BackgroundContinuedProcessingTaskConfiguration;
+#if BUILDFLAG(IOS_BACKGROUND_CONTINUED_PROCESSING_ENABLED)
 @class BGContinuedProcessingTask;
+#endif  // BUILDFLAG(IOS_BACKGROUND_CONTINUED_PROCESSING_ENABLED)
 
 // Context representing an active continued processing background task.
 // Used to interact with an existing task. This object and its properties are
@@ -24,16 +27,21 @@
 // immediately updates the cached title and propagates the update to the system.
 @property(nonatomic, copy) NSString* title;
 
-// Subtitle displayed in the system-provided Live Activity. Setting this
-// property immediately updates the cached subtitle and propagates the update
-// to the system.
+// Subtitle displayed in the system-provided Live Activity. Defaults to an
+// empty string if set to nil. Setting this property immediately updates the
+// cached subtitle and propagates the update to the system.
 @property(nonatomic, copy) NSString* subtitle;
 
 // Whether the task has already been completed or expired.
 @property(nonatomic, readonly, getter=isCompleted) BOOL completed;
 
+// Whether the task was cancelled by the user from the system-provided Live
+// Activity before expiring.
+@property(nonatomic, readonly, getter=isCancelled) BOOL cancelled;
+
 // Updates both the title and subtitle simultaneously in the system-provided
-// Live Activity.
+// Live Activity. `title` must not be empty. `subtitle` defaults to an empty
+// string if nil.
 - (void)updateTitle:(NSString*)title subtitle:(NSString*)subtitle;
 
 // The fraction of work completed (from 0.0 to 1.0).
@@ -57,8 +65,23 @@
 // `totalUnits`).
 - (void)incrementStepProgress;
 
-// Signals task completion to the OS and manager.
+// Advances progress by one unit, up to `totalUnits` - 1. Always increments
+// when called; invoked by the heartbeat timer, which only runs when
+// `progressHeartbeatInterval` is non-zero.
+- (void)incrementHeartbeatProgress;
+
+// Signals task completion to the OS and manager. Equivalent to
+// `-[BackgroundContinuedProcessingTaskContext
+// setTaskCompletedWithSuccess:fillProgress:]` with `fillProgress` set to YES.
 - (void)setTaskCompletedWithSuccess:(BOOL)success;
+
+// Signals task completion to the OS and manager. When `success` and
+// `fillProgress` are both YES, progress is filled to `totalUnits` before
+// completing. When `fillProgress` is NO, progress is left unchanged, e.g. when
+// the work is not done but no longer needs background runtime (such as while
+// waiting on the user). Has no effect if the task has already been completed.
+- (void)setTaskCompletedWithSuccess:(BOOL)success
+                       fillProgress:(BOOL)fillProgress;
 
 #pragma mark - Internal
 
@@ -73,11 +96,13 @@
                          finishHandler:(ProceduralBlock)finishHandler
     NS_DESIGNATED_INITIALIZER;
 
+#if BUILDFLAG(IOS_BACKGROUND_CONTINUED_PROCESSING_ENABLED)
 // Attaches an underlying system `BGContinuedProcessingTask` to the context once
 // the OS launch handler fires, setting properties on it. Internal: consumers
 // must not invoke this method.
 - (void)attachUnderlyingTask:(BGContinuedProcessingTask*)task
     API_AVAILABLE(ios(26.0));
+#endif  // BUILDFLAG(IOS_BACKGROUND_CONTINUED_PROCESSING_ENABLED)
 
 - (instancetype)init NS_UNAVAILABLE;
 

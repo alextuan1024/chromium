@@ -34,7 +34,6 @@
 #include "net/cookies/cookie_setting_override.h"
 #include "net/cookies/cookie_util.h"
 #include "net/cookies/static_cookie_policy.h"
-#include "net/first_party_sets/first_party_set_metadata.h"
 #include "services/network/public/cpp/features.h"
 #include "url/gurl.h"
 #include "url/origin.h"
@@ -63,8 +62,6 @@ net::CookieInclusionStatus::ExemptionReason GetExemptionReason(
       return ExemptionReason::kEnterprisePolicy;
     case AllowMechanism::kAllowByStorageAccess:
       return ExemptionReason::kStorageAccess;
-    case AllowMechanism::kAllowByTopLevelStorageAccess:
-      return ExemptionReason::kTopLevelStorageAccess;
     case AllowMechanism::kNone:
       return ExemptionReason::kNone;
     case AllowMechanism::kAllowByScheme:
@@ -162,8 +159,16 @@ DeleteCookiePredicate CookieSettings::CreateDeleteCookieOnExitPredicate()
     }
   }
 
+  // The returned predicate may be evaluated asynchronously on a background
+  // sequence after `this` has been modified or destroyed, so bind an owned
+  // snapshot rather than `this`.
+  auto settings_snapshot = std::make_unique<CookieSettings>();
+  settings_snapshot->set_content_settings(ContentSettingsType::COOKIES,
+                                          settings);
+
   return base::BindRepeating(&CookieSettings::ShouldDeleteCookieOnExit,
-                             base::Unretained(this), std::move(settings));
+                             base::Owned(std::move(settings_snapshot)),
+                             std::move(settings));
 }
 
 bool CookieSettings::ShouldIgnoreSameSiteRestrictions(
@@ -186,7 +191,6 @@ bool CookieSettings::IsCookieAccessible(
     const GURL& url,
     const net::SiteForCookies& site_for_cookies,
     base::optional_ref<const url::Origin> top_frame_origin,
-    const net::FirstPartySetMetadata& first_party_set_metadata,
     net::CookieSettingOverrides overrides,
     net::CookieInclusionStatus* cookie_inclusion_status) const {
   const CookieSettingWithMetadata setting_with_metadata =
@@ -195,8 +199,7 @@ bool CookieSettings::IsCookieAccessible(
   bool allowed = IsCookieAllowed(cookie, setting_with_metadata);
   if (cookie_inclusion_status) {
     AugmentInclusionStatus(cookie, top_frame_origin, setting_with_metadata,
-                           first_party_set_metadata, overrides,
-                           *cookie_inclusion_status);
+                           overrides, *cookie_inclusion_status);
   }
 
   return allowed;
@@ -260,7 +263,6 @@ bool CookieSettings::AnnotateAndMoveUserBlockedCookies(
     const GURL& url,
     const net::SiteForCookies& site_for_cookies,
     base::optional_ref<const url::Origin> top_frame_origin,
-    const net::FirstPartySetMetadata& first_party_set_metadata,
     net::CookieSettingOverrides overrides,
     net::CookieAccessResultList& maybe_included_cookies,
     net::CookieAccessResultList& excluded_cookies) const {
@@ -272,13 +274,13 @@ bool CookieSettings::AnnotateAndMoveUserBlockedCookies(
   // that ought to be blocked.
   for (net::CookieWithAccessResult& cookie : maybe_included_cookies) {
     AugmentInclusionStatus(cookie.cookie, top_frame_origin,
-                           setting_with_metadata, first_party_set_metadata,
-                           overrides, cookie.access_result.status);
+                           setting_with_metadata, overrides,
+                           cookie.access_result.status);
   }
   for (net::CookieWithAccessResult& cookie : excluded_cookies) {
     AugmentInclusionStatus(cookie.cookie, top_frame_origin,
-                           setting_with_metadata, first_party_set_metadata,
-                           overrides, cookie.access_result.status);
+                           setting_with_metadata, overrides,
+                           cookie.access_result.status);
   }
   const auto to_be_moved = std::ranges::stable_partition(
       maybe_included_cookies, [](const net::CookieWithAccessResult& cookie) {
@@ -389,7 +391,6 @@ void CookieSettings::AugmentInclusionStatus(
     const net::CanonicalCookie& cookie,
     base::optional_ref<const url::Origin> top_frame_origin,
     const CookieSettings::CookieSettingWithMetadata& setting_with_metadata,
-    const net::FirstPartySetMetadata& first_party_set_metadata,
     net::CookieSettingOverrides overrides,
     net::CookieInclusionStatus& out_status) const {
   const bool could_be_affected_by_tpc_phaseout =
@@ -426,12 +427,6 @@ void CookieSettings::AugmentInclusionStatus(
     }
     out_status.AddExclusionReason(net::CookieInclusionStatus::ExclusionReason::
                                       EXCLUDE_THIRD_PARTY_PHASEOUT);
-
-    if (first_party_set_metadata.AreSitesInSameFirstPartySet()) {
-      out_status.AddExclusionReason(
-          net::CookieInclusionStatus::ExclusionReason::
-              EXCLUDE_THIRD_PARTY_BLOCKED_WITHIN_FIRST_PARTY_SET);
-    }
     return;
   }
 

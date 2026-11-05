@@ -78,6 +78,41 @@ TEST(IndigoMetricsTest, RecordClickedEntryPoint_ErrorToast) {
   EXPECT_EQ(1, user_action_tester.GetActionCount(kErrorToastRetryClickAction));
 }
 
+TEST(IndigoMetricsTest, RecordShownEntryPoint_ContextMenu) {
+  base::HistogramTester histogram_tester;
+  base::UserActionTester user_action_tester;
+
+  RecordShownEntryPoint(IndigoPageActionEntryPoint::kContextMenu);
+
+  histogram_tester.ExpectUniqueSample(
+      kShownEntryPointHistogram, IndigoPageActionEntryPoint::kContextMenu, 1);
+  EXPECT_EQ(1, user_action_tester.GetActionCount(kContextMenuShowAction));
+}
+
+TEST(IndigoMetricsTest, RecordClickedEntryPoint_ContextMenu) {
+  base::HistogramTester histogram_tester;
+  base::UserActionTester user_action_tester;
+
+  RecordClickedEntryPoint(EntryPoint::kContextMenu, std::nullopt);
+
+  histogram_tester.ExpectUniqueSample(
+      kClickedEntryPointHistogram, IndigoPageActionEntryPoint::kContextMenu, 1);
+  EXPECT_EQ(1, user_action_tester.GetActionCount(kContextMenuClickAction));
+}
+
+TEST(IndigoMetricsTest, RecordContextMenuTargetType) {
+  base::HistogramTester histogram_tester;
+
+  RecordContextMenuTargetType(IndigoContextMenuTargetType::kPage);
+  histogram_tester.ExpectBucketCount(kContextMenuTargetTypeHistogram,
+                                     IndigoContextMenuTargetType::kPage, 1);
+
+  RecordContextMenuTargetType(IndigoContextMenuTargetType::kImage);
+  histogram_tester.ExpectBucketCount(kContextMenuTargetTypeHistogram,
+                                     IndigoContextMenuTargetType::kImage, 1);
+  histogram_tester.ExpectTotalCount(kContextMenuTargetTypeHistogram, 2);
+}
+
 TEST(IndigoMetricsTest, RecordTransformationTrigger) {
   base::HistogramTester histogram_tester;
   base::UserActionTester user_action_tester;

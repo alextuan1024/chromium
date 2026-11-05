@@ -47,6 +47,7 @@
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/render_process_host.h"
 #include "content/public/browser/security_principal.h"
+#include "content/public/browser/site_isolation_policy.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/common/content_features.h"
 #include "content/public/test/browser_test.h"
@@ -70,7 +71,7 @@
 #include "extensions/test/test_extension_dir.h"
 #include "net/dns/mock_host_resolver.h"
 #include "net/test/embedded_test_server/embedded_test_server.h"
-#include "ui/base/window_open_disposition.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
 #include "url/origin.h"
 
 #if BUILDFLAG(IS_CHROMEOS)
@@ -677,7 +678,8 @@ IN_PROC_BROWSER_TEST_F(ProcessManagerBrowserTest,
 
   // Now load an extension page and a non-extension page...
   ui_test_utils::NavigateToURLWithDisposition(
-      browser(), kExt1EmptyUrl, WindowOpenDisposition::NEW_BACKGROUND_TAB,
+      browser(), kExt1EmptyUrl,
+      ui::mojom::WindowOpenDisposition::kNewBackgroundTab,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP);
   NavigateToURL(embedded_test_server()->GetURL("/two_iframes.html"));
   EXPECT_EQ(1u, pm->GetAllFrames().size());
@@ -1675,10 +1677,18 @@ IN_PROC_BROWSER_TEST_F(ProcessManagerBrowserTest,
         << "The initial navigation should be allowed, but not the server "
            "redirect to extension2's manifest";
     EXPECT_EQ(net::ERR_BLOCKED_BY_CLIENT, nav_observer.last_net_error_code());
-    // We expect the URL to be sanitized, per https://crbug.com/517156678.
+    // The failed navigation's URL is only reduced to its origin when the error
+    // page commits in the initiator's process, per
+    // https://crbug.com/517156678. With subframe error page isolation, the
+    // error page commits in a dedicated error page process instead, and the
+    // full URL is committed.
     // TODO(crbug.com/40134629): Remove the sanitization once Subframe Error
     // Page Isolation ships.
-    GURL expected_url = extension2_manifest.DeprecatedGetOriginAsURL();
+    GURL expected_url =
+        content::SiteIsolationPolicy::IsErrorPageIsolationEnabled(
+            /*in_main_frame=*/false)
+            ? extension2_manifest
+            : extension2_manifest.DeprecatedGetOriginAsURL();
     EXPECT_EQ(expected_url, nav_observer.last_navigation_url());
     EXPECT_EQ(expected_url, ChildFrameAt(main_frame, 1)->GetLastCommittedURL());
     EXPECT_EQ(1u, pm->GetAllFrames().size());
@@ -2130,7 +2140,7 @@ IN_PROC_BROWSER_TEST_F(ProcessManagerBrowserTest, SynchronousClosureUAF) {
   // Open a new tab to main.html.
   GURL main_url = extension->GetResourceURL("main.html");
   ASSERT_TRUE(ui_test_utils::NavigateToURLWithDisposition(
-      browser(), main_url, WindowOpenDisposition::NEW_FOREGROUND_TAB,
+      browser(), main_url, ui::mojom::WindowOpenDisposition::kNewForegroundTab,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP));
 
   content::WebContents* tab =

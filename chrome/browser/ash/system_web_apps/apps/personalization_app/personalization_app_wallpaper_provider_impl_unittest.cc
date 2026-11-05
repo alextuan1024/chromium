@@ -40,10 +40,8 @@
 #include "chrome/browser/ash/settings/device_settings_service.h"
 #include "chrome/browser/ash/settings/scoped_cros_settings_test_helper.h"
 #include "chrome/browser/ash/settings/scoped_test_device_settings_service.h"
-#include "chrome/browser/ash/system_web_apps/apps/personalization_app/mock_personalization_app_manager.h"
-#include "chrome/browser/ash/system_web_apps/apps/personalization_app/personalization_app_manager_factory.h"
+#include "chrome/browser/ash/wallpaper_handlers/fake_wallpaper_handlers.h"
 #include "chrome/browser/ash/wallpaper_handlers/mock_google_photos_wallpaper_handlers.h"
-#include "chrome/browser/ash/wallpaper_handlers/mock_wallpaper_handlers.h"
 #include "chrome/browser/ash/wallpaper_handlers/test_wallpaper_fetcher_delegate.h"
 #include "chrome/browser/signin/identity_manager_factory.h"
 #include "chrome/browser/ui/ash/wallpaper/test_wallpaper_controller.h"
@@ -51,7 +49,6 @@
 #include "chrome/test/base/testing_browser_process.h"
 #include "chrome/test/base/testing_profile.h"
 #include "chrome/test/base/testing_profile_manager.h"
-#include "chromeos/ash/components/browser_context_helper/browser_context_helper.h"
 #include "chromeos/ash/components/signin/fake_identity_manager_provider.h"
 #include "chromeos/strings/grit/chromeos_strings.h"
 #include "components/account_id/account_id.h"
@@ -99,11 +96,6 @@ gfx::ImageSkia CreateSolidImageSkia(int width, int height, SkColor color) {
   bitmap.allocN32Pixels(width, height);
   bitmap.eraseColor(color);
   return gfx::ImageSkia::CreateFrom1xBitmap(bitmap);
-}
-
-std::unique_ptr<KeyedService> MakeMockPersonalizationAppManager(
-    content::BrowserContext* context) {
-  return std::make_unique<::testing::NiceMock<MockPersonalizationAppManager>>();
 }
 
 class TestWallpaperObserver
@@ -216,12 +208,7 @@ class PersonalizationAppWallpaperProviderImplTest : public testing::Test {
     ash::ScopedAccountIdAnnotator annotator(profile_manager_.profile_manager(),
                                             kTestAccountId);
     profile_ = profile_manager_.CreateTestingProfile(
-        BrowserContextHelper::GetUserBrowserContextDirName(
-            user->username_hash()),
-        {TestingProfile::TestingFactory{
-            ash::personalization_app::PersonalizationAppManagerFactory::
-                GetInstance(),
-            base::BindRepeating(&MakeMockPersonalizationAppManager)}});
+        std::string(kTestAccountId.GetUserEmail()));
 
     // The Google Photos fetchers resolve their IdentityManager by AccountId
     // through ash::IdentityManagerProvider.
@@ -301,14 +288,6 @@ class PersonalizationAppWallpaperProviderImplTest : public testing::Test {
   }
 
   void ResetWallpaperProvider() { wallpaper_provider_.reset(); }
-
-  ::testing::NiceMock<MockPersonalizationAppManager>*
-  MockPersonalizationAppManager() {
-    return static_cast<::testing::NiceMock<
-        ::ash::personalization_app::MockPersonalizationAppManager>*>(
-        ::ash::personalization_app::PersonalizationAppManagerFactory::
-            GetForBrowserContext(profile_));
-  }
 
   void SetWallpaperObserver() {
     wallpaper_provider_remote_->SetWallpaperObserver(
@@ -566,28 +545,6 @@ TEST_F(PersonalizationAppWallpaperProviderImplTest, SetCurrentWallpaperLayout) {
 
   EXPECT_EQ(ctrl->update_current_wallpaper_layout_count(), 1);
   EXPECT_EQ(ctrl->update_current_wallpaper_layout_layout(), layout);
-}
-
-TEST_F(PersonalizationAppWallpaperProviderImplTest,
-       CallsMaybeStartHatsTimerOnDestruction) {
-  // Insert a wallpaper image info to indicate that the user opened the
-  // wallpaper app and requested wallpapers.
-  AddWallpaperImage(GetDefaultImageInfo());
-
-  EXPECT_CALL(*MockPersonalizationAppManager(),
-              MaybeStartHatsTimer(HatsSurveyType::kWallpaper))
-      .Times(1);
-
-  ResetWallpaperProvider();
-}
-
-TEST_F(PersonalizationAppWallpaperProviderImplTest,
-       DoesNotCallMaybeStartHatsTimerIfNoWallpaperFetched) {
-  EXPECT_CALL(*MockPersonalizationAppManager(),
-              MaybeStartHatsTimer(HatsSurveyType::kWallpaper))
-      .Times(0);
-
-  ResetWallpaperProvider();
 }
 
 TEST_F(PersonalizationAppWallpaperProviderImplTest, GetWallpaperAsJpegBytes) {

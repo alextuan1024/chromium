@@ -21,6 +21,9 @@
 
 #include "third_party/blink/renderer/core/svg/svg_angle.h"
 
+#include "base/numerics/angle_conversions.h"
+#include "third_party/blink/renderer/core/css/css_numeric_literal_value.h"
+#include "third_party/blink/renderer/core/css/css_primitive_value.h"
 #include "third_party/blink/renderer/core/svg/animation/smil_animation_effect_parameters.h"
 #include "third_party/blink/renderer/core/svg/svg_enumeration_map.h"
 #include "third_party/blink/renderer/core/svg/svg_parser_utilities.h"
@@ -30,7 +33,6 @@
 #include "third_party/blink/renderer/platform/runtime_enabled_features.h"
 #include "third_party/blink/renderer/platform/wtf/math_extras.h"
 #include "third_party/blink/renderer/platform/wtf/text/character_visitor.h"
-#include "third_party/blink/renderer/platform/wtf/text/string_builder.h"
 #include "third_party/blink/renderer/platform/wtf/text/wtf_string.h"
 
 namespace blink {
@@ -74,12 +76,12 @@ float ConvertAngleToUnit(SVGAngle::SVGAngleType from_unit,
     case SVGAngle::kSvgAngletypeTurn:
       switch (to_unit) {
         case SVGAngle::kSvgAngletypeGrad:
-          return Turn2grad(value);
+          return ClampTo<float>(Turn2grad(value));
         case SVGAngle::kSvgAngletypeUnspecified:
         case SVGAngle::kSvgAngletypeDeg:
-          return Turn2deg(value);
+          return ClampTo<float>(Turn2deg(value));
         case SVGAngle::kSvgAngletypeRad:
-          return Deg2rad(Turn2deg(value));
+          return ClampTo<float>(Turn2rad(value));
         case SVGAngle::kSvgAngletypeTurn:
         case SVGAngle::kSvgAngletypeUnknown:
           NOTREACHED();
@@ -88,12 +90,12 @@ float ConvertAngleToUnit(SVGAngle::SVGAngleType from_unit,
     case SVGAngle::kSvgAngletypeRad:
       switch (to_unit) {
         case SVGAngle::kSvgAngletypeGrad:
-          return Rad2grad(value);
+          return ClampTo<float>(Rad2grad(value));
         case SVGAngle::kSvgAngletypeUnspecified:
         case SVGAngle::kSvgAngletypeDeg:
-          return Rad2deg(value);
+          return ClampTo<float>(base::RadToDeg(value));
         case SVGAngle::kSvgAngletypeTurn:
-          return Deg2turn(Rad2deg(value));
+          return ClampTo<float>(Rad2turn(value));
         case SVGAngle::kSvgAngletypeRad:
         case SVGAngle::kSvgAngletypeUnknown:
           NOTREACHED();
@@ -119,9 +121,9 @@ float ConvertAngleToUnit(SVGAngle::SVGAngleType from_unit,
     case SVGAngle::kSvgAngletypeDeg:
       switch (to_unit) {
         case SVGAngle::kSvgAngletypeRad:
-          return Deg2rad(value);
+          return base::DegToRad(value);
         case SVGAngle::kSvgAngletypeGrad:
-          return Deg2grad(value);
+          return ClampTo<float>(Deg2grad(value));
         case SVGAngle::kSvgAngletypeTurn:
           return Deg2turn(value);
         case SVGAngle::kSvgAngletypeUnspecified:
@@ -139,15 +141,32 @@ float ConvertAngleToUnit(SVGAngle::SVGAngleType from_unit,
 float ConvertDegreesToUnit(float degrees, SVGAngle::SVGAngleType unit) {
   switch (unit) {
     case SVGAngle::kSvgAngletypeGrad:
-      return Deg2grad(degrees);
+      return ClampTo<float>(Deg2grad(degrees));
     case SVGAngle::kSvgAngletypeRad:
-      return Deg2rad(degrees);
+      return base::DegToRad(degrees);
     case SVGAngle::kSvgAngletypeTurn:
       return Deg2turn(degrees);
     case SVGAngle::kSvgAngletypeUnspecified:
     case SVGAngle::kSvgAngletypeUnknown:
     case SVGAngle::kSvgAngletypeDeg:
       return degrees;
+  }
+}
+
+CSSPrimitiveValue::UnitType AngleTypeToCSSUnitType(
+    SVGAngle::SVGAngleType unit) {
+  switch (unit) {
+    case SVGAngle::kSvgAngletypeDeg:
+      return CSSPrimitiveValue::UnitType::kDegrees;
+    case SVGAngle::kSvgAngletypeRad:
+      return CSSPrimitiveValue::UnitType::kRadians;
+    case SVGAngle::kSvgAngletypeGrad:
+      return CSSPrimitiveValue::UnitType::kGradians;
+    case SVGAngle::kSvgAngletypeTurn:
+      return CSSPrimitiveValue::UnitType::kTurns;
+    case SVGAngle::kSvgAngletypeUnspecified:
+    case SVGAngle::kSvgAngletypeUnknown:
+      return CSSPrimitiveValue::UnitType::kNumber;
   }
 }
 
@@ -184,9 +203,9 @@ float SVGAngle::Value() const {
     case kSvgAngletypeGrad:
       return Grad2deg(value_in_specified_units_);
     case kSvgAngletypeRad:
-      return Rad2deg(value_in_specified_units_);
+      return ClampTo<float>(base::RadToDeg(value_in_specified_units_));
     case kSvgAngletypeTurn:
-      return Turn2deg(value_in_specified_units_);
+      return ClampTo<float>(Turn2deg(value_in_specified_units_));
     case kSvgAngletypeUnspecified:
     case kSvgAngletypeUnknown:
     case kSvgAngletypeDeg:
@@ -197,7 +216,9 @@ float SVGAngle::Value() const {
 }
 
 void SVGAngle::SetValue(float value) {
-  NewValueSpecifiedUnits(unit_type_, ConvertDegreesToUnit(value, unit_type_));
+  NewValueSpecifiedUnits(
+      unit_type_,
+      ConvertDegreesToUnit(ClampToWithNaNTo0<float>(value), unit_type_));
 }
 
 template <typename CharType>
@@ -244,28 +265,8 @@ static SVGAngle::SVGAngleType StringToAngleType(
 }
 
 String SVGAngle::ValueAsString() const {
-  base::span<const char> unit_string;
-  switch (unit_type_) {
-    case kSvgAngletypeDeg:
-      unit_string = base::span_from_cstring("deg");
-      break;
-    case kSvgAngletypeRad:
-      unit_string = base::span_from_cstring("rad");
-      break;
-    case kSvgAngletypeGrad:
-      unit_string = base::span_from_cstring("grad");
-      break;
-    case kSvgAngletypeTurn:
-      unit_string = base::span_from_cstring("turn");
-      break;
-    case kSvgAngletypeUnspecified:
-    case kSvgAngletypeUnknown:
-      break;
-  }
-  StringBuilder builder;
-  builder.AppendNumber(value_in_specified_units_);
-  builder.Append(base::as_bytes(unit_string));
-  return builder.ToString();
+  return CSSNumericLiteralValue::Serialize(value_in_specified_units_,
+                                           AngleTypeToCSSUnitType(unit_type_));
 }
 
 template <typename CharType>

@@ -33,13 +33,11 @@
 #include "remoting/host/file_transfer/ipc_file_operations.h"
 #include "remoting/host/mojom/chromoting_host_services.mojom.h"
 #include "remoting/host/mojom/desktop_session.mojom.h"
-#include "remoting/host/mojom/remoting_mojom_traits.h"
 #include "remoting/host/remote_open_url/url_forwarder_configurator.h"
 #include "remoting/host/webauthn/remote_webauthn_state_change_notifier.h"
 #include "remoting/proto/control.pb.h"
 #include "remoting/proto/coordinates.pb.h"
 #include "remoting/proto/event.pb.h"
-#include "remoting/proto/url_forwarder_control.pb.h"
 #include "remoting/protocol/audio_sample_info.h"
 #include "remoting/protocol/clipboard_stub.h"
 #include "remoting/protocol/desktop_capturer.h"
@@ -353,12 +351,6 @@ class DesktopSessionProxy
       set_up_url_forwarder_callback_ GUARDED_BY_CONTEXT(sequence_checker_);
   mojom::UrlForwarderState current_url_forwarder_state_ GUARDED_BY_CONTEXT(
       sequence_checker_) = mojom::UrlForwarderState::kUnknown;
-
-  // Whether the host cursor is rendered by the client.
-  // TODO: crbug.com/455622961 - Remove this once the clientRenderedHostCursor
-  // experiment is fully rolled out, where this is always set to true.
-  bool host_cursor_rendered_by_client_ GUARDED_BY_CONTEXT(sequence_checker_) =
-      false;
 
   // Boolean to ensure desktop_session_control_->StartAudioInjector() is
   // called when StartAudioInjector() is called before

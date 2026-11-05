@@ -32,7 +32,6 @@ import org.chromium.base.FieldTrialList;
 import org.chromium.base.PowerMonitor;
 import org.chromium.base.ThreadUtils;
 import org.chromium.base.library_loader.LibraryLoader;
-import org.chromium.base.library_loader.LibraryPrefetcher;
 import org.chromium.base.library_loader.LibraryProcessType;
 import org.chromium.base.metrics.RecordHistogram;
 import org.chromium.base.task.PostTask;
@@ -42,7 +41,6 @@ import org.chromium.components.policy.CombinedPolicyProvider;
 import org.chromium.content_public.browser.BrowserStartupController;
 import org.chromium.content_public.browser.ChildProcessLauncherHelper;
 import org.chromium.net.NetworkChangeNotifier;
-import org.chromium.ui.base.ResourceBundle;
 import org.chromium.ui.display.DisplayAndroidManager;
 
 import java.util.UUID;
@@ -203,8 +201,6 @@ public final class StartupTasks {
      */
     public static void runNonUiThreadCapableStartupTasks(StartupController.Delegate delegate) {
         try {
-            ResourceBundle.setAvailablePakLocales(AwLocaleConfig.getWebViewSupportedPakLocales());
-
             try (DualTraceEvent ignored =
                     DualTraceEvent.scoped("LibraryLoader.ensureInitialized")) {
                 LibraryLoader.getInstance().ensureInitialized();
@@ -292,19 +288,6 @@ public final class StartupTasks {
                 () -> {
                     WebViewCachedFlags.get().onStartupCompleted();
                 });
-
-        if (AwFeatureMap.isEnabled(AwFeatures.WEBVIEW_PREFETCH_NATIVE_LIBRARY)
-                && !AwFeatureMap.getInstance()
-                        .getFieldTrialParamByFeatureAsBoolean(
-                                AwFeatures.WEBVIEW_PREFETCH_NATIVE_LIBRARY,
-                                "WebViewPrefetchFromRenderer",
-                                true)) {
-            PostTask.postTask(
-                    TaskTraits.BEST_EFFORT,
-                    () -> {
-                        LibraryPrefetcher.prefetchNativeLibraryForWebView();
-                    });
-        }
 
         if (AwFeatureMap.isEnabled(AwFeatures.WEBVIEW_RECORD_APP_CACHE_HISTOGRAMS)) {
             PostTask.postDelayedTask(

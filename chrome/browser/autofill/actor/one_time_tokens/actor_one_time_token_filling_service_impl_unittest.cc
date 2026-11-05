@@ -6,12 +6,16 @@
 
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "base/containers/adapters.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
+#include "base/functional/callback_helpers.h"
+#include "base/strings/strcat.h"
 #include "base/task/sequenced_task_runner.h"
+#include "base/test/gmock_callback_support.h"
 #include "base/test/gmock_expected_support.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/scoped_command_line.h"
@@ -21,7 +25,8 @@
 #include "chrome/browser/affiliations/affiliation_service_factory.h"
 #include "chrome/browser/autofill/actor/one_time_tokens/actor_login_context.h"
 #include "chrome/browser/autofill/actor/one_time_tokens/actor_one_time_token_filling_service_metrics.h"
-#include "chrome/browser/autofill/one_time_token_service_factory.h"
+#include "chrome/browser/autofill/gmail_otp_backend_factory.h"
+#include "chrome/browser/autofill/gmail_otp_service_factory.h"
 #include "chrome/browser/ssl/chrome_security_state_util.h"
 #include "chrome/test/base/chrome_render_view_host_test_harness.h"
 #include "chrome/test/base/testing_profile.h"
@@ -39,9 +44,11 @@
 #include "components/autofill/core/browser/test_utils/autofill_form_test_util.h"
 #include "components/autofill/core/common/autofill_test_util.h"
 #include "components/keyed_service/core/keyed_service.h"
+#include "components/one_time_tokens/core/browser/fake_gmail_otp_backend.h"
+#include "components/one_time_tokens/core/browser/fake_gmail_otp_service.h"
 #include "components/one_time_tokens/core/browser/one_time_token.h"
+#include "components/one_time_tokens/core/browser/one_time_token_log_sink.h"
 #include "components/one_time_tokens/core/browser/one_time_token_retrieval_error.h"
-#include "components/one_time_tokens/core/browser/one_time_token_service.h"
 #include "components/one_time_tokens/core/browser/user_data_processing_consent_states.h"
 #include "components/one_time_tokens/core/browser/util/expiring_subscription_manager.h"
 #include "components/one_time_tokens/core/common/one_time_token_switches.h"
@@ -67,112 +74,21 @@ namespace {
 constexpr base::TimeDelta kSubscriptionTimeout = base::Minutes(1);
 
 using ::one_time_tokens::OneTimeTokenRetrievalError;
+using PredictedOtpType = ActorOneTimeTokenFillingService::PredictedOtpType;
 
 using ::affiliations::AffiliatedFacets;
 using ::affiliations::Facet;
 using ::affiliations::FacetURI;
 using ::testing::_;
+using ::testing::ElementsAre;
 using ::testing::NiceMock;
+using ::testing::Pair;
 using ::testing::Return;
 
-class FakeOneTimeTokenService : public one_time_tokens::OneTimeTokenService {
- public:
-  FakeOneTimeTokenService() = default;
-  ~FakeOneTimeTokenService() override = default;
-
-  one_time_tokens::OneTimeTokenLogSink* log_sink() override { return nullptr; }
-
-  void GetRecentOneTimeTokens(
-      one_time_tokens::OneTimeTokenService::Callback callback) override {
-    get_recent_tokens_call_count_++;
-    for (const auto& token : base::Reversed(cached_tokens_)) {
-      one_time_tokens::OneTimeTokenSource source;
-      switch (token.type()) {
-        case one_time_tokens::OneTimeTokenType::kSmsOtp:
-          source = one_time_tokens::OneTimeTokenSource::kOnDeviceSms;
-          break;
-        case one_time_tokens::OneTimeTokenType::kGmail:
-          source = one_time_tokens::OneTimeTokenSource::kGmail;
-          break;
-      }
-      callback.Run(source, base::ok(token));
-    }
-  }
-
-  std::vector<one_time_tokens::OneTimeToken> GetCachedOneTimeTokens()
-      const override {
-    return cached_tokens_;
-  }
-
-  bool HasPendingRequests(
-      one_time_tokens::OneTimeTokenSource source) const override {
-    return has_pending_requests_;
-  }
-
-  void SetHasPendingRequests(bool has_pending_requests) {
-    has_pending_requests_ = has_pending_requests;
-  }
-
-  one_time_tokens::ExpiringSubscription Subscribe(
-      one_time_tokens::OneTimeTokenSource source,
-      base::Time expiration,
-      one_time_tokens::OneTimeTokenService::Callback callback,
-      base::OnceClosure expiration_callback) override {
-    subscribe_call_count_++;
-    return subscription_manager_.Subscribe(expiration, std::move(callback),
-                                           std::move(expiration_callback));
-  }
-
-  one_time_tokens::ExpiringSubscription SubscribeToTickles(
-      one_time_tokens::OneTimeTokenSource source,
-      base::Time expiration,
-      TickleCallback callback) override {
-    return one_time_tokens::ExpiringSubscription();
-  }
-
-  void RequestOneTimeToken(
-      base::TimeDelta timeout,
-      base::OnceCallback<void(std::optional<one_time_tokens::OneTimeToken>)>
-          callback) override {}
-
-  void FetchUserDataProcessingConsent(
-      one_time_tokens::OneTimeTokenService::
-          FetchUserDataProcessingConsentCallback callback) override {
-    base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
-        FROM_HERE, base::BindOnce(std::move(callback), consent_states_));
-  }
-
-  void set_consent_states(
-      std::optional<one_time_tokens::UserDataProcessingConsentStates>
-          consent_states) {
-    consent_states_ = consent_states;
-  }
-
-  void SetCachedTokens(std::vector<one_time_tokens::OneTimeToken> tokens) {
-    cached_tokens_ = std::move(tokens);
-  }
-
-  template <typename... Args>
-  void NotifySubscribers(Args&&... args) {
-    subscription_manager_.Notify(std::forward<Args>(args)...);
-  }
-
-  int subscribe_call_count() const { return subscribe_call_count_; }
-  int get_recent_tokens_call_count() const {
-    return get_recent_tokens_call_count_;
-  }
-
- private:
-  one_time_tokens::ExpiringSubscriptionManager<
-      one_time_tokens::OneTimeTokenService::CallbackSignature>
-      subscription_manager_;
-  std::vector<one_time_tokens::OneTimeToken> cached_tokens_;
-  std::optional<one_time_tokens::UserDataProcessingConsentStates>
-      consent_states_;
-  bool has_pending_requests_ = false;
-  mutable int subscribe_call_count_ = 0;
-  mutable int get_recent_tokens_call_count_ = 0;
-};
+std::string RetrieveOtpSliceHistogram(std::string_view predicted_otp_type) {
+  return base::StrCat({kActorOneTimeTokenFillingServiceRetrieveOtpHistogram,
+                       ".", predicted_otp_type});
+}
 
 class TestActorContentAutofillDriver : public TestContentAutofillDriver {
  public:
@@ -207,13 +123,29 @@ class TestActorChromeAutofillClient : public TestContentAutofillClient {
   }
 };
 
+class MockJournalObserver : public ::actor::AggregatedJournal::Observer {
+ public:
+  explicit MockJournalObserver(::actor::AggregatedJournal& journal)
+      : journal_(journal.GetSafeRef()) {
+    journal.AddObserver(this);
+  }
+  ~MockJournalObserver() override { journal_->RemoveObserver(this); }
+
+  MOCK_METHOD(void,
+              WillAddJournalEntry,
+              (const ::actor::AggregatedJournal::Entry& entry),
+              (override));
+
+ private:
+  base::SafeRef<::actor::AggregatedJournal> journal_;
+};
+
 class ActorOneTimeTokenFillingServiceImplTest
     : public ChromeRenderViewHostTestHarness {
  public:
   ActorOneTimeTokenFillingServiceImplTest()
       : ChromeRenderViewHostTestHarness(
             base::test::TaskEnvironment::TimeSource::MOCK_TIME) {}
-  ~ActorOneTimeTokenFillingServiceImplTest() override = default;
 
   void SetUp() override {
     ChromeRenderViewHostTestHarness::SetUp();
@@ -247,10 +179,15 @@ class ActorOneTimeTokenFillingServiceImplTest
                                            -> std::unique_ptr<KeyedService> {
           return std::make_unique<affiliations::FakeAffiliationService>();
         }));
-    OneTimeTokenServiceFactory::GetInstance()->SetTestingFactory(
+    GmailOtpBackendFactory::GetInstance()->SetTestingFactory(
         profile(), base::BindRepeating([](content::BrowserContext* context)
                                            -> std::unique_ptr<KeyedService> {
-          return std::make_unique<FakeOneTimeTokenService>();
+          return std::make_unique<one_time_tokens::FakeGmailOtpBackend>();
+        }));
+    GmailOtpServiceFactory::GetInstance()->SetTestingFactory(
+        profile(), base::BindRepeating([](content::BrowserContext* context)
+                                           -> std::unique_ptr<KeyedService> {
+          return std::make_unique<one_time_tokens::FakeGmailOtpService>();
         }));
 
     service_ = std::make_unique<ActorOneTimeTokenFillingServiceImpl>(
@@ -262,9 +199,14 @@ class ActorOneTimeTokenFillingServiceImplTest
     ChromeRenderViewHostTestHarness::TearDown();
   }
 
-  FakeOneTimeTokenService& otp_service() {
-    return *static_cast<FakeOneTimeTokenService*>(
-        OneTimeTokenServiceFactory::GetForProfile(profile()));
+  one_time_tokens::FakeGmailOtpBackend& gmail_otp_backend() {
+    return *static_cast<one_time_tokens::FakeGmailOtpBackend*>(
+        GmailOtpBackendFactory::GetForProfile(profile()));
+  }
+
+  one_time_tokens::FakeGmailOtpService& gmail_otp_service() {
+    return *static_cast<one_time_tokens::FakeGmailOtpService*>(
+        GmailOtpServiceFactory::GetForProfile(profile()));
   }
 
   affiliations::FakeAffiliationService* affiliation_service() {
@@ -360,14 +302,11 @@ TEST_F(ActorOneTimeTokenFillingServiceImplTest, RetrieveOtp_MockOtpSwitchSet) {
       future;
   service().RetrieveOtp(tab().GetHandle(), main_rfh_origin(),
                         /*trigger_field_ids=*/{},
-                        /*is_login_flow=*/false, future.GetCallback());
+                        /*is_login_flow=*/false, PredictedOtpType::kUnknown,
+                        future.GetCallback());
   EXPECT_EQ(future.Get().value(), kMockOtp);
-  EXPECT_EQ(otp_service().get_recent_tokens_call_count(), 0);
-  EXPECT_EQ(otp_service().subscribe_call_count(), 0);
-  histogram_tester_.ExpectBucketCount(
-      kActorOneTimeTokenFillingServiceRetrieveOtpHistogram,
-      ActorOneTimeTokenFillingServiceRetrieveOtp::kStart, 1);
-  histogram_tester_.ExpectBucketCount(
+  EXPECT_EQ(gmail_otp_service().num_callbacks(), 0u);
+  histogram_tester_.ExpectUniqueSample(
       kActorOneTimeTokenFillingServiceRetrieveOtpHistogram,
       ActorOneTimeTokenFillingServiceRetrieveOtp::kMockOtp, 1);
 }
@@ -377,22 +316,23 @@ TEST_F(ActorOneTimeTokenFillingServiceImplTest, RetrieveOtp_MockOtpSwitchSet) {
 TEST_F(ActorOneTimeTokenFillingServiceImplTest, RetrieveOtp_SuccessFromCache) {
   NavigateAndCommit(GURL("https://example.com"));
   const std::string kOtp = "123456";
-  otp_service().SetCachedTokens(
-      {{one_time_tokens::OneTimeTokenType::kGmail, kOtp, base::TimeTicks::Now(),
-        "sender@example.com"}});
+  gmail_otp_service().ProcessCallbacks(one_time_tokens::OneTimeToken(
+      one_time_tokens::OneTimeTokenType::kGmail, kOtp, base::TimeTicks::Now(),
+      "sender@example.com"));
 
   base::test::TestFuture<
       base::expected<std::string, OneTimeTokenRetrievalError>>
       future;
   service().RetrieveOtp(tab().GetHandle(), main_rfh_origin(),
                         /*trigger_field_ids=*/{},
-                        /*is_login_flow=*/false, future.GetCallback());
+                        /*is_login_flow=*/false, PredictedOtpType::kEmail,
+                        future.GetCallback());
   EXPECT_EQ(future.Get().value(), kOtp);
-  histogram_tester_.ExpectBucketCount(
+  histogram_tester_.ExpectUniqueSample(
       kActorOneTimeTokenFillingServiceRetrieveOtpHistogram,
-      ActorOneTimeTokenFillingServiceRetrieveOtp::kStart, 1);
-  histogram_tester_.ExpectBucketCount(
-      kActorOneTimeTokenFillingServiceRetrieveOtpHistogram,
+      ActorOneTimeTokenFillingServiceRetrieveOtp::kSuccessCacheMatchFound, 1);
+  histogram_tester_.ExpectUniqueSample(
+      RetrieveOtpSliceHistogram("Email"),
       ActorOneTimeTokenFillingServiceRetrieveOtp::kSuccessCacheMatchFound, 1);
   histogram_tester_.ExpectBucketCount(
       kActorOtpRetrieveOtpCallbackSupersededHistogram,
@@ -400,6 +340,12 @@ TEST_F(ActorOneTimeTokenFillingServiceImplTest, RetrieveOtp_SuccessFromCache) {
   histogram_tester_.ExpectBucketCount(
       kActorOtpRetrieveOtpCallbackSupersededHistogram,
       ActorOtpRetrieveOtpCallbackSuperseded::kCallbackSuperseded, 0);
+
+  // A completed retrieval is not reported as cancelled on destruction.
+  service_.reset();
+  histogram_tester_.ExpectBucketCount(
+      kActorOneTimeTokenFillingServiceRetrieveOtpHistogram,
+      ActorOneTimeTokenFillingServiceRetrieveOtp::kCancelled, 0);
 }
 
 // Tests that `RetrieveOtp` waits for pending backend requests to complete
@@ -408,34 +354,30 @@ TEST_F(ActorOneTimeTokenFillingServiceImplTest,
        RetrieveOtp_WaitsForPendingRequestsBeforeReturningCache) {
   NavigateAndCommit(GURL("https://example.com"));
   const std::string kCachedOtp = "123456";
-  otp_service().SetCachedTokens(
-      {{one_time_tokens::OneTimeTokenType::kGmail, kCachedOtp,
-        base::TimeTicks::Now(), "sender@example.com"}});
-  otp_service().SetHasPendingRequests(true);
+  gmail_otp_service().ProcessCallbacks(one_time_tokens::OneTimeToken(
+      one_time_tokens::OneTimeTokenType::kGmail, kCachedOtp,
+      base::TimeTicks::Now(), "sender@example.com"));
+  gmail_otp_service().SetHasPendingRequests(true);
 
   base::test::TestFuture<
       base::expected<std::string, OneTimeTokenRetrievalError>>
       future;
   service().RetrieveOtp(tab().GetHandle(), main_rfh_origin(),
                         /*trigger_field_ids=*/{},
-                        /*is_login_flow=*/false, future.GetCallback());
+                        /*is_login_flow=*/false, PredictedOtpType::kUnknown,
+                        future.GetCallback());
 
   // Cached OTP should not resolve the future immediately while requests are
   // pending.
   EXPECT_FALSE(future.IsReady());
 
   // Pending requests complete with no newer OTP. Cached OTP is returned.
-  otp_service().SetHasPendingRequests(false);
-  otp_service().NotifySubscribers(
-      one_time_tokens::OneTimeTokenSource::kGmail,
-      base::unexpected(
-          one_time_tokens::OneTimeTokenRetrievalError::kGmailOtpUnknown));
+  gmail_otp_service().SetHasPendingRequests(false);
+  gmail_otp_service().ProcessCallbacks(base::unexpected(
+      one_time_tokens::OneTimeTokenRetrievalError::kGmailOtpUnknown));
 
   EXPECT_EQ(future.Get().value(), kCachedOtp);
-  histogram_tester_.ExpectBucketCount(
-      kActorOneTimeTokenFillingServiceRetrieveOtpHistogram,
-      ActorOneTimeTokenFillingServiceRetrieveOtp::kStart, 1);
-  histogram_tester_.ExpectBucketCount(
+  histogram_tester_.ExpectUniqueSample(
       kActorOneTimeTokenFillingServiceRetrieveOtpHistogram,
       ActorOneTimeTokenFillingServiceRetrieveOtp::kSuccessCacheMatchFound, 1);
 }
@@ -446,7 +388,6 @@ TEST_F(ActorOneTimeTokenFillingServiceImplTest,
 TEST_F(ActorOneTimeTokenFillingServiceImplTest,
        RetrieveOtp_SuccessFromSubscription) {
   NavigateAndCommit(GURL("https://example.com"));
-  otp_service().SetCachedTokens({});
   const std::string kOtp = "654321";
 
   base::test::TestFuture<
@@ -454,21 +395,17 @@ TEST_F(ActorOneTimeTokenFillingServiceImplTest,
       future;
   service().RetrieveOtp(tab().GetHandle(), main_rfh_origin(),
                         /*trigger_field_ids=*/{},
-                        /*is_login_flow=*/false, future.GetCallback());
+                        /*is_login_flow=*/false, PredictedOtpType::kUnknown,
+                        future.GetCallback());
 
   ASSERT_FALSE(future.IsReady());
 
-  otp_service().NotifySubscribers(
-      one_time_tokens::OneTimeTokenSource::kGmail,
-      one_time_tokens::OneTimeToken(one_time_tokens::OneTimeTokenType::kGmail,
-                                    kOtp, base::TimeTicks::Now(),
-                                    "sender@example.com"));
+  gmail_otp_service().ProcessCallbacks(one_time_tokens::OneTimeToken(
+      one_time_tokens::OneTimeTokenType::kGmail, kOtp, base::TimeTicks::Now(),
+      "sender@example.com"));
 
   EXPECT_EQ(future.Get().value(), kOtp);
-  histogram_tester_.ExpectBucketCount(
-      kActorOneTimeTokenFillingServiceRetrieveOtpHistogram,
-      ActorOneTimeTokenFillingServiceRetrieveOtp::kStart, 1);
-  histogram_tester_.ExpectBucketCount(
+  histogram_tester_.ExpectUniqueSample(
       kActorOneTimeTokenFillingServiceRetrieveOtpHistogram,
       ActorOneTimeTokenFillingServiceRetrieveOtp::kSuccessReceivedMatchFound,
       1);
@@ -489,17 +426,13 @@ TEST_F(ActorOneTimeTokenFillingServiceImplTest,
       future;
   service().RetrieveOtp(tab().GetHandle(), main_rfh_origin(),
                         /*trigger_field_ids=*/{}, /*is_login_flow=*/false,
-                        future.GetCallback());
+                        PredictedOtpType::kUnknown, future.GetCallback());
 
-  otp_service().NotifySubscribers(
-      one_time_tokens::OneTimeTokenSource::kGmail,
+  gmail_otp_service().ProcessCallbacks(
       base::unexpected(OneTimeTokenRetrievalError::kGmailOtpBackendAuthError));
   EXPECT_EQ(future.Get().error(),
             OneTimeTokenRetrievalError::kGmailOtpBackendAuthError);
-  histogram_tester_.ExpectBucketCount(
-      kActorOneTimeTokenFillingServiceRetrieveOtpHistogram,
-      ActorOneTimeTokenFillingServiceRetrieveOtp::kStart, 1);
-  histogram_tester_.ExpectBucketCount(
+  histogram_tester_.ExpectUniqueSample(
       kActorOneTimeTokenFillingServiceRetrieveOtpHistogram,
       ActorOneTimeTokenFillingServiceRetrieveOtp::kGmailOtpBackendAuthError, 1);
   histogram_tester_.ExpectBucketCount(
@@ -520,16 +453,12 @@ TEST_F(ActorOneTimeTokenFillingServiceImplTest,
       future;
   service().RetrieveOtp(tab().GetHandle(), main_rfh_origin(),
                         /*trigger_field_ids=*/{}, /*is_login_flow=*/false,
-                        future.GetCallback());
+                        PredictedOtpType::kUnknown, future.GetCallback());
 
-  otp_service().NotifySubscribers(
-      one_time_tokens::OneTimeTokenSource::kGmail,
+  gmail_otp_service().ProcessCallbacks(
       base::unexpected(OneTimeTokenRetrievalError::kUnknown));
   EXPECT_EQ(future.Get().error(), OneTimeTokenRetrievalError::kUnknown);
-  histogram_tester_.ExpectBucketCount(
-      kActorOneTimeTokenFillingServiceRetrieveOtpHistogram,
-      ActorOneTimeTokenFillingServiceRetrieveOtp::kStart, 1);
-  histogram_tester_.ExpectBucketCount(
+  histogram_tester_.ExpectUniqueSample(
       kActorOneTimeTokenFillingServiceRetrieveOtpHistogram,
       ActorOneTimeTokenFillingServiceRetrieveOtp::kUnknownError, 1);
   histogram_tester_.ExpectBucketCount(
@@ -544,29 +473,116 @@ TEST_F(ActorOneTimeTokenFillingServiceImplTest,
 // subscription expires.
 TEST_F(ActorOneTimeTokenFillingServiceImplTest, RetrieveOtp_Timeout) {
   NavigateAndCommit(GURL("https://example.com"));
-  otp_service().SetCachedTokens({});
 
   base::test::TestFuture<
       base::expected<std::string, OneTimeTokenRetrievalError>>
       future;
   service().RetrieveOtp(tab().GetHandle(), main_rfh_origin(),
                         /*trigger_field_ids=*/{}, /*is_login_flow=*/false,
-                        future.GetCallback());
+                        PredictedOtpType::kSms, future.GetCallback());
   task_environment()->FastForwardBy(kSubscriptionTimeout + base::Seconds(1));
   EXPECT_EQ(future.Get().error(),
             OneTimeTokenRetrievalError::kSubscriptionExpired);
-  histogram_tester_.ExpectBucketCount(
-      kActorOneTimeTokenFillingServiceRetrieveOtpHistogram,
-      ActorOneTimeTokenFillingServiceRetrieveOtp::kStart, 1);
-  histogram_tester_.ExpectBucketCount(
+  histogram_tester_.ExpectUniqueSample(
       kActorOneTimeTokenFillingServiceRetrieveOtpHistogram,
       ActorOneTimeTokenFillingServiceRetrieveOtp::kRetrievalTimeout, 1);
+  histogram_tester_.ExpectUniqueSample(
+      RetrieveOtpSliceHistogram("Sms"),
+      ActorOneTimeTokenFillingServiceRetrieveOtp::kRetrievalTimeout, 1);
+  EXPECT_THAT(histogram_tester_.GetTotalCountsForPrefix(base::StrCat(
+                  {kActorOneTimeTokenFillingServiceRetrieveOtpHistogram, "."})),
+              ElementsAre(Pair(RetrieveOtpSliceHistogram("Sms"), 1)));
   histogram_tester_.ExpectBucketCount(
       kActorOtpRetrieveOtpCallbackSupersededHistogram,
       ActorOtpRetrieveOtpCallbackSuperseded::kRetrieveOtpStarted, 1);
   histogram_tester_.ExpectBucketCount(
       kActorOtpRetrieveOtpCallbackSupersededHistogram,
       ActorOtpRetrieveOtpCallbackSuperseded::kCallbackSuperseded, 0);
+}
+
+// Tests that `RetrieveOtp` logs `kGmailOtpSenderDomainMismatch` when the
+// retriever reports a sender-domain mismatch.
+TEST_F(ActorOneTimeTokenFillingServiceImplTest,
+       RetrieveOtp_GmailOtpSenderDomainMismatchRecordsMetric) {
+  NavigateAndCommit(GURL("https://example.com"));
+  base::test::TestFuture<
+      base::expected<std::string, OneTimeTokenRetrievalError>>
+      future;
+  service().RetrieveOtp(tab().GetHandle(), main_rfh_origin(),
+                        /*trigger_field_ids=*/{}, /*is_login_flow=*/false,
+                        PredictedOtpType::kUnknown, future.GetCallback());
+
+  gmail_otp_service().ProcessCallbacks(base::unexpected(
+      OneTimeTokenRetrievalError::kGmailOtpSenderDomainMismatch));
+  EXPECT_EQ(future.Get().error(),
+            OneTimeTokenRetrievalError::kGmailOtpSenderDomainMismatch);
+  histogram_tester_.ExpectBucketCount(
+      kActorOneTimeTokenFillingServiceRetrieveOtpHistogram,
+      ActorOneTimeTokenFillingServiceRetrieveOtp::kGmailOtpSenderDomainMismatch,
+      1);
+}
+
+// Tests that destroying the service while a retrieval is pending records
+// `kCancelled`.
+TEST_F(ActorOneTimeTokenFillingServiceImplTest,
+       RetrieveOtp_ServiceDestroyedMidRetrieval_RecordsCancelled) {
+  NavigateAndCommit(GURL("https://example.com"));
+
+  service().RetrieveOtp(tab().GetHandle(), main_rfh_origin(),
+                        /*trigger_field_ids=*/{}, /*is_login_flow=*/false,
+                        PredictedOtpType::kAuthenticatorApp, base::DoNothing());
+  service_.reset();
+
+  histogram_tester_.ExpectBucketCount(
+      kActorOneTimeTokenFillingServiceRetrieveOtpHistogram,
+      ActorOneTimeTokenFillingServiceRetrieveOtp::kCancelled, 1);
+  histogram_tester_.ExpectUniqueSample(
+      RetrieveOtpSliceHistogram("AuthenticatorApp"),
+      ActorOneTimeTokenFillingServiceRetrieveOtp::kCancelled, 1);
+}
+
+// Tests that a superseded request records nothing in its slice and that the
+// newer request's outcome is recorded in the slice for its own type.
+TEST_F(ActorOneTimeTokenFillingServiceImplTest,
+       RetrieveOtp_Superseded_RecordsOnlyNewerRequestSlice) {
+  NavigateAndCommit(GURL("https://example.com"));
+
+  service().RetrieveOtp(tab().GetHandle(), main_rfh_origin(),
+                        /*trigger_field_ids=*/{}, /*is_login_flow=*/false,
+                        PredictedOtpType::kSms, base::DoNothing());
+  service().RetrieveOtp(tab().GetHandle(), main_rfh_origin(),
+                        /*trigger_field_ids=*/{}, /*is_login_flow=*/false,
+                        PredictedOtpType::kEmail, base::DoNothing());
+  task_environment()->FastForwardBy(kSubscriptionTimeout + base::Seconds(1));
+
+  histogram_tester_.ExpectTotalCount(RetrieveOtpSliceHistogram("Sms"), 0);
+  histogram_tester_.ExpectUniqueSample(
+      RetrieveOtpSliceHistogram("Email"),
+      ActorOneTimeTokenFillingServiceRetrieveOtp::kRetrievalTimeout, 1);
+}
+
+// Tests that a newer call that fails early (null tab) is recorded in its own
+// slice and doesn't change the slice of the request that is pending.
+TEST_F(ActorOneTimeTokenFillingServiceImplTest,
+       RetrieveOtp_NullTabWhilePending_KeepsPendingRequestSlice) {
+  NavigateAndCommit(GURL("https://example.com"));
+
+  service().RetrieveOtp(tab().GetHandle(), main_rfh_origin(),
+                        /*trigger_field_ids=*/{}, /*is_login_flow=*/false,
+                        PredictedOtpType::kSms, base::DoNothing());
+  // A null tab makes this call fail before it can supersede the pending
+  // request.
+  service().RetrieveOtp(tabs::TabHandle(), main_rfh_origin(),
+                        /*trigger_field_ids=*/{}, /*is_login_flow=*/false,
+                        PredictedOtpType::kEmail, base::DoNothing());
+  task_environment()->FastForwardBy(kSubscriptionTimeout + base::Seconds(1));
+
+  histogram_tester_.ExpectUniqueSample(
+      RetrieveOtpSliceHistogram("Email"),
+      ActorOneTimeTokenFillingServiceRetrieveOtp::kNullTab, 1);
+  histogram_tester_.ExpectUniqueSample(
+      RetrieveOtpSliceHistogram("Sms"),
+      ActorOneTimeTokenFillingServiceRetrieveOtp::kRetrievalTimeout, 1);
 }
 
 // Tests that `RetrieveOtp` fails gracefully when the tab is null.
@@ -576,36 +592,33 @@ TEST_F(ActorOneTimeTokenFillingServiceImplTest, RetrieveOtp_TabNull) {
       future;
   service().RetrieveOtp(tabs::TabHandle(), main_rfh_origin(),
                         /*trigger_field_ids=*/{},
-                        /*is_login_flow=*/false, future.GetCallback());
+                        /*is_login_flow=*/false, PredictedOtpType::kUnknown,
+                        future.GetCallback());
   EXPECT_EQ(future.Get().error(), OneTimeTokenRetrievalError::kGmailOtpUnknown);
-  histogram_tester_.ExpectBucketCount(
+  histogram_tester_.ExpectUniqueSample(
       kActorOneTimeTokenFillingServiceRetrieveOtpHistogram,
-      ActorOneTimeTokenFillingServiceRetrieveOtp::kStart, 1);
-  histogram_tester_.ExpectBucketCount(
-      kActorOneTimeTokenFillingServiceRetrieveOtpHistogram,
+      ActorOneTimeTokenFillingServiceRetrieveOtp::kNullTab, 1);
+  histogram_tester_.ExpectUniqueSample(
+      RetrieveOtpSliceHistogram("Unknown"),
       ActorOneTimeTokenFillingServiceRetrieveOtp::kNullTab, 1);
 }
 
 // Tests that `RetrieveOtp` fails gracefully when the OTP service is null.
 TEST_F(ActorOneTimeTokenFillingServiceImplTest, RetrieveOtp_ServiceNull) {
   NavigateAndCommit(GURL("https://example.com"));
-  OneTimeTokenServiceFactory::GetInstance()->SetTestingFactory(
-      profile(), base::BindRepeating(
-                     [](content::BrowserContext* context)
-                         -> std::unique_ptr<KeyedService> { return nullptr; }));
+  GmailOtpServiceFactory::GetInstance()->SetTestingFactory(
+      profile(), BrowserContextKeyedServiceFactory::TestingFactory());
 
   base::test::TestFuture<
       base::expected<std::string, OneTimeTokenRetrievalError>>
       future;
   service().RetrieveOtp(tab().GetHandle(), main_rfh_origin(),
                         /*trigger_field_ids=*/{},
-                        /*is_login_flow=*/false, future.GetCallback());
+                        /*is_login_flow=*/false, PredictedOtpType::kUnknown,
+                        future.GetCallback());
   EXPECT_EQ(future.Get().error(),
             OneTimeTokenRetrievalError::kGmailOtpBackendApiNotAvailable);
-  histogram_tester_.ExpectBucketCount(
-      kActorOneTimeTokenFillingServiceRetrieveOtpHistogram,
-      ActorOneTimeTokenFillingServiceRetrieveOtp::kStart, 1);
-  histogram_tester_.ExpectBucketCount(
+  histogram_tester_.ExpectUniqueSample(
       kActorOneTimeTokenFillingServiceRetrieveOtpHistogram,
       ActorOneTimeTokenFillingServiceRetrieveOtp::kNoService, 1);
 }
@@ -624,22 +637,33 @@ TEST_F(ActorOneTimeTokenFillingServiceImplTest, RetrieveOtp_Superseded) {
 
   service().RetrieveOtp(tab().GetHandle(), main_rfh_origin(),
                         /*trigger_field_ids=*/{},
-                        /*is_login_flow=*/false, future1.GetCallback());
+                        /*is_login_flow=*/false, PredictedOtpType::kUnknown,
+                        future1.GetCallback());
   service().RetrieveOtp(tab().GetHandle(), main_rfh_origin(),
                         /*trigger_field_ids=*/{},
-                        /*is_login_flow=*/false, future2.GetCallback());
+                        /*is_login_flow=*/false, PredictedOtpType::kUnknown,
+                        future2.GetCallback());
 
   EXPECT_EQ(future1.Get().error(),
             OneTimeTokenRetrievalError::kGmailOtpUnknown);
-  histogram_tester_.ExpectBucketCount(
-      kActorOneTimeTokenFillingServiceRetrieveOtpHistogram,
-      ActorOneTimeTokenFillingServiceRetrieveOtp::kStart, 2);
+  histogram_tester_.ExpectTotalCount(
+      kActorOneTimeTokenFillingServiceRetrieveOtpHistogram, 0);
   histogram_tester_.ExpectBucketCount(
       kActorOtpRetrieveOtpCallbackSupersededHistogram,
       ActorOtpRetrieveOtpCallbackSuperseded::kRetrieveOtpStarted, 2);
   histogram_tester_.ExpectBucketCount(
       kActorOtpRetrieveOtpCallbackSupersededHistogram,
       ActorOtpRetrieveOtpCallbackSuperseded::kCallbackSuperseded, 1);
+
+  // The superseded first request records no outcome. The second request gets
+  // no backend response, so it ends with a timeout once the subscription
+  // expires.
+  task_environment()->FastForwardBy(kSubscriptionTimeout + base::Seconds(1));
+  EXPECT_EQ(future2.Get().error(),
+            OneTimeTokenRetrievalError::kSubscriptionExpired);
+  histogram_tester_.ExpectUniqueSample(
+      kActorOneTimeTokenFillingServiceRetrieveOtpHistogram,
+      ActorOneTimeTokenFillingServiceRetrieveOtp::kRetrievalTimeout, 1);
 }
 
 // Tests that multiple sequential `RetrieveOtp` calls supersede previous ones,
@@ -659,24 +683,21 @@ TEST_F(ActorOneTimeTokenFillingServiceImplTest,
 
   service().RetrieveOtp(tab().GetHandle(), main_rfh_origin(),
                         /*trigger_field_ids=*/{}, /*is_login_flow=*/false,
-                        future1.GetCallback());
+                        PredictedOtpType::kUnknown, future1.GetCallback());
 
-  otp_service().SetCachedTokens(
-      {{one_time_tokens::OneTimeTokenType::kGmail, kOtp, base::TimeTicks::Now(),
-        "sender@example.com"}});
+  gmail_otp_service().ProcessCallbacks(one_time_tokens::OneTimeToken(
+      one_time_tokens::OneTimeTokenType::kGmail, kOtp, base::TimeTicks::Now(),
+      "sender@example.com"));
 
   service().RetrieveOtp(tab().GetHandle(), main_rfh_origin(),
                         /*trigger_field_ids=*/{}, /*is_login_flow=*/false,
-                        future2.GetCallback());
+                        PredictedOtpType::kUnknown, future2.GetCallback());
 
   EXPECT_EQ(future1.Get().error(),
             OneTimeTokenRetrievalError::kGmailOtpUnknown);
   EXPECT_EQ(future2.Get().value(), kOtp);
 
-  histogram_tester_.ExpectBucketCount(
-      kActorOneTimeTokenFillingServiceRetrieveOtpHistogram,
-      ActorOneTimeTokenFillingServiceRetrieveOtp::kStart, 2);
-  histogram_tester_.ExpectBucketCount(
+  histogram_tester_.ExpectUniqueSample(
       kActorOneTimeTokenFillingServiceRetrieveOtpHistogram,
       ActorOneTimeTokenFillingServiceRetrieveOtp::kSuccessCacheMatchFound, 1);
 }
@@ -691,9 +712,9 @@ TEST_F(ActorOneTimeTokenFillingServiceImplTest,
   const std::string kSecondOtp = "222222";
 
   // The first call returns a matching token in the cache.
-  otp_service().SetCachedTokens(
-      {{one_time_tokens::OneTimeTokenType::kGmail, kFirstOtp,
-        base::TimeTicks::Now(), "sender@example.com"}});
+  gmail_otp_service().ProcessCallbacks(one_time_tokens::OneTimeToken(
+      one_time_tokens::OneTimeTokenType::kGmail, kFirstOtp,
+      base::TimeTicks::Now(), "sender@first.com"));
 
   base::test::TestFuture<
       base::expected<std::string, OneTimeTokenRetrievalError>>
@@ -704,28 +725,26 @@ TEST_F(ActorOneTimeTokenFillingServiceImplTest,
 
   // Start the first retrieve call. This will post a task to check the matching
   // token.
-  service().RetrieveOtp(tab().GetHandle(), main_rfh_origin(),
+  service().RetrieveOtp(tab().GetHandle(),
+                        url::Origin::Create(GURL("https://first.com")),
                         /*trigger_field_ids=*/{}, /*is_login_flow=*/false,
-                        future1.GetCallback());
+                        PredictedOtpType::kUnknown, future1.GetCallback());
 
-  // Clear cached tokens so second call subscribes.
-  otp_service().SetCachedTokens({});
-
-  // Before running the message loop, start the second retrieve call.
+  // Before running the message loop, start the second retrieve call for a
+  // different origin so it does not match the cached token.
   // This should cancel the ongoing check from the first call.
-  service().RetrieveOtp(tab().GetHandle(), main_rfh_origin(),
+  service().RetrieveOtp(tab().GetHandle(),
+                        url::Origin::Create(GURL("https://second.com")),
                         /*trigger_field_ids=*/{}, /*is_login_flow=*/false,
-                        future2.GetCallback());
+                        PredictedOtpType::kUnknown, future2.GetCallback());
 
   // The first call should immediately be rejected as superseded.
   EXPECT_EQ(future1.Get().error(),
             OneTimeTokenRetrievalError::kGmailOtpUnknown);
 
-  otp_service().NotifySubscribers(
-      one_time_tokens::OneTimeTokenSource::kGmail,
-      one_time_tokens::OneTimeToken(one_time_tokens::OneTimeTokenType::kGmail,
-                                    kSecondOtp, base::TimeTicks::Now(),
-                                    "sender@example.com"));
+  gmail_otp_service().ProcessCallbacks(one_time_tokens::OneTimeToken(
+      one_time_tokens::OneTimeTokenType::kGmail, kSecondOtp,
+      base::TimeTicks::Now(), "sender@second.com"));
 
   EXPECT_EQ(future2.Get().value(), kSecondOtp);
 }
@@ -736,10 +755,7 @@ TEST_F(ActorOneTimeTokenFillingServiceImplTest, FillOtp_TabNull) {
   service().FillOtp(tabs::TabHandle(), {test::MakeFieldGlobalId()}, "123456",
                     future.GetCallback());
   EXPECT_FALSE(future.Get());
-  histogram_tester_.ExpectBucketCount(
-      kActorOneTimeTokenFillingServiceFillOtpHistogram,
-      ActorOneTimeTokenFillingServiceFillOtp::kStart, 1);
-  histogram_tester_.ExpectBucketCount(
+  histogram_tester_.ExpectUniqueSample(
       kActorOneTimeTokenFillingServiceFillOtpHistogram,
       ActorOneTimeTokenFillingServiceFillOtp::kNullTab, 1);
 }
@@ -763,10 +779,7 @@ TEST_F(ActorOneTimeTokenFillingServiceImplTest, FillOtp_AutofillManagerNull) {
                     "123456", future.GetCallback());
 
   EXPECT_FALSE(future.Get());
-  histogram_tester_.ExpectBucketCount(
-      kActorOneTimeTokenFillingServiceFillOtpHistogram,
-      ActorOneTimeTokenFillingServiceFillOtp::kStart, 1);
-  histogram_tester_.ExpectBucketCount(
+  histogram_tester_.ExpectUniqueSample(
       kActorOneTimeTokenFillingServiceFillOtpHistogram,
       ActorOneTimeTokenFillingServiceFillOtp::kNoAutofillManager, 1);
 }
@@ -788,12 +801,39 @@ TEST_F(ActorOneTimeTokenFillingServiceImplTest, FillOtp_Success) {
   // field.
   EXPECT_THAT(last_filled_values(),
               testing::Contains(testing::Pair(field_id, u"123456")));
-  histogram_tester_.ExpectBucketCount(
-      kActorOneTimeTokenFillingServiceFillOtpHistogram,
-      ActorOneTimeTokenFillingServiceFillOtp::kStart, 1);
-  histogram_tester_.ExpectBucketCount(
+  histogram_tester_.ExpectUniqueSample(
       kActorOneTimeTokenFillingServiceFillOtpHistogram,
       ActorOneTimeTokenFillingServiceFillOtp::kSuccess, 1);
+
+  // A completed fill is not reported as cancelled on destruction.
+  service_.reset();
+  histogram_tester_.ExpectBucketCount(
+      kActorOneTimeTokenFillingServiceFillOtpHistogram,
+      ActorOneTimeTokenFillingServiceFillOtp::kCancelled, 0);
+}
+
+// Tests that destroying the service while a fill is pending records
+// `kCancelled` and not `kError`.
+TEST_F(ActorOneTimeTokenFillingServiceImplTest,
+       FillOtp_ServiceDestroyedMidFill_RecordsCancelled) {
+  FormData form = SeeForm({.fields = {{.server_type = ONE_TIME_CODE}}});
+  FieldGlobalId field_id = form.fields()[0].global_id();
+  // Fill no fields so that the observer keeps waiting.
+  EXPECT_CALL(driver(), ApplyFormAction)
+      .WillOnce(Return(base::flat_set<FieldGlobalId>()));
+
+  base::test::TestFuture<bool> future;
+  service().FillOtp(tab().GetHandle(), {field_id}, "123456",
+                    future.GetCallback());
+  service_.reset();
+
+  EXPECT_FALSE(future.Get());
+  histogram_tester_.ExpectBucketCount(
+      kActorOneTimeTokenFillingServiceFillOtpHistogram,
+      ActorOneTimeTokenFillingServiceFillOtp::kCancelled, 1);
+  histogram_tester_.ExpectBucketCount(
+      kActorOneTimeTokenFillingServiceFillOtpHistogram,
+      ActorOneTimeTokenFillingServiceFillOtp::kError, 0);
 }
 
 // Tests that concurrent calls to `FillOtp` are handled gracefully and the
@@ -812,9 +852,8 @@ TEST_F(ActorOneTimeTokenFillingServiceImplTest, FillOtp_ConcurrentCalls) {
 
   EXPECT_FALSE(future2.Get());
   EXPECT_TRUE(future1.Get());
-  histogram_tester_.ExpectBucketCount(
-      kActorOneTimeTokenFillingServiceFillOtpHistogram,
-      ActorOneTimeTokenFillingServiceFillOtp::kStart, 2);
+  histogram_tester_.ExpectTotalCount(
+      kActorOneTimeTokenFillingServiceFillOtpHistogram, 2);
   histogram_tester_.ExpectBucketCount(
       kActorOneTimeTokenFillingServiceFillOtpHistogram,
       ActorOneTimeTokenFillingServiceFillOtp::kConcurrentCall, 1);
@@ -831,10 +870,7 @@ TEST_F(ActorOneTimeTokenFillingServiceImplTest, FillOtp_EmptyTriggerFields) {
                     future.GetCallback());
 
   EXPECT_FALSE(future.Get());
-  histogram_tester_.ExpectBucketCount(
-      kActorOneTimeTokenFillingServiceFillOtpHistogram,
-      ActorOneTimeTokenFillingServiceFillOtp::kStart, 1);
-  histogram_tester_.ExpectBucketCount(
+  histogram_tester_.ExpectUniqueSample(
       kActorOneTimeTokenFillingServiceFillOtpHistogram,
       ActorOneTimeTokenFillingServiceFillOtp::kEmptyTriggerFieldIds, 1);
 }
@@ -847,10 +883,7 @@ TEST_F(ActorOneTimeTokenFillingServiceImplTest, FillOtp_FieldNotInCache) {
                     future.GetCallback());
 
   EXPECT_FALSE(future.Get());
-  histogram_tester_.ExpectBucketCount(
-      kActorOneTimeTokenFillingServiceFillOtpHistogram,
-      ActorOneTimeTokenFillingServiceFillOtp::kStart, 1);
-  histogram_tester_.ExpectBucketCount(
+  histogram_tester_.ExpectUniqueSample(
       kActorOneTimeTokenFillingServiceFillOtpHistogram,
       ActorOneTimeTokenFillingServiceFillOtp::kFormStructureNotFound, 1);
 }
@@ -866,10 +899,7 @@ TEST_F(ActorOneTimeTokenFillingServiceImplTest, FillOtp_NoOtpFieldsInForm) {
                     future.GetCallback());
 
   EXPECT_TRUE(future.Get());
-  histogram_tester_.ExpectBucketCount(
-      kActorOneTimeTokenFillingServiceFillOtpHistogram,
-      ActorOneTimeTokenFillingServiceFillOtp::kStart, 1);
-  histogram_tester_.ExpectBucketCount(
+  histogram_tester_.ExpectUniqueSample(
       kActorOneTimeTokenFillingServiceFillOtpHistogram,
       ActorOneTimeTokenFillingServiceFillOtp::kSuccess, 1);
 }
@@ -1121,33 +1151,6 @@ TEST_F(ActorOneTimeTokenFillingServiceImplTest,
             FormFillingContextStatus::kInsecureContext);
 }
 
-// Tests that an OTP form nested inside a fenced frame is rejected as an
-// insecure context.
-TEST_F(ActorOneTimeTokenFillingServiceImplTest,
-       ValidateFormFillingContext_FencedFrame_InsecureContext) {
-  SetupSecureMainFrame();
-
-  content::RenderFrameHost* fenced_rfh =
-      content::RenderFrameHostTester::For(main_rfh())->AppendFencedFrame();
-  fenced_rfh = content::NavigationSimulator::NavigateAndCommitFromDocument(
-      GURL("https://example.com"), fenced_rfh);
-
-  LocalFrameToken fenced_token(fenced_rfh->GetFrameToken().value());
-  url::Origin fenced_origin = url::Origin::Create(GURL("https://example.com"));
-  FormData form = SeeForm({
-      .fields = {{.server_type = ONE_TIME_CODE,
-                  .host_frame = fenced_token,
-                  .origin = fenced_origin}},
-      .host_frame = fenced_token,
-      .main_frame_origin = main_rfh_origin(),
-  });
-  ASSERT_FALSE(form.fields().empty());
-  FieldGlobalId field_id = form.fields()[0].global_id();
-
-  EXPECT_EQ(service().ValidateFormFillingContext(tab().GetHandle(), {field_id}),
-            FormFillingContextStatus::kInsecureContext);
-}
-
 // Tests that a nested iframe (depth >= 2) that is same-origin with the main
 // frame and has no cross-origin ancestors is allowed for filling.
 TEST_F(ActorOneTimeTokenFillingServiceImplTest,
@@ -1303,15 +1306,15 @@ TEST_F(ActorOneTimeTokenFillingServiceImplTest,
   NavigateAndCommit(GURL("data:text/html,<html></html>"));
   ASSERT_TRUE(main_rfh()->GetLastCommittedOrigin().opaque());
 
-  EXPECT_EQ(otp_service().get_recent_tokens_call_count(), 0);
-  EXPECT_EQ(otp_service().subscribe_call_count(), 0);
+  EXPECT_EQ(gmail_otp_service().num_callbacks(), 0u);
 
   base::test::TestFuture<
       base::expected<std::string, OneTimeTokenRetrievalError>>
       future;
   service().RetrieveOtp(tab().GetHandle(), main_rfh_origin(),
                         /*trigger_field_ids=*/{},
-                        /*is_login_flow=*/false, future.GetCallback());
+                        /*is_login_flow=*/false, PredictedOtpType::kUnknown,
+                        future.GetCallback());
 
   EXPECT_EQ(future.Get(),
             base::unexpected(OneTimeTokenRetrievalError::kGmailOtpUnknown));
@@ -1319,31 +1322,52 @@ TEST_F(ActorOneTimeTokenFillingServiceImplTest,
 
 TEST_F(ActorOneTimeTokenFillingServiceImplTest,
        FetchUserDataProcessingConsent) {
-  otp_service().set_consent_states(
-      one_time_tokens::UserDataProcessingConsentStates{
-          .comms_apps = one_time_tokens::ConsentState::kEnabled,
-          .google_apps = one_time_tokens::ConsentState::kDisabled});
+  one_time_tokens::UserDataProcessingConsentStates expected_states{
+      .comms_apps = one_time_tokens::ConsentState::kEnabled,
+      .google_apps = one_time_tokens::ConsentState::kDisabled};
+  gmail_otp_backend().SetUserDataProcessingConsent(expected_states);
+
   base::test::TestFuture<
       std::optional<one_time_tokens::UserDataProcessingConsentStates>>
       future;
   service().FetchUserDataProcessingConsent(future.GetCallback());
-  EXPECT_EQ(future.Get(),
-            (one_time_tokens::UserDataProcessingConsentStates{
-                .comms_apps = one_time_tokens::ConsentState::kEnabled,
-                .google_apps = one_time_tokens::ConsentState::kDisabled}));
+  EXPECT_EQ(future.Get(), expected_states);
 }
 
 TEST_F(ActorOneTimeTokenFillingServiceImplTest,
-       FetchUserDataProcessingConsent_NullService) {
-  OneTimeTokenServiceFactory::GetInstance()->SetTestingFactory(
-      profile(), base::BindRepeating(
-                     [](content::BrowserContext* context)
-                         -> std::unique_ptr<KeyedService> { return nullptr; }));
+       FetchUserDataProcessingConsent_NullBackend) {
+  GmailOtpBackendFactory::GetInstance()->SetTestingFactory(
+      profile(), BrowserContextKeyedServiceFactory::TestingFactory());
+
   base::test::TestFuture<
       std::optional<one_time_tokens::UserDataProcessingConsentStates>>
       future;
   service().FetchUserDataProcessingConsent(future.GetCallback());
   EXPECT_EQ(future.Get(), std::nullopt);
+}
+
+// Tests that log messages emitted to the log sink of the `GmailOtpBackend` are
+// forwarded to the journal.
+TEST_F(ActorOneTimeTokenFillingServiceImplTest,
+       ForwardsGmailOtpBackendLogsToJournal) {
+  MockJournalObserver observer(journal_);
+  EXPECT_CALL(
+      observer,
+      WillAddJournalEntry(testing::Field(
+          &::actor::AggregatedJournal::Entry::data,
+          testing::Pointee(testing::AllOf(
+              testing::Field(&::actor::mojom::JournalEntry::event,
+                             "ActorOneTimeTokenFillingServiceImpl::"
+                             "OneTimeTokenServiceLog"),
+              testing::Field(
+                  &::actor::mojom::JournalEntry::details,
+                  testing::Contains(testing::Pointee(testing::AllOf(
+                      testing::Field(&::actor::mojom::JournalDetails::key,
+                                     "message"),
+                      testing::Field(&::actor::mojom::JournalDetails::value,
+                                     "test log message"))))))))));
+
+  LOG_OTT(gmail_otp_service().GetLogSink()) << "test log message";
 }
 
 }  // namespace

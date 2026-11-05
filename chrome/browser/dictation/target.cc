@@ -14,6 +14,7 @@
 #include "content/public/browser/focused_node_details.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/render_widget_host.h"
+#include "services/service_manager/public/cpp/interface_provider.h"
 #include "ui/base/ime/ime_text_span.h"
 
 namespace dictation {
@@ -78,6 +79,18 @@ content::RenderWidgetHost* Target::GetRenderWidgetHost() const {
   return rfh ? rfh->GetRenderWidgetHost() : nullptr;
 }
 
+blink::mojom::DictationAgent* Target::GetDictationAgent() {
+  content::RenderFrameHost* rfh = GetRenderFrameHost();
+  if (!rfh) {
+    return nullptr;
+  }
+  if (!dictation_agent_.is_bound()) {
+    rfh->GetRemoteInterfaces()->GetInterface(
+        dictation_agent_.BindNewPipeAndPassReceiver());
+  }
+  return dictation_agent_.get();
+}
+
 void Target::SetComposition(const std::u16string& text, bool is_final) {
   QueuedOperation op{
       .type = is_final ? QueuedOperation::Type::kSetFinalComposition
@@ -137,6 +150,14 @@ void Target::ExecuteSetComposition(const std::u16string& text,
     // composition, if any, but we'll need to handle this more robustly if we
     // want to show partial transcripts.
     paste_fallback_required_ = true;
+    if (last_sent_composition_.empty()) {
+      // Nothing has been composed yet, so there is no composition to cancel.
+      // Committing empty text here would delete any selected content as a
+      // separate edit, splitting the eventual paste across two undo steps.
+      // Instead, leave the selection intact so the paste replaces it in a
+      // single edit.
+      return;
+    }
     last_sent_composition_ = u"";
     CommitExternallySourcedComposition(u"",
                                        scoped_operation_complete.Release());
@@ -260,15 +281,13 @@ std::u16string Target::FormatTextForInsertion(const std::u16string& text) {
     return text;
   }
 
+  // Snapshot the preceding text before the first composition replaces the
+  // selection.
   if (!preceding_text_.has_value()) {
-    std::optional<std::u16string_view> text_preceding_selection =
-        GetTextPrecedingSelection();
-    preceding_text_ = text_preceding_selection
-                          ? std::u16string(*text_preceding_selection)
-                          : std::u16string();
+    preceding_text_ = std::u16string(GetTextPrecedingSelection().value_or(u""));
   }
 
-  return FormatTranscription(text, *preceding_text_);
+  return FormatTranscription(text, *preceding_text_, selected_text_);
 }
 
 }  // namespace dictation

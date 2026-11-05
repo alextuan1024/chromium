@@ -8,10 +8,11 @@
 #include <list>
 #include <memory>
 #include <string>
-#include <utility>
 
-#include "base/functional/callback_forward.h"
+#include "base/functional/callback.h"
 #include "base/memory/scoped_refptr.h"
+#include "base/synchronization/lock.h"
+#include "base/thread_annotations.h"
 #include "base/time/time.h"
 #include "chrome/updater/test/request_matcher.h"
 #include "net/http/http_status_code.h"
@@ -32,14 +33,43 @@ namespace updater::test {
 
 class IntegrationTestCommands;
 
+// A test HTTP server that answers expected requests and fails the test on any
+// other request. Matchers and response body providers run on the server's IO
+// thread and must not call `ExpectOnce` or the setters.
 class ScopedServer {
  public:
+  // An expected request and the response to it. A request matches if every
+  // matcher in `matchers` succeeds. `response_body_provider` receives `true`
+  // for protocol 4.0 requests.
+  struct Expectation {
+    Expectation(request::MatcherGroup matchers,
+                std::string response_body,
+                net::HttpStatusCode response_status_code = net::HTTP_OK);
+    Expectation(
+        request::MatcherGroup matchers,
+        base::RepeatingCallback<std::string(bool)> response_body_provider,
+        net::HttpStatusCode response_status_code = net::HTTP_OK);
+    Expectation(const Expectation&);
+    Expectation& operator=(const Expectation&);
+    Expectation(Expectation&&);
+    Expectation& operator=(Expectation&&);
+    ~Expectation();
+
+    request::MatcherGroup matchers;
+    base::RepeatingCallback<std::string(bool)> response_body_provider;
+    net::HttpStatusCode response_status_code;
+  };
+
+  // Creates and starts a scoped server without setting up an updater to use
+  // it.
+  ScopedServer();
+
   // Creates and starts a scoped server. Sets up the updater to communicate with
   // it. The configuration persists after this instance is destroyed.
   explicit ScopedServer(scoped_refptr<IntegrationTestCommands> commands);
 
-  // Shuts down the server and verifies that all expectations were met and that
-  // no extra communications were received.
+  // Shuts down the server and fails the test for each expectation that was
+  // never matched.
   ~ScopedServer();
 
   ScopedServer(const ScopedServer&) = delete;
@@ -76,7 +106,7 @@ class ScopedServer {
 
   std::string download_path() const { return "/download"; }
   GURL download_url() const { return test_server_.GetURL(download_path()); }
-  void set_download_delay(base::TimeDelta delay) { download_delay_ = delay; }
+  void set_download_delay(base::TimeDelta delay);
 
   std::string crash_report_path() const { return "/crash"; }
   GURL crash_upload_url() const {
@@ -109,21 +139,22 @@ class ScopedServer {
     return proxy;
   }
 
-  bool gzip_response() const { return gzip_response_; }
-  void set_gzip_response(bool gzip_response) { gzip_response_ = gzip_response; }
+  // If `gzip_response` is true, the server gzip-compresses response bodies and
+  // fails the test on requests that do not accept gzip.
+  void set_gzip_response(bool gzip_response);
 
  private:
+  friend class ScopedServerTest;
+
   std::unique_ptr<net::test_server::HttpResponse> HandleRequest(
       const net::test_server::HttpRequest& request);
 
   net::test_server::EmbeddedTestServer test_server_;
   net::test_server::EmbeddedTestServerHandle test_server_handle_;
-  std::list<request::MatcherGroup> request_matcher_groups_;
-  std::list<std::pair<net::HttpStatusCode,
-                      base::RepeatingCallback<std::string(bool)>>>
-      responses_;
-  base::TimeDelta download_delay_;
-  bool gzip_response_ = false;
+  base::Lock lock_;
+  std::list<Expectation> expectations_ GUARDED_BY(lock_);
+  base::TimeDelta download_delay_ GUARDED_BY(lock_);
+  bool gzip_response_ GUARDED_BY(lock_) = false;
 };
 
 }  // namespace updater::test

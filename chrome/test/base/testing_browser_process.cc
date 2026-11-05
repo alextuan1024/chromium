@@ -36,7 +36,6 @@
 #include "chrome/common/chrome_paths.h"
 #include "chrome/test/base/testing_browser_process_platform_part.h"
 #include "chrome/test/base/testing_profile_manager.h"
-#include "components/activity_reporter/activity_reporter.h"
 #include "components/application_locale_storage/application_locale_storage.h"
 #include "components/embedder_support/origin_trials/origin_trials_settings_storage.h"
 #include "components/metrics/metrics_service.h"
@@ -118,6 +117,9 @@
 #include "components/supervised_user/core/browser/android/android_parental_controls.h"
 #endif  // BUILDFLAG(IS_ANDROID)
 
+#if !BUILDFLAG(IS_CHROMEOS)
+#include "components/activity_reporter/activity_reporter.h"
+
 namespace {
 
 class TestActivityReporter : public activity_reporter::ActivityReporter {
@@ -129,6 +131,7 @@ class TestActivityReporter : public activity_reporter::ActivityReporter {
 };
 
 }  // namespace
+#endif  // !BUILDFLAG(IS_CHROMEOS)
 
 // static
 TestingBrowserProcess* TestingBrowserProcess::GetGlobal() {
@@ -602,6 +605,7 @@ DownloadRequestLimiter* TestingBrowserProcess::download_request_limiter() {
   return download_request_limiter_.get();
 }
 
+#if !BUILDFLAG(IS_CHROMEOS)
 activity_reporter::ActivityReporter*
 TestingBrowserProcess::activity_reporter() {
   if (!activity_reporter_) {
@@ -609,6 +613,7 @@ TestingBrowserProcess::activity_reporter() {
   }
   return activity_reporter_.get();
 }
+#endif  // !BUILDFLAG(IS_CHROMEOS)
 
 component_updater::ComponentUpdateService*
 TestingBrowserProcess::component_updater() {
@@ -691,8 +696,12 @@ os_crypt_async::OSCryptAsync* TestingBrowserProcess::os_crypt_async() {
 void TestingBrowserProcess::set_additional_os_crypt_async_provider_for_test(
     size_t precedence,
     std::unique_ptr<os_crypt_async::KeyProvider> provider) {
-  // Not implemented.
-  NOTREACHED();
+  std::vector<std::pair<os_crypt_async::OSCryptAsync::Precedence,
+                        std::unique_ptr<os_crypt_async::KeyProvider>>>
+      providers;
+  providers.emplace_back(precedence, std::move(provider));
+  os_crypt_async_ =
+      std::make_unique<os_crypt_async::OSCryptAsync>(std::move(providers));
 }
 
 BuildState* TestingBrowserProcess::GetBuildState() {
@@ -763,6 +772,12 @@ void TestingBrowserProcess::MaybeStartTearDown() {
   }
   is_torn_down_ = true;
 
+  // Shut down GlobalFeatures while TaskEnvironment and ThreadPool are still
+  // active, without destroying `testing_profile_manager_` or
+  // `profile_manager_` (which tests may still reference until their own
+  // TearDown() / destructor completes).
+  features_->PostMainMessageLoopRun();
+  os_crypt_async_.reset();
   network_time_tracker_.reset();
 #if BUILDFLAG(ENABLE_CHROME_NOTIFICATIONS)
   notification_ui_manager_.reset();

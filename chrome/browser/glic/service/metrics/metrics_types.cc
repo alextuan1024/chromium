@@ -148,6 +148,20 @@ std::string GetInvocationSourceString(mojom::InvocationSource source) {
       return "WebContinuity";
     case mojom::InvocationSource::kHistoryPageChatLinkout:
       return "HistoryPageChatLinkout";
+    case mojom::InvocationSource::kContextHubTopics:
+      return "ContextHubTopics";
+    case mojom::InvocationSource::kContextHubAutoTodos:
+      return "ContextHubAutoTodos";
+    case mojom::InvocationSource::kWebContentsContextMenuLink:
+      return "WebContentsContextMenuLink";
+    case mojom::InvocationSource::kWebContentsContextMenuPage:
+      return "WebContentsContextMenuPage";
+    case mojom::InvocationSource::kWebContentsContextMenuTextSelection:
+      return "WebContentsContextMenuTextSelection";
+    case mojom::InvocationSource::kActorTool:
+      return "ActorTool";
+    case mojom::InvocationSource::kActivityListBubble:
+      return "ActivityListBubble";
   }
 }
 

@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "base/task/single_thread_task_runner.h"
+#include "base/test/metrics/histogram_tester.h"
 #include "base/test/run_until.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/uuid.h"
@@ -18,6 +19,7 @@
 #include "chrome/browser/ui/bookmarks/bookmark_utils_desktop.h"
 #include "chrome/browser/ui/browser_tabstrip.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "chrome/browser/ui/tabs/saved_tab_groups/saved_tab_group_metrics.h"
 #include "chrome/browser/ui/tabs/saved_tab_groups/saved_tab_group_utils.h"
 #include "chrome/browser/ui/tabs/saved_tab_groups/tab_group_action_context_desktop.h"
 #include "chrome/browser/ui/tabs/tab_group_model.h"
@@ -386,7 +388,7 @@ IN_PROC_BROWSER_TEST_P(SavedTabGroupBarBrowserTest,
   ASSERT_TRUE(saved_group2.has_value());
 
   // Focus Tab Group 1.
-  model->SetFocusedGroup(group1);
+  model->EnterFocusMode(group1);
   EXPECT_EQ(group1, model->GetFocusedGroup());
 
   // Open Tab Group 2 via SavedTabGroupUtils (simulating opening from Bookmarks
@@ -410,7 +412,7 @@ IN_PROC_BROWSER_TEST_P(
       TabGroupSyncServiceFactory::GetForProfile(browser()->GetProfile());
 
   // Focus Tab Group 1.
-  model->SetFocusedGroup(group1);
+  model->EnterFocusMode(group1);
   EXPECT_EQ(group1, model->GetFocusedGroup());
 
   // Create a saved tab group that is closed.
@@ -451,9 +453,16 @@ IN_PROC_BROWSER_TEST_P(SavedTabGroupBarBrowserTest,
   ASSERT_EQ(views::InkDropState::HIDDEN,
             views::InkDrop::Get(button)->GetInkDrop()->GetTargetInkDropState());
 
+  base::HistogramTester histogram_tester;
   gfx::Point point;
   views::View::ConvertPointToScreen(button, &point);
+  histogram_tester.ExpectTotalCount("TabGroups.ContextMenu.Accessed", 0);
   button->ShowContextMenu(point, ui::mojom::MenuSourceType::kMouse);
+  histogram_tester.ExpectUniqueSample(
+      "TabGroups.ContextMenu.Accessed",
+      saved_tab_groups::metrics::SavedTabGroupOpenedSubmenuDesktop::
+          kBookmarksBar,
+      1);
 
   // Verify the ink drop transitions to ACTIVATED while the menu is open.
   EXPECT_TRUE(base::test::RunUntil([&]() {

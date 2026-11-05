@@ -10,21 +10,19 @@
 #include "base/test/scoped_feature_list.h"
 #include "build/build_config.h"
 #include "chrome/app/chrome_command_ids.h"
-#include "chrome/browser/page_load_metrics/chrome_initiator_location.h"
+#include "chrome/browser/page_load_metrics/chrome_navigation_initiator.h"
 #include "chrome/browser/preloading/chrome_preloading.h"
 #include "chrome/browser/preloading/prerender/prerender_manager.h"
 #include "chrome/browser/renderer_context_menu/render_view_context_menu_browsertest_util.h"
 #include "chrome/browser/search_engines/template_url_service_factory.h"
 #include "chrome/browser/ui/browser_commands.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
-#include "chrome/browser/ui/omnibox/omnibox_next_features.h"
 #include "chrome/test/base/chrome_test_utils.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/search_test_utils.h"
 #include "chrome/test/base/ui_test_utils.h"
 #include "components/google/core/common/google_switches.h"
 #include "components/lens/lens_features.h"
-#include "components/page_load_metrics/browser/navigation_handle_user_data.h"
 #include "components/page_load_metrics/google/browser/google_url_util.h"
 #include "components/search_engines/template_url_service.h"
 #include "content/public/browser/navigation_handle.h"
@@ -37,8 +35,8 @@
 #include "net/dns/mock_host_resolver.h"
 #include "net/test/embedded_test_server/embedded_test_server.h"
 #include "net/test/embedded_test_server/request_handler_util.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
 #include "ui/base/page_transition_types.h"
-#include "ui/base/window_open_disposition.h"
 
 namespace {
 
@@ -51,19 +49,6 @@ std::unique_ptr<net::test_server::HttpResponse> SRPHandler(
   return response;
 }
 
-int64_t MetricValue(
-    page_load_metrics::NavigationHandleUserData::InitiatorLocation location) {
-  return static_cast<int64_t>(location);
-}
-
-void AttachInitiatorLocation(
-    page_load_metrics::NavigationHandleUserData::InitiatorLocation location,
-    content::NavigationHandle& navigation_handle) {
-  page_load_metrics::NavigationHandleUserData::CreateForNavigationHandle(
-      navigation_handle, location,
-      StringifyChromeInitiatorLocation(GetChromeInitiatorLocation(location)));
-}
-
 }  // namespace
 
 class NavigationInitiatorPageLoadMetricsBrowserTest
@@ -74,14 +59,7 @@ class NavigationInitiatorPageLoadMetricsBrowserTest
             base::BindRepeating(&NavigationInitiatorPageLoadMetricsBrowserTest::
                                     GetActiveWebContents,
                                 base::Unretained(this))) {
-    scoped_feature_list_.InitWithFeatures(
-        /*enabled_features=*/{},
-        /*disabled_features=*/
-        // TODO(crbug.com/452061489): Fix tests that fail when the WebUI Omnibox
-        // is enabled and then remove these two Features.
-        {omnibox::internal::kWebUIOmniboxPopup,
-         omnibox::internal::kWebUIOmniboxAimPopup,
-         lens::features::kLensOverlay});
+    scoped_feature_list_.InitAndDisableFeature(lens::features::kLensOverlay);
   }
 
   void SetUp() override {
@@ -190,28 +168,23 @@ IN_PROC_BROWSER_TEST_F(NavigationInitiatorPageLoadMetricsBrowserTest,
                        NewTabPageTrigger) {
   base::HistogramTester histogram_tester;
 
-  base::RepeatingCallback<void(content::NavigationHandle&)>
-      navigation_handle_callback = base::BindRepeating(
-          &AttachInitiatorLocation,
-          GetInitiatorLocation(ChromeInitiatorLocation::kNewTabPage));
-
   GURL url = embedded_test_server()->GetURL("/empty.html");
   GetActiveWebContents()->OpenURL(
       content::OpenURLParams::CreateBrowserInitiated(
-          url, WindowOpenDisposition::CURRENT_TAB, ui::PAGE_TRANSITION_TYPED),
-      std::move(navigation_handle_callback));
+          url, ui::mojom::WindowOpenDisposition::kCurrentTab,
+          ui::PAGE_TRANSITION_TYPED),
+      page_load_metrics::NavigationInitiatorHolder::AttacherCallback(
+          chrome_navigation_initiator::kNewTabPage));
 
   // Wait for the navigation to finish.
   content::WaitForLoadStop(GetActiveWebContents());
 
   histogram_tester.ExpectBucketCount(
       "Navigation.InitiatorType.All",
-      MetricValue(GetInitiatorLocation(ChromeInitiatorLocation::kNewTabPage)),
-      1);
+      chrome_navigation_initiator::kNewTabPage.id(), 1);
   histogram_tester.ExpectBucketCount(
       "Navigation.InitiatorType.SRP",
-      MetricValue(GetInitiatorLocation(ChromeInitiatorLocation::kNewTabPage)),
-      0);
+      chrome_navigation_initiator::kNewTabPage.id(), 0);
   ExpectUma(histogram_tester, "Navigation.UnknownInitiator.PageTransition.All",
             {});
   ExpectUma(histogram_tester, "Navigation.UnknownInitiator.PageTransition.SRP",
@@ -226,10 +199,10 @@ IN_PROC_BROWSER_TEST_F(NavigationInitiatorPageLoadMetricsBrowserTest, Basic) {
 
   histogram_tester.ExpectBucketCount(
       "Navigation.InitiatorType.All",
-      MetricValue(GetInitiatorLocation(ChromeInitiatorLocation::kOther)), 1);
+      page_load_metrics::navigation_initiator::kOther.id(), 1);
   histogram_tester.ExpectBucketCount(
       "Navigation.InitiatorType.SRP",
-      MetricValue(GetInitiatorLocation(ChromeInitiatorLocation::kOther)), 0);
+      page_load_metrics::navigation_initiator::kOther.id(), 0);
   ExpectUma(histogram_tester, "Navigation.UnknownInitiator.PageTransition.All",
             {ui::PAGE_TRANSITION_TYPED});
   ExpectUma(histogram_tester, "Navigation.UnknownInitiator.PageTransition.SRP",
@@ -245,10 +218,10 @@ IN_PROC_BROWSER_TEST_F(NavigationInitiatorPageLoadMetricsBrowserTest,
 
   histogram_tester.ExpectBucketCount(
       "Navigation.InitiatorType.All",
-      MetricValue(GetInitiatorLocation(ChromeInitiatorLocation::kOther)), 1);
+      page_load_metrics::navigation_initiator::kOther.id(), 1);
   histogram_tester.ExpectBucketCount(
       "Navigation.InitiatorType.SRP",
-      MetricValue(GetInitiatorLocation(ChromeInitiatorLocation::kOther)), 1);
+      page_load_metrics::navigation_initiator::kOther.id(), 1);
   ExpectUma(histogram_tester, "Navigation.UnknownInitiator.PageTransition.All",
             {ui::PAGE_TRANSITION_TYPED});
   ExpectUma(histogram_tester, "Navigation.UnknownInitiator.PageTransition.SRP",
@@ -264,10 +237,10 @@ IN_PROC_BROWSER_TEST_F(NavigationInitiatorPageLoadMetricsBrowserTest,
 
   histogram_tester.ExpectBucketCount(
       "Navigation.InitiatorType.All",
-      MetricValue(GetInitiatorLocation(ChromeInitiatorLocation::kOther)), 1);
+      page_load_metrics::navigation_initiator::kOther.id(), 1);
   histogram_tester.ExpectBucketCount(
       "Navigation.InitiatorType.SRP",
-      MetricValue(GetInitiatorLocation(ChromeInitiatorLocation::kOther)), 0);
+      page_load_metrics::navigation_initiator::kOther.id(), 0);
   ExpectUma(histogram_tester, "Navigation.UnknownInitiator.PageTransition.All",
             {ui::PAGE_TRANSITION_TYPED});
   ExpectUma(histogram_tester, "Navigation.UnknownInitiator.PageTransition.SRP",
@@ -277,8 +250,8 @@ IN_PROC_BROWSER_TEST_F(NavigationInitiatorPageLoadMetricsBrowserTest,
 // Tests that a browser-initiated navigation triggered via an external API or
 // intent (`ui::PAGE_TRANSITION_TYPED | ui::PAGE_TRANSITION_FROM_API`), which
 // does not yet have a dedicated initiator location, records
-// `ChromeInitiatorLocation::kOther` and preserves the composite transition
-// bitmask in `Navigation.UnknownInitiator.PageTransition.All`.
+// `page_load_metrics::navigation_initiator::kOther` and preserves the composite
+// transition bitmask in `Navigation.UnknownInitiator.PageTransition.All`.
 IN_PROC_BROWSER_TEST_F(NavigationInitiatorPageLoadMetricsBrowserTest,
                        UnknownInitiatorFromApi) {
   base::HistogramTester histogram_tester;
@@ -286,7 +259,8 @@ IN_PROC_BROWSER_TEST_F(NavigationInitiatorPageLoadMetricsBrowserTest,
   GURL url = embedded_test_server()->GetURL("www.example.com", "/empty.html");
   GetActiveWebContents()->OpenURL(
       content::OpenURLParams(
-          url, content::Referrer(), WindowOpenDisposition::CURRENT_TAB,
+          url, content::Referrer(),
+          ui::mojom::WindowOpenDisposition::kCurrentTab,
           ui::PageTransitionFromInt(ui::PAGE_TRANSITION_TYPED |
                                     ui::PAGE_TRANSITION_FROM_API),
           /*is_renderer_initiated=*/false),
@@ -295,7 +269,7 @@ IN_PROC_BROWSER_TEST_F(NavigationInitiatorPageLoadMetricsBrowserTest,
 
   histogram_tester.ExpectBucketCount(
       "Navigation.InitiatorType.All",
-      MetricValue(GetInitiatorLocation(ChromeInitiatorLocation::kOther)), 1);
+      page_load_metrics::navigation_initiator::kOther.id(), 1);
   ExpectUma(histogram_tester, "Navigation.UnknownInitiator.PageTransition.All",
             {ui::PAGE_TRANSITION_TYPED | ui::PAGE_TRANSITION_FROM_API});
 }
@@ -323,12 +297,10 @@ IN_PROC_BROWSER_TEST_F(NavigationInitiatorPageLoadMetricsBrowserTest,
 
   histogram_tester.ExpectBucketCount(
       "Navigation.InitiatorType.All",
-      MetricValue(GetInitiatorLocation(ChromeInitiatorLocation::kLinkClick)),
-      1);
+      page_load_metrics::navigation_initiator::kLinkClick.id(), 1);
   histogram_tester.ExpectBucketCount(
       "Navigation.InitiatorType.SRP",
-      MetricValue(GetInitiatorLocation(ChromeInitiatorLocation::kLinkClick)),
-      0);
+      page_load_metrics::navigation_initiator::kLinkClick.id(), 0);
 
   // Navigate away to flush PreloadServingMetrics.
   ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), GURL("about:blank")));
@@ -361,12 +333,10 @@ IN_PROC_BROWSER_TEST_F(NavigationInitiatorPageLoadMetricsBrowserTest,
 
   histogram_tester.ExpectBucketCount(
       "Navigation.InitiatorType.All",
-      MetricValue(GetInitiatorLocation(ChromeInitiatorLocation::kLinkClick)),
-      1);
+      page_load_metrics::navigation_initiator::kLinkClick.id(), 1);
   histogram_tester.ExpectBucketCount(
       "Navigation.InitiatorType.SRP",
-      MetricValue(GetInitiatorLocation(ChromeInitiatorLocation::kLinkClick)),
-      1);
+      page_load_metrics::navigation_initiator::kLinkClick.id(), 1);
 
   // Navigate away to flush PreloadServingMetrics.
   ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), GURL("about:blank")));
@@ -397,22 +367,16 @@ IN_PROC_BROWSER_TEST_F(NavigationInitiatorPageLoadMetricsBrowserTest,
 
   histogram_tester.ExpectBucketCount(
       "Navigation.InitiatorType.All",
-      MetricValue(
-          page_load_metrics::NavigationHandleUserData::kInitiatorLocationOther),
-      2);
+      page_load_metrics::navigation_initiator::kOther.id(), 2);
   histogram_tester.ExpectBucketCount(
       "Navigation.InitiatorType.SRP",
-      MetricValue(
-          page_load_metrics::NavigationHandleUserData::kInitiatorLocationOther),
-      0);
+      page_load_metrics::navigation_initiator::kOther.id(), 0);
   histogram_tester.ExpectBucketCount(
       "Navigation.InitiatorType.All",
-      MetricValue(GetInitiatorLocation(ChromeInitiatorLocation::kLinkClick)),
-      0);
+      page_load_metrics::navigation_initiator::kLinkClick.id(), 0);
   histogram_tester.ExpectBucketCount(
       "Navigation.InitiatorType.SRP",
-      MetricValue(GetInitiatorLocation(ChromeInitiatorLocation::kLinkClick)),
-      0);
+      page_load_metrics::navigation_initiator::kLinkClick.id(), 0);
 
   // Navigate away to flush PreloadServingMetrics.
   ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), GURL("about:blank")));
@@ -422,7 +386,7 @@ IN_PROC_BROWSER_TEST_F(NavigationInitiatorPageLoadMetricsBrowserTest,
 }
 
 // Tests that a renderer-initiated POST form submission with a user gesture is
-// recorded as `ChromeInitiatorLocation::kFormSubmission`.
+// recorded as `page_load_metrics::navigation_initiator::kFormSubmission`.
 //
 // Scenario:
 // 1. Navigate to an initial non-SRP page (empty.html).
@@ -445,14 +409,10 @@ IN_PROC_BROWSER_TEST_F(NavigationInitiatorPageLoadMetricsBrowserTest,
   histogram_tester.ExpectTotalCount("Navigation.InitiatorType.All", 2);
   histogram_tester.ExpectBucketCount(
       "Navigation.InitiatorType.All",
-      MetricValue(
-          GetInitiatorLocation(ChromeInitiatorLocation::kFormSubmission)),
-      1);
+      page_load_metrics::navigation_initiator::kFormSubmission.id(), 1);
   histogram_tester.ExpectBucketCount(
       "Navigation.InitiatorType.SRP",
-      MetricValue(
-          GetInitiatorLocation(ChromeInitiatorLocation::kFormSubmission)),
-      0);
+      page_load_metrics::navigation_initiator::kFormSubmission.id(), 0);
 
   // Navigate away to flush PreloadServingMetrics.
   ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), GURL("about:blank")));
@@ -480,14 +440,10 @@ IN_PROC_BROWSER_TEST_F(NavigationInitiatorPageLoadMetricsBrowserTest,
   histogram_tester.ExpectTotalCount("Navigation.InitiatorType.All", 2);
   histogram_tester.ExpectBucketCount(
       "Navigation.InitiatorType.All",
-      MetricValue(
-          GetInitiatorLocation(ChromeInitiatorLocation::kFormSubmission)),
-      1);
+      page_load_metrics::navigation_initiator::kFormSubmission.id(), 1);
   histogram_tester.ExpectBucketCount(
       "Navigation.InitiatorType.SRP",
-      MetricValue(
-          GetInitiatorLocation(ChromeInitiatorLocation::kFormSubmission)),
-      0);
+      page_load_metrics::navigation_initiator::kFormSubmission.id(), 0);
 
   // Navigate away to flush PreloadServingMetrics.
   ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), GURL("about:blank")));
@@ -500,7 +456,8 @@ IN_PROC_BROWSER_TEST_F(NavigationInitiatorPageLoadMetricsBrowserTest,
 
 // Tests that a renderer-initiated POST form submission with a user gesture to a
 // search results page (SRP) is recorded as
-// `ChromeInitiatorLocation::kFormSubmission` in both All and SRP metrics.
+// `page_load_metrics::navigation_initiator::kFormSubmission` in both All and
+// SRP metrics.
 //
 // Scenario:
 // 1. Navigate to an initial non-SRP page (empty.html).
@@ -523,14 +480,10 @@ IN_PROC_BROWSER_TEST_F(NavigationInitiatorPageLoadMetricsBrowserTest,
   histogram_tester.ExpectTotalCount("Navigation.InitiatorType.All", 2);
   histogram_tester.ExpectBucketCount(
       "Navigation.InitiatorType.All",
-      MetricValue(
-          GetInitiatorLocation(ChromeInitiatorLocation::kFormSubmission)),
-      1);
+      page_load_metrics::navigation_initiator::kFormSubmission.id(), 1);
   histogram_tester.ExpectBucketCount(
       "Navigation.InitiatorType.SRP",
-      MetricValue(
-          GetInitiatorLocation(ChromeInitiatorLocation::kFormSubmission)),
-      1);
+      page_load_metrics::navigation_initiator::kFormSubmission.id(), 1);
 
   // Navigate away to flush PreloadServingMetrics.
   ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), GURL("about:blank")));
@@ -557,14 +510,10 @@ IN_PROC_BROWSER_TEST_F(NavigationInitiatorPageLoadMetricsBrowserTest,
   histogram_tester.ExpectTotalCount("Navigation.InitiatorType.All", 2);
   histogram_tester.ExpectBucketCount(
       "Navigation.InitiatorType.All",
-      MetricValue(
-          GetInitiatorLocation(ChromeInitiatorLocation::kFormSubmission)),
-      1);
+      page_load_metrics::navigation_initiator::kFormSubmission.id(), 1);
   histogram_tester.ExpectBucketCount(
       "Navigation.InitiatorType.SRP",
-      MetricValue(
-          GetInitiatorLocation(ChromeInitiatorLocation::kFormSubmission)),
-      1);
+      page_load_metrics::navigation_initiator::kFormSubmission.id(), 1);
 
   // Navigate away to flush PreloadServingMetrics.
   ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), GURL("about:blank")));
@@ -599,24 +548,16 @@ IN_PROC_BROWSER_TEST_F(NavigationInitiatorPageLoadMetricsBrowserTest,
   histogram_tester.ExpectTotalCount("Navigation.InitiatorType.All", 2);
   histogram_tester.ExpectBucketCount(
       "Navigation.InitiatorType.All",
-      MetricValue(
-          page_load_metrics::NavigationHandleUserData::kInitiatorLocationOther),
-      2);
+      page_load_metrics::navigation_initiator::kOther.id(), 2);
   histogram_tester.ExpectBucketCount(
       "Navigation.InitiatorType.SRP",
-      MetricValue(
-          page_load_metrics::NavigationHandleUserData::kInitiatorLocationOther),
-      0);
+      page_load_metrics::navigation_initiator::kOther.id(), 0);
   histogram_tester.ExpectBucketCount(
       "Navigation.InitiatorType.All",
-      MetricValue(
-          GetInitiatorLocation(ChromeInitiatorLocation::kFormSubmission)),
-      0);
+      page_load_metrics::navigation_initiator::kFormSubmission.id(), 0);
   histogram_tester.ExpectBucketCount(
       "Navigation.InitiatorType.SRP",
-      MetricValue(
-          GetInitiatorLocation(ChromeInitiatorLocation::kFormSubmission)),
-      0);
+      page_load_metrics::navigation_initiator::kFormSubmission.id(), 0);
 
   // Navigate away to flush PreloadServingMetrics.
   ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), GURL("about:blank")));
@@ -645,24 +586,16 @@ IN_PROC_BROWSER_TEST_F(NavigationInitiatorPageLoadMetricsBrowserTest,
   histogram_tester.ExpectTotalCount("Navigation.InitiatorType.All", 2);
   histogram_tester.ExpectBucketCount(
       "Navigation.InitiatorType.All",
-      MetricValue(
-          page_load_metrics::NavigationHandleUserData::kInitiatorLocationOther),
-      2);
+      page_load_metrics::navigation_initiator::kOther.id(), 2);
   histogram_tester.ExpectBucketCount(
       "Navigation.InitiatorType.SRP",
-      MetricValue(
-          page_load_metrics::NavigationHandleUserData::kInitiatorLocationOther),
-      0);
+      page_load_metrics::navigation_initiator::kOther.id(), 0);
   histogram_tester.ExpectBucketCount(
       "Navigation.InitiatorType.All",
-      MetricValue(
-          GetInitiatorLocation(ChromeInitiatorLocation::kFormSubmission)),
-      0);
+      page_load_metrics::navigation_initiator::kFormSubmission.id(), 0);
   histogram_tester.ExpectBucketCount(
       "Navigation.InitiatorType.SRP",
-      MetricValue(
-          GetInitiatorLocation(ChromeInitiatorLocation::kFormSubmission)),
-      0);
+      page_load_metrics::navigation_initiator::kFormSubmission.id(), 0);
 
   // Navigate away to flush PreloadServingMetrics.
   ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), GURL("about:blank")));
@@ -711,12 +644,10 @@ IN_PROC_BROWSER_TEST_F(NavigationInitiatorPageLoadMetricsBrowserTest,
   // navigations.
   histogram_tester.ExpectBucketCount(
       "Navigation.InitiatorType.All",
-      MetricValue(GetInitiatorLocation(ChromeInitiatorLocation::kLinkClick)),
-      1);
+      page_load_metrics::navigation_initiator::kLinkClick.id(), 1);
   histogram_tester.ExpectBucketCount(
       "Navigation.InitiatorType.SRP",
-      MetricValue(GetInitiatorLocation(ChromeInitiatorLocation::kLinkClick)),
-      0);
+      page_load_metrics::navigation_initiator::kLinkClick.id(), 0);
 
   // Navigate away to flush PreloadServingMetrics.
   ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), GURL("about:blank")));
@@ -764,12 +695,10 @@ IN_PROC_BROWSER_TEST_F(NavigationInitiatorPageLoadMetricsBrowserTest,
   // navigations.
   histogram_tester.ExpectBucketCount(
       "Navigation.InitiatorType.All",
-      MetricValue(GetInitiatorLocation(ChromeInitiatorLocation::kLinkClick)),
-      1);
+      page_load_metrics::navigation_initiator::kLinkClick.id(), 1);
   histogram_tester.ExpectBucketCount(
       "Navigation.InitiatorType.SRP",
-      MetricValue(GetInitiatorLocation(ChromeInitiatorLocation::kLinkClick)),
-      1);
+      page_load_metrics::navigation_initiator::kLinkClick.id(), 1);
 
   // Navigate away to flush PreloadServingMetrics.
   ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), GURL("about:blank")));
@@ -955,14 +884,10 @@ IN_PROC_BROWSER_TEST_F(NavigationInitiatorPageLoadMetricsBrowserTest,
 
   histogram_tester.ExpectBucketCount(
       "Navigation.InitiatorType.All",
-      MetricValue(
-          GetInitiatorLocation(ChromeInitiatorLocation::kContextMenuSearch)),
-      1);
+      chrome_navigation_initiator::kContextMenuSearch.id(), 1);
   histogram_tester.ExpectBucketCount(
       "Navigation.InitiatorType.SRP",
-      MetricValue(
-          GetInitiatorLocation(ChromeInitiatorLocation::kContextMenuSearch)),
-      0);
+      chrome_navigation_initiator::kContextMenuSearch.id(), 0);
 }
 
 // Tests that searching selected text via the context menu records
@@ -1017,14 +942,10 @@ IN_PROC_BROWSER_TEST_F(NavigationInitiatorPageLoadMetricsBrowserTest,
 
   histogram_tester.ExpectBucketCount(
       "Navigation.InitiatorType.All",
-      MetricValue(
-          GetInitiatorLocation(ChromeInitiatorLocation::kContextMenuSearch)),
-      1);
+      chrome_navigation_initiator::kContextMenuSearch.id(), 1);
   histogram_tester.ExpectBucketCount(
       "Navigation.InitiatorType.SRP",
-      MetricValue(
-          GetInitiatorLocation(ChromeInitiatorLocation::kContextMenuSearch)),
-      1);
+      chrome_navigation_initiator::kContextMenuSearch.id(), 1);
 }
 
 // Tests that opening a link in a new tab via the context menu records
@@ -1063,25 +984,19 @@ IN_PROC_BROWSER_TEST_F(NavigationInitiatorPageLoadMetricsBrowserTest,
 
   histogram_tester.ExpectBucketCount(
       "Navigation.InitiatorType.All",
-      MetricValue(
-          GetInitiatorLocation(ChromeInitiatorLocation::kContextMenuOpenLink)),
-      1);
+      chrome_navigation_initiator::kContextMenuOpenLink.id(), 1);
   histogram_tester.ExpectBucketCount(
       "Navigation.InitiatorType.SRP",
-      MetricValue(
-          GetInitiatorLocation(ChromeInitiatorLocation::kContextMenuOpenLink)),
-      0);
+      chrome_navigation_initiator::kContextMenuOpenLink.id(), 0);
   histogram_tester.ExpectBucketCount(
       "Navigation.InitiatorType.All",
-      MetricValue(GetInitiatorLocation(ChromeInitiatorLocation::kOther)), 0);
+      page_load_metrics::navigation_initiator::kOther.id(), 0);
   histogram_tester.ExpectBucketCount(
       "Navigation.InitiatorType.SRP",
-      MetricValue(GetInitiatorLocation(ChromeInitiatorLocation::kOther)), 0);
+      page_load_metrics::navigation_initiator::kOther.id(), 0);
   histogram_tester.ExpectBucketCount(
       "Navigation.InitiatorType.All",
-      MetricValue(
-          GetInitiatorLocation(ChromeInitiatorLocation::kContextMenuSearch)),
-      0);
+      chrome_navigation_initiator::kContextMenuSearch.id(), 0);
 }
 
 // Tests that opening a link to Google Search in a new tab via the context menu
@@ -1122,25 +1037,19 @@ IN_PROC_BROWSER_TEST_F(NavigationInitiatorPageLoadMetricsBrowserTest,
 
   histogram_tester.ExpectBucketCount(
       "Navigation.InitiatorType.All",
-      MetricValue(
-          GetInitiatorLocation(ChromeInitiatorLocation::kContextMenuOpenLink)),
-      1);
+      chrome_navigation_initiator::kContextMenuOpenLink.id(), 1);
   histogram_tester.ExpectBucketCount(
       "Navigation.InitiatorType.SRP",
-      MetricValue(
-          GetInitiatorLocation(ChromeInitiatorLocation::kContextMenuOpenLink)),
-      1);
+      chrome_navigation_initiator::kContextMenuOpenLink.id(), 1);
   histogram_tester.ExpectBucketCount(
       "Navigation.InitiatorType.All",
-      MetricValue(GetInitiatorLocation(ChromeInitiatorLocation::kOther)), 0);
+      page_load_metrics::navigation_initiator::kOther.id(), 0);
   histogram_tester.ExpectBucketCount(
       "Navigation.InitiatorType.SRP",
-      MetricValue(GetInitiatorLocation(ChromeInitiatorLocation::kOther)), 0);
+      page_load_metrics::navigation_initiator::kOther.id(), 0);
   histogram_tester.ExpectBucketCount(
       "Navigation.InitiatorType.All",
-      MetricValue(
-          GetInitiatorLocation(ChromeInitiatorLocation::kContextMenuSearch)),
-      0);
+      chrome_navigation_initiator::kContextMenuSearch.id(), 0);
 }
 
 // Tests that opening a link in a new window via the context menu records
@@ -1172,14 +1081,10 @@ IN_PROC_BROWSER_TEST_F(NavigationInitiatorPageLoadMetricsBrowserTest,
 
   histogram_tester.ExpectBucketCount(
       "Navigation.InitiatorType.All",
-      MetricValue(
-          GetInitiatorLocation(ChromeInitiatorLocation::kContextMenuOpenLink)),
-      1);
+      chrome_navigation_initiator::kContextMenuOpenLink.id(), 1);
   histogram_tester.ExpectBucketCount(
       "Navigation.InitiatorType.SRP",
-      MetricValue(
-          GetInitiatorLocation(ChromeInitiatorLocation::kContextMenuOpenLink)),
-      0);
+      chrome_navigation_initiator::kContextMenuOpenLink.id(), 0);
 }
 
 // Tests that opening a link in an incognito window via the context menu records
@@ -1211,14 +1116,10 @@ IN_PROC_BROWSER_TEST_F(NavigationInitiatorPageLoadMetricsBrowserTest,
 
   histogram_tester.ExpectBucketCount(
       "Navigation.InitiatorType.All",
-      MetricValue(
-          GetInitiatorLocation(ChromeInitiatorLocation::kContextMenuOpenLink)),
-      1);
+      chrome_navigation_initiator::kContextMenuOpenLink.id(), 1);
   histogram_tester.ExpectBucketCount(
       "Navigation.InitiatorType.SRP",
-      MetricValue(
-          GetInitiatorLocation(ChromeInitiatorLocation::kContextMenuOpenLink)),
-      0);
+      chrome_navigation_initiator::kContextMenuOpenLink.id(), 0);
 }
 
 // Tests that opening a link in split view via the context menu records
@@ -1250,14 +1151,10 @@ IN_PROC_BROWSER_TEST_F(NavigationInitiatorPageLoadMetricsBrowserTest,
 
   histogram_tester.ExpectBucketCount(
       "Navigation.InitiatorType.All",
-      MetricValue(
-          GetInitiatorLocation(ChromeInitiatorLocation::kContextMenuOpenLink)),
-      1);
+      chrome_navigation_initiator::kContextMenuOpenLink.id(), 1);
   histogram_tester.ExpectBucketCount(
       "Navigation.InitiatorType.SRP",
-      MetricValue(
-          GetInitiatorLocation(ChromeInitiatorLocation::kContextMenuOpenLink)),
-      0);
+      chrome_navigation_initiator::kContextMenuOpenLink.id(), 0);
 }
 
 class NavigationInitiatorPageLoadMetricsBFCacheBrowserTest
@@ -1310,14 +1207,10 @@ IN_PROC_BROWSER_TEST_P(NavigationInitiatorPageLoadMetricsBFCacheBrowserTest,
 
     histogram_tester.ExpectUniqueSample(
         "Navigation.InitiatorType.All",
-        MetricValue(page_load_metrics::NavigationHandleUserData::
-                        kInitiatorLocationOther),
-        1);
+        page_load_metrics::navigation_initiator::kOther.id(), 1);
     histogram_tester.ExpectUniqueSample(
         "Navigation.InitiatorType.SRP",
-        MetricValue(page_load_metrics::NavigationHandleUserData::
-                        kInitiatorLocationOther),
-        0);
+        page_load_metrics::navigation_initiator::kOther.id(), 0);
   }
   content::RenderFrameHostWrapper rfh_a(
       GetActiveWebContents()->GetPrimaryMainFrame());
@@ -1335,14 +1228,10 @@ IN_PROC_BROWSER_TEST_P(NavigationInitiatorPageLoadMetricsBFCacheBrowserTest,
 
     histogram_tester.ExpectUniqueSample(
         "Navigation.InitiatorType.All",
-        MetricValue(page_load_metrics::NavigationHandleUserData::
-                        kInitiatorLocationOther),
-        1);
+        page_load_metrics::navigation_initiator::kOther.id(), 1);
     histogram_tester.ExpectUniqueSample(
         "Navigation.InitiatorType.SRP",
-        MetricValue(page_load_metrics::NavigationHandleUserData::
-                        kInitiatorLocationOther),
-        0);
+        page_load_metrics::navigation_initiator::kOther.id(), 0);
   }
   content::RenderFrameHostWrapper rfh_b(
       GetActiveWebContents()->GetPrimaryMainFrame());
@@ -1361,12 +1250,10 @@ IN_PROC_BROWSER_TEST_P(NavigationInitiatorPageLoadMetricsBFCacheBrowserTest,
 
     histogram_tester.ExpectUniqueSample(
         "Navigation.InitiatorType.All",
-        MetricValue(GetInitiatorLocation(ChromeInitiatorLocation::kBackward)),
-        1);
+        page_load_metrics::navigation_initiator::kBackward.id(), 1);
     histogram_tester.ExpectUniqueSample(
         "Navigation.InitiatorType.SRP",
-        MetricValue(GetInitiatorLocation(ChromeInitiatorLocation::kBackward)),
-        0);
+        page_load_metrics::navigation_initiator::kBackward.id(), 0);
   }
   content::RenderFrameHostWrapper rfh_a2(
       GetActiveWebContents()->GetPrimaryMainFrame());
@@ -1383,26 +1270,24 @@ IN_PROC_BROWSER_TEST_P(NavigationInitiatorPageLoadMetricsBFCacheBrowserTest,
 
     histogram_tester.ExpectUniqueSample(
         "Navigation.InitiatorType.All",
-        MetricValue(GetInitiatorLocation(ChromeInitiatorLocation::kForward)),
-        1);
+        page_load_metrics::navigation_initiator::kForward.id(), 1);
     histogram_tester.ExpectUniqueSample(
         "Navigation.InitiatorType.SRP",
-        MetricValue(GetInitiatorLocation(ChromeInitiatorLocation::kForward)),
-        0);
+        page_load_metrics::navigation_initiator::kForward.id(), 0);
   }
 
   {
     // Reload url_b.
     base::HistogramTester histogram_tester;
-    chrome::Reload(browser(), WindowOpenDisposition::CURRENT_TAB);
+    chrome::Reload(browser(), ui::mojom::WindowOpenDisposition::kCurrentTab);
     EXPECT_TRUE(content::WaitForLoadStop(GetActiveWebContents()));
 
     histogram_tester.ExpectUniqueSample(
         "Navigation.InitiatorType.All",
-        MetricValue(GetInitiatorLocation(ChromeInitiatorLocation::kReload)), 1);
+        page_load_metrics::navigation_initiator::kReload.id(), 1);
     histogram_tester.ExpectUniqueSample(
         "Navigation.InitiatorType.SRP",
-        MetricValue(GetInitiatorLocation(ChromeInitiatorLocation::kReload)), 0);
+        page_load_metrics::navigation_initiator::kReload.id(), 0);
   }
 
   // Navigate away to flush PreloadServingMetrics.
@@ -1435,14 +1320,10 @@ IN_PROC_BROWSER_TEST_P(NavigationInitiatorPageLoadMetricsBFCacheBrowserTest,
 
     histogram_tester.ExpectUniqueSample(
         "Navigation.InitiatorType.All",
-        MetricValue(page_load_metrics::NavigationHandleUserData::
-                        kInitiatorLocationOther),
-        1);
+        page_load_metrics::navigation_initiator::kOther.id(), 1);
     histogram_tester.ExpectUniqueSample(
         "Navigation.InitiatorType.SRP",
-        MetricValue(page_load_metrics::NavigationHandleUserData::
-                        kInitiatorLocationOther),
-        1);
+        page_load_metrics::navigation_initiator::kOther.id(), 1);
   }
   content::RenderFrameHostWrapper rfh_srp(
       GetActiveWebContents()->GetPrimaryMainFrame());
@@ -1460,14 +1341,10 @@ IN_PROC_BROWSER_TEST_P(NavigationInitiatorPageLoadMetricsBFCacheBrowserTest,
 
     histogram_tester.ExpectUniqueSample(
         "Navigation.InitiatorType.All",
-        MetricValue(page_load_metrics::NavigationHandleUserData::
-                        kInitiatorLocationOther),
-        1);
+        page_load_metrics::navigation_initiator::kOther.id(), 1);
     histogram_tester.ExpectUniqueSample(
         "Navigation.InitiatorType.SRP",
-        MetricValue(page_load_metrics::NavigationHandleUserData::
-                        kInitiatorLocationOther),
-        0);
+        page_load_metrics::navigation_initiator::kOther.id(), 0);
   }
   content::RenderFrameHostWrapper rfh_b(
       GetActiveWebContents()->GetPrimaryMainFrame());
@@ -1486,12 +1363,10 @@ IN_PROC_BROWSER_TEST_P(NavigationInitiatorPageLoadMetricsBFCacheBrowserTest,
 
     histogram_tester.ExpectUniqueSample(
         "Navigation.InitiatorType.All",
-        MetricValue(GetInitiatorLocation(ChromeInitiatorLocation::kBackward)),
-        1);
+        page_load_metrics::navigation_initiator::kBackward.id(), 1);
     histogram_tester.ExpectUniqueSample(
         "Navigation.InitiatorType.SRP",
-        MetricValue(GetInitiatorLocation(ChromeInitiatorLocation::kBackward)),
-        1);
+        page_load_metrics::navigation_initiator::kBackward.id(), 1);
   }
   content::RenderFrameHostWrapper rfh_srp2(
       GetActiveWebContents()->GetPrimaryMainFrame());
@@ -1508,12 +1383,10 @@ IN_PROC_BROWSER_TEST_P(NavigationInitiatorPageLoadMetricsBFCacheBrowserTest,
 
     histogram_tester.ExpectUniqueSample(
         "Navigation.InitiatorType.All",
-        MetricValue(GetInitiatorLocation(ChromeInitiatorLocation::kForward)),
-        1);
+        page_load_metrics::navigation_initiator::kForward.id(), 1);
     histogram_tester.ExpectUniqueSample(
         "Navigation.InitiatorType.SRP",
-        MetricValue(GetInitiatorLocation(ChromeInitiatorLocation::kForward)),
-        0);
+        page_load_metrics::navigation_initiator::kForward.id(), 0);
   }
   content::RenderFrameHostWrapper rfh_b2(
       GetActiveWebContents()->GetPrimaryMainFrame());
@@ -1530,26 +1403,24 @@ IN_PROC_BROWSER_TEST_P(NavigationInitiatorPageLoadMetricsBFCacheBrowserTest,
 
     histogram_tester.ExpectUniqueSample(
         "Navigation.InitiatorType.All",
-        MetricValue(GetInitiatorLocation(ChromeInitiatorLocation::kBackward)),
-        1);
+        page_load_metrics::navigation_initiator::kBackward.id(), 1);
     histogram_tester.ExpectUniqueSample(
         "Navigation.InitiatorType.SRP",
-        MetricValue(GetInitiatorLocation(ChromeInitiatorLocation::kBackward)),
-        1);
+        page_load_metrics::navigation_initiator::kBackward.id(), 1);
   }
 
   {
     // Reload url_srp.
     base::HistogramTester histogram_tester;
-    chrome::Reload(browser(), WindowOpenDisposition::CURRENT_TAB);
+    chrome::Reload(browser(), ui::mojom::WindowOpenDisposition::kCurrentTab);
     EXPECT_TRUE(content::WaitForLoadStop(GetActiveWebContents()));
 
     histogram_tester.ExpectUniqueSample(
         "Navigation.InitiatorType.All",
-        MetricValue(GetInitiatorLocation(ChromeInitiatorLocation::kReload)), 1);
+        page_load_metrics::navigation_initiator::kReload.id(), 1);
     histogram_tester.ExpectUniqueSample(
         "Navigation.InitiatorType.SRP",
-        MetricValue(GetInitiatorLocation(ChromeInitiatorLocation::kReload)), 1);
+        page_load_metrics::navigation_initiator::kReload.id(), 1);
   }
 
   // Navigate away to flush PreloadServingMetrics.
@@ -1602,20 +1473,18 @@ IN_PROC_BROWSER_TEST_P(NavigationInitiatorPageLoadMetricsBFCacheBrowserTest,
 
     histogram_tester.ExpectUniqueSample(
         "Navigation.InitiatorType.All",
-        MetricValue(page_load_metrics::NavigationHandleUserData::
-                        kInitiatorLocationOther),
-        1);
+        page_load_metrics::navigation_initiator::kOther.id(), 1);
   }
 
   // 2. Reload url_a.
   {
     base::HistogramTester histogram_tester;
-    chrome::Reload(browser(), WindowOpenDisposition::CURRENT_TAB);
+    chrome::Reload(browser(), ui::mojom::WindowOpenDisposition::kCurrentTab);
     EXPECT_TRUE(content::WaitForLoadStop(GetActiveWebContents()));
 
     histogram_tester.ExpectUniqueSample(
         "Navigation.InitiatorType.All",
-        MetricValue(GetInitiatorLocation(ChromeInitiatorLocation::kReload)), 1);
+        page_load_metrics::navigation_initiator::kReload.id(), 1);
   }
   content::RenderFrameHostWrapper rfh_a(
       GetActiveWebContents()->GetPrimaryMainFrame());
@@ -1633,9 +1502,7 @@ IN_PROC_BROWSER_TEST_P(NavigationInitiatorPageLoadMetricsBFCacheBrowserTest,
 
     histogram_tester.ExpectUniqueSample(
         "Navigation.InitiatorType.All",
-        MetricValue(page_load_metrics::NavigationHandleUserData::
-                        kInitiatorLocationOther),
-        1);
+        page_load_metrics::navigation_initiator::kOther.id(), 1);
   }
   content::RenderFrameHostWrapper rfh_b(
       GetActiveWebContents()->GetPrimaryMainFrame());
@@ -1654,8 +1521,7 @@ IN_PROC_BROWSER_TEST_P(NavigationInitiatorPageLoadMetricsBFCacheBrowserTest,
 
     histogram_tester.ExpectUniqueSample(
         "Navigation.InitiatorType.All",
-        MetricValue(GetInitiatorLocation(ChromeInitiatorLocation::kBackward)),
-        1);
+        page_load_metrics::navigation_initiator::kBackward.id(), 1);
   }
 
   // Navigate away to flush PreloadServingMetrics.
@@ -1699,9 +1565,7 @@ IN_PROC_BROWSER_TEST_P(NavigationInitiatorPageLoadMetricsBFCacheBrowserTest,
 
     histogram_tester.ExpectUniqueSample(
         "Navigation.InitiatorType.All",
-        MetricValue(page_load_metrics::NavigationHandleUserData::
-                        kInitiatorLocationOther),
-        1);
+        page_load_metrics::navigation_initiator::kOther.id(), 1);
   }
   content::RenderFrameHostWrapper rfh_a(
       GetActiveWebContents()->GetPrimaryMainFrame());
@@ -1719,20 +1583,18 @@ IN_PROC_BROWSER_TEST_P(NavigationInitiatorPageLoadMetricsBFCacheBrowserTest,
 
     histogram_tester.ExpectUniqueSample(
         "Navigation.InitiatorType.All",
-        MetricValue(page_load_metrics::NavigationHandleUserData::
-                        kInitiatorLocationOther),
-        1);
+        page_load_metrics::navigation_initiator::kOther.id(), 1);
   }
 
   // 3. Reload url_b.
   {
     base::HistogramTester histogram_tester;
-    chrome::Reload(browser(), WindowOpenDisposition::CURRENT_TAB);
+    chrome::Reload(browser(), ui::mojom::WindowOpenDisposition::kCurrentTab);
     EXPECT_TRUE(content::WaitForLoadStop(GetActiveWebContents()));
 
     histogram_tester.ExpectUniqueSample(
         "Navigation.InitiatorType.All",
-        MetricValue(GetInitiatorLocation(ChromeInitiatorLocation::kReload)), 1);
+        page_load_metrics::navigation_initiator::kReload.id(), 1);
   }
   content::RenderFrameHostWrapper rfh_b(
       GetActiveWebContents()->GetPrimaryMainFrame());
@@ -1751,8 +1613,7 @@ IN_PROC_BROWSER_TEST_P(NavigationInitiatorPageLoadMetricsBFCacheBrowserTest,
 
     histogram_tester.ExpectUniqueSample(
         "Navigation.InitiatorType.All",
-        MetricValue(GetInitiatorLocation(ChromeInitiatorLocation::kBackward)),
-        1);
+        page_load_metrics::navigation_initiator::kBackward.id(), 1);
   }
   content::RenderFrameHostWrapper rfh_a2(
       GetActiveWebContents()->GetPrimaryMainFrame());
@@ -1771,8 +1632,7 @@ IN_PROC_BROWSER_TEST_P(NavigationInitiatorPageLoadMetricsBFCacheBrowserTest,
 
     histogram_tester.ExpectUniqueSample(
         "Navigation.InitiatorType.All",
-        MetricValue(GetInitiatorLocation(ChromeInitiatorLocation::kForward)),
-        1);
+        page_load_metrics::navigation_initiator::kForward.id(), 1);
   }
 
   // Navigate away to flush PreloadServingMetrics.

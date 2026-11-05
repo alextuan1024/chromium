@@ -18,6 +18,12 @@ namespace ui {
 // ships.
 UI_ANDROID_EXPORT BASE_DECLARE_FEATURE(kAndroidHDR);
 
+// Kill switch for keeping status bar insets visible in InsetObserver while
+// Chrome's window is unfocused and another window (e.g. a translucent share
+// sheet) has hidden the status bars.
+UI_ANDROID_EXPORT BASE_DECLARE_FEATURE(
+    kAndroidPreserveStatusBarInsetsWhenUnfocused);
+
 // Drops the cached bitmap in SoftwareDraw immediately after capture.
 UI_ANDROID_EXPORT BASE_DECLARE_FEATURE(kAndroidResourceMemoryOptimization);
 
@@ -63,9 +69,6 @@ UI_ANDROID_EXPORT BASE_DECLARE_FEATURE(kClipboardOversizedPayloadProvider);
 // Enables debug logging for connected display and density changes.
 UI_ANDROID_EXPORT BASE_DECLARE_FEATURE(kConnectedDisplayDensityDebugLogs);
 
-// Use the old-style opening of an External Picker when uploading files.
-UI_ANDROID_EXPORT BASE_DECLARE_FEATURE(kDeprecatedExternalPickerFunction);
-
 // Whether photo picker should be disabled for video capture.
 UI_ANDROID_EXPORT BASE_DECLARE_FEATURE(kDisablePhotoPickerForVideoCapture);
 
@@ -75,11 +78,18 @@ UI_ANDROID_EXPORT BASE_DECLARE_FEATURE(kHasContentUri);
 // Guard changes to use maximum window metrics for gesture navigation detection.
 UI_ANDROID_EXPORT BASE_DECLARE_FEATURE(kMaximumWindowForGestureNavDetection);
 
+// Kill switch for compensating captured relative mouse movement for display
+// density by skipping DIP scaling in EventForwarder instead of applying a
+// fixed 2.4x multiplier (crbug.com/567695649).
+// TODO(crbug.com/567695649): Remove once the fix has shipped to stable.
+UI_ANDROID_EXPORT BASE_DECLARE_FEATURE(kPointerLockMouseDensityCompensation);
+
 // Scaling multiplier for captured physical mouse movement
 // (crbug.com/490206349).
+// See also crbug.com/567695649 for display density compensation.
 UI_ANDROID_EXPORT BASE_DECLARE_FEATURE(kPointerLockMouseScaling);
 inline constexpr base::FeatureParam<double> kPointerLockMouseScalingFactor{
-    &kPointerLockMouseScaling, "factor", 2.4};
+    &kPointerLockMouseScaling, "factor", 1.0};
 
 // Whether to enable the refactor of the smallestScreenWidthDp override.
 UI_ANDROID_EXPORT BASE_DECLARE_FEATURE(kRefactorMinWidthContextOverride);
@@ -94,11 +104,15 @@ UI_ANDROID_EXPORT BASE_DECLARE_FEATURE(kRequireLeadingInTextViewWithLeading);
 // Update display for context on configuration changed and activity resumed.
 UI_ANDROID_EXPORT BASE_DECLARE_FEATURE(kAndroidUpdateDisplayForContext);
 
+// Overrides the pointer and screen space switching logic between flyout and
+// drilldown submenus in hierarchical menus for testing.
+UI_ANDROID_EXPORT BASE_DECLARE_FEATURE(kSubmenuTypeOverride);
+
 // Kill switch to turn off new supportKeyabord method
 UI_ANDROID_EXPORT BASE_DECLARE_FEATURE(kSupportKeyboard);
 
-// Enables the new ETC1 encoder (used in tab and back/forward thumbnails).
-UI_ANDROID_EXPORT BASE_DECLARE_FEATURE(kUseNewEtc1Encoder);
+// Enables the new Rust ETC1 decoder (used in tab thumbnails).
+UI_ANDROID_EXPORT BASE_DECLARE_FEATURE(kUseNewEtc1Decoder);
 
 // Conducts a check to determine if the View is eligible to a Hit. This is a
 // mitigation of when the prerendered view (hidden) somehow receives the touch
@@ -109,10 +123,6 @@ UI_ANDROID_EXPORT BASE_DECLARE_FEATURE(kCheckHitEligibility);
 // Enables touchpad overscroll for history navigation.
 UI_ANDROID_EXPORT BASE_DECLARE_FEATURE(
     kAndroidTouchpadOverscrollHistoryNavigation);
-
-// Update padding for display calculations to use view width instead of screen
-// width.
-UI_ANDROID_EXPORT BASE_DECLARE_FEATURE(kUpdatePaddingForDisplayCalculation);
 
 // Avoids allocating unique ColorProviders per Activity context in Android
 // embedders that do not supply a ColorProviderBridge.

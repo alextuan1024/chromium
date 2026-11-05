@@ -14,6 +14,7 @@
 
 #include "base/check.h"
 #include "base/check_op.h"
+#include "base/containers/extend.h"
 #include "base/feature_list.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
@@ -51,9 +52,9 @@
 #include "content/public/browser/web_contents.h"
 #include "ui/accessibility/ax_enums.mojom.h"
 #include "ui/base/l10n/l10n_util.h"
+#include "ui/base/mojom/window_open_disposition.mojom-shared.h"
 #include "ui/base/page_transition_types.h"
 #include "ui/base/ui_base_features.h"
-#include "ui/base/window_open_disposition.h"
 #include "ui/color/color_id.h"
 #include "ui/compositor/layer.h"
 #include "ui/gfx/geometry/insets.h"
@@ -102,8 +103,10 @@ constexpr auto kPopupItemTypesUsingLeadingIcons = DenseSet<SuggestionType>(
      SuggestionType::kManageAutofillAiTravel, SuggestionType::kManageIban,
      SuggestionType::kManageLoyaltyCard, SuggestionType::kManageOffers,
      SuggestionType::kManageEnhancedAutofill, SuggestionType::kOpenGmailForOtps,
-     SuggestionType::kPendingStateSignin, SuggestionType::kRemoveAutofillAi,
-     SuggestionType::kUndo, SuggestionType::kViewPasswordDetails,
+     SuggestionType::kPendingStateSignin,
+     SuggestionType::kPendingStateTrustedVaultError,
+     SuggestionType::kRemoveAutofillAi, SuggestionType::kUndo,
+     SuggestionType::kViewPasswordDetails,
      SuggestionType::kWebauthnSignInWithAnotherDevice});
 
 // Max width for the username and masked password.
@@ -212,6 +215,9 @@ void FormatLabel(views::Label& label,
     case FillingProduct::kIdentityCredential:
       label.SetMaximumWidthSingleLine(max_width);
       break;
+    case FillingProduct::kOneTimePassword:
+      label.SetMaximumWidthSingleLine(kAutofillPopupUsernameMaxWidth);
+      break;
     case FillingProduct::kCreditCard:
       if (text.should_truncate.value()) {
         label.SetMaximumWidthSingleLine(max_width);
@@ -224,7 +230,6 @@ void FormatLabel(views::Label& label,
     case FillingProduct::kPassword:
     case FillingProduct::kDataList:
     case FillingProduct::kNone:
-    case FillingProduct::kOneTimePassword:
       break;
   }
 }
@@ -327,6 +332,9 @@ std::vector<std::unique_ptr<views::View>> CreateSubtextViews(
       if (IsDeactivatedBnplSuggestion(suggestion)) {
         label->SetEnabledColor(kColorAutofillPopupDeactivatedBnplForeground);
       }
+      if (suggestion.type == SuggestionType::kGmailOneTimePasswordEntry) {
+        label->SetElideBehavior(gfx::ELIDE_EMAIL);
+      }
       if (suggestion.type == SuggestionType::kAtMemorySearchResult) {
         const int remaining_width = kAtMemorySuggestionWidth - used_width;
         FormatLabel(*label, label_text, main_filling_product, remaining_width);
@@ -369,16 +377,22 @@ std::unique_ptr<PopupRowContentView> CreateFooterPopupRowContentView(
   view->SetMinimumCrossAxisSize(
       views::MenuConfig::instance().touchable_menu_height);
 
+  const views::style::TextStyle main_text_style =
+      suggestion.type == SuggestionType::kOpenGmailForOtps
+          ? kMainTextStyle
+          : kMainTextStyleLight;
   std::unique_ptr<views::Label> main_text_label = CreateMainTextLabel(
-      suggestion, /*show_new_badge=*/std::nullopt, kMainTextStyleLight);
+      suggestion, /*show_new_badge=*/std::nullopt, main_text_style);
   // TODO(crbug.com/345709988): Move this to CreateMainTextLabel. See
   // https://crrev.com/c/5605735/comment/970405c2_cbb55e85
-  if (suggestion.IsSelectable()) {
+  if (suggestion.IsSelectable() &&
+      suggestion.type != SuggestionType::kOpenGmailForOtps) {
     main_text_label->SetEnabledColor(ui::kColorLabelForegroundSecondary);
   }
   main_text_label->SetEnabled(!suggestion.is_loading);
 
   if (suggestion.type == SuggestionType::kPendingStateSignin ||
+      suggestion.type == SuggestionType::kPendingStateTrustedVaultError ||
       suggestion.type == SuggestionType::kFreeformFooter) {
     main_text_label->SetMultiLine(true);
     main_text_label->SetHorizontalAlignment(gfx::ALIGN_TO_HEAD);
@@ -425,90 +439,128 @@ void OnCitationClicked(base::WeakPtr<AutofillPopupController> controller,
     return;
   }
   if (content::WebContents* web_contents = controller->GetWebContents()) {
-    content::OpenURLParams params(url, content::Referrer(),
-                                  WindowOpenDisposition::NEW_FOREGROUND_TAB,
-                                  ui::PAGE_TRANSITION_LINK,
-                                  /*is_renderer_initiated=*/false);
+    content::OpenURLParams params(
+        url, content::Referrer(),
+        ui::mojom::WindowOpenDisposition::kNewForegroundTab,
+        ui::PAGE_TRANSITION_LINK,
+        /*is_renderer_initiated=*/false);
     params.user_gesture = true;
     web_contents->OpenURL(params, /*navigation_handle_callback=*/{});
   }
 }
 
-void AddTextPieceRanges(
+using StyledRange = std::pair<gfx::Range, views::StyledLabel::RangeStyleInfo>;
+
+StyledRange CreateStyledRange(gfx::Range range) {
+  return {range, views::StyledLabel::RangeStyleInfo()};
+}
+
+// Returns sub-ranges for `text` in `range`, isolating leading and trailing
+// whitespace (e.g. "Photos\u00A0" or " + 2 other sources") into separate
+// ranges.
+//
+// In RTL layout, `views::StyledLabel` orders child views right-to-left, while
+// each individual `views::Label` renders LTR text internally. Without isolating
+// adjacent whitespace into its own child view, a trailing space in
+// "Photos\u00A0" or a leading space in " + 2 other sources" sticks to the wrong
+// edge of the text run instead of sitting between the badge and adjacent text:
+//
+//   Without whitespace isolation (RTL):
+//     | + 2 other sources|[1]|Photos\u00A0|
+//
+//   With whitespace isolation (RTL):
+//     |+ 2 other sources| |[1]|\u00A0|Photos|
+std::vector<gfx::Range> SplitLeadingAndTrailingWhitespace(
     std::u16string_view text,
-    size_t start,
-    size_t end,
-    std::vector<std::pair<gfx::Range, views::StyledLabel::RangeStyleInfo>>&
-        styled_ranges) {
-  // Isolate trailing whitespace (e.g. "Photos\u00A0") into separate range so
-  // that in RTL layout, the space is placed between badge and app name.
-  size_t content_end = end;
-  while (content_end > start &&
+    gfx::Range range) {
+  size_t content_start = range.start();
+  while (content_start < range.end() &&
+         base::IsUnicodeWhitespace(text[content_start])) {
+    ++content_start;
+  }
+  size_t content_end = range.end();
+  while (content_end > content_start &&
          base::IsUnicodeWhitespace(text[content_end - 1])) {
     --content_end;
   }
-  if (content_end > start) {
-    styled_ranges.emplace_back(gfx::Range(start, content_end),
-                               views::StyledLabel::RangeStyleInfo());
+  std::vector<gfx::Range> ranges;
+  for (const gfx::Range sub_range : {gfx::Range(range.start(), content_start),
+                                     gfx::Range(content_start, content_end),
+                                     gfx::Range(content_end, range.end())}) {
+    if (!sub_range.is_empty()) {
+      ranges.push_back(sub_range);
+    }
   }
-  if (end > content_end) {
-    styled_ranges.emplace_back(gfx::Range(content_end, end),
-                               views::StyledLabel::RangeStyleInfo());
-  }
+  return ranges;
 }
 
-// Splits an unstyled gap into sub-ranges around separators so that
-// `StyledLabel` partitions the text into individual child views. In RTL,
-// child views are ordered from right to left, ensuring citation badges
-// remain adjacent to their corresponding app names instead of the prefix.
-void AddGapRanges(
-    std::u16string_view text,
-    size_t gap_start,
-    size_t gap_end,
-    std::vector<std::pair<gfx::Range, views::StyledLabel::RangeStyleInfo>>&
-        styled_ranges) {
-  size_t current = gap_start;
-  while (current < gap_end) {
-    const size_t sep_pos = text.find(kLabelSeparator, current);
-    if (sep_pos == std::u16string_view::npos || sep_pos >= gap_end) {
-      AddTextPieceRanges(text, current, gap_end, styled_ranges);
+// Splits a plain-text `range` in `text` around `kLabelSeparator` (" · ") and
+// isolates adjacent whitespace so that `views::StyledLabel` creates a separate
+// child `View` for each logical token:
+//
+//   "From Gemini · Gmail\u00A0[1] · Photos\u00A0[1] + 2 other sources"
+//    |<----- plain text ---->|link|<-plain text->|link|<--- plain text --->|
+//
+//   LTR child view order (left -> right):
+//     |From Gemini| · |Gmail|\u00A0|[1]| · |Photos|\u00A0|[1]| |+ 2 other...|
+//
+//   RTL child view order (right -> left):
+//     |+ 2 other...| |[1]|\u00A0|Photos| · |[1]|\u00A0|Gmail| · |From Gemini|
+//
+// Without splitting around separators, "From Gemini · Gmail\u00A0" would form a
+// single child view, placing `[1]` to the left of the entire plain-text block
+// in RTL rather than next to "Gmail".
+std::vector<gfx::Range> SplitTextAroundSeparators(std::u16string_view text,
+                                                  gfx::Range range) {
+  std::vector<gfx::Range> ranges;
+  size_t current = range.start();
+  while (current < range.end()) {
+    const size_t sep_pos =
+        text.substr(0, range.end()).find(kLabelSeparator, current);
+    if (sep_pos == std::u16string_view::npos) {
+      base::Extend(ranges, SplitLeadingAndTrailingWhitespace(
+                               text, gfx::Range(current, range.end())));
       break;
     }
-    if (sep_pos > current) {
-      AddTextPieceRanges(text, current, sep_pos, styled_ranges);
-    }
-    const size_t sep_end =
-        std::min(sep_pos + kLabelSeparator.length(), gap_end);
-    styled_ranges.emplace_back(gfx::Range(sep_pos, sep_end),
-                               views::StyledLabel::RangeStyleInfo());
+    base::Extend(ranges, SplitLeadingAndTrailingWhitespace(
+                             text, gfx::Range(current, sep_pos)));
+    const size_t sep_end = sep_pos + kLabelSeparator.length();
+    ranges.emplace_back(sep_pos, sep_end);
     current = sep_end;
   }
+  return ranges;
 }
 
-// Builds style ranges for citation badges and interleaves unstyled gap ranges.
+// Builds style ranges for citation badges and interleaves plain-text ranges.
 // Note: Assumes payload citations ranges are sorted in non-decreasing order.
-std::vector<std::pair<gfx::Range, views::StyledLabel::RangeStyleInfo>>
-CreateStyleCitationBadges(const Suggestion& suggestion,
-                          base::WeakPtr<AutofillPopupController> controller) {
-  std::vector<std::pair<gfx::Range, views::StyledLabel::RangeStyleInfo>>
-      citation_ranges;
+std::vector<StyledRange> CreateStyleCitationBadges(
+    const Suggestion& suggestion,
+    base::WeakPtr<AutofillPopupController> controller) {
+  std::vector<StyledRange> citation_ranges;
   size_t last_end = 0;
   for (const Suggestion::PersonalContextSourceCitation& citation :
        suggestion.GetPayload<Suggestion::AutofillAiPayload>().citations) {
     if (citation.range.start() < citation.range.end() &&
         citation.range.start() >= last_end &&
         citation.range.end() <= suggestion.main_text.value.length()) {
-      AddGapRanges(suggestion.main_text.value, last_end, citation.range.start(),
-                   citation_ranges);
-      citation_ranges.emplace_back(
-          citation.range,
+      base::Extend(citation_ranges,
+                   SplitTextAroundSeparators(
+                       suggestion.main_text.value,
+                       gfx::Range(last_end, citation.range.start())),
+                   &CreateStyledRange);
+      views::StyledLabel::RangeStyleInfo style_info =
           views::StyledLabel::RangeStyleInfo::CreateForLink(base::BindRepeating(
-              &OnCitationClicked, controller, citation.url)));
+              &OnCitationClicked, controller, citation.url));
+      style_info.accessible_name = citation.accessible_name;
+      citation_ranges.emplace_back(citation.range, std::move(style_info));
       last_end = citation.range.end();
     }
   }
-  AddGapRanges(suggestion.main_text.value, last_end,
-               suggestion.main_text.value.length(), citation_ranges);
+  base::Extend(citation_ranges,
+               SplitTextAroundSeparators(
+                   suggestion.main_text.value,
+                   gfx::Range(last_end, suggestion.main_text.value.length())),
+               &CreateStyledRange);
 
   return citation_ranges;
 }
@@ -882,16 +934,6 @@ std::unique_ptr<PopupRowContentView> CreateWalletDirectOfferRowContentView(
   main_text_label->SetHorizontalAlignment(gfx::ALIGN_TO_HEAD);
   main_text_label->SetMaximumWidth(kAutofillSuggestionMaxWidth);
 
-  // Checks if the text of a label fits in one line. Assumes that non-empty
-  // text has been set on `label` before calling this lambda.
-  const auto fits_in_one_line = [](const views::Label& label) -> bool {
-    CHECK(!label.GetText().empty());
-    const int line_height = label.GetLineHeight();
-    CHECK(line_height > 0);
-    return label.GetHeightForWidth(kAutofillSuggestionMaxWidth) == line_height;
-  };
-  const bool main_label_fits_in_one_line = fits_in_one_line(*main_text_label);
-
   FormatLabel(*main_text_label, suggestion.main_text,
               FillingProduct::kMerchantPromoCode);
 
@@ -900,14 +942,6 @@ std::unique_ptr<PopupRowContentView> CreateWalletDirectOfferRowContentView(
       /*description_label=*/nullptr,
       CreateSubtextViews(*view, suggestion, FillingProduct::kMerchantPromoCode),
       popup_cell_utils::GetIconImageView(suggestion), *view);
-
-  if (!main_label_fits_in_one_line) {
-    view->SetInsideBorderInsets(
-        gfx::Insets(view->GetInsideBorderInsets())
-            .set_top_bottom(
-                kAutofillMultilineSuggestionAdditionalVerticalMargin,
-                kAutofillMultilineSuggestionAdditionalVerticalMargin));
-  }
 
   return view;
 }
@@ -1025,6 +1059,7 @@ std::unique_ptr<PopupRowView> CreatePopupRowView(
   switch (type) {
     // These `type` should never be displayed in a `PopupRowView`.
     case SuggestionType::kAtMemoryAiDisclosure:
+    case SuggestionType::kAtMemoryShortcutSettingsPromo:
     case SuggestionType::kInsecureContextPaymentDisabledMessage:
     case SuggestionType::kSeparator:
       NOTREACHED();
@@ -1102,7 +1137,12 @@ std::unique_ptr<PopupRowView> CreatePopupRowView(
                                     FillingProduct::kAtMemory,
                                     /*filter_match=*/std::nullopt));
     }
-
+    case SuggestionType::kMerchantPromoCodeEntry: {
+      return std::make_unique<PopupRowView>(
+          a11y_selection_delegate, selection_delegate, controller, line_number,
+          CreateWalletDirectOfferRowContentView(suggestion, show_new_badge,
+                                                std::move(filter_match)));
+    }
     case SuggestionType::kAddressEntry:
     case SuggestionType::kAddressEntryOnTyping:
     case SuggestionType::kAddressFieldByFieldFilling:
@@ -1142,25 +1182,14 @@ std::unique_ptr<PopupRowView> CreatePopupRowView(
     case SuggestionType::kManageLoyaltyCard:
     case SuggestionType::kManageOffers:
     case SuggestionType::kMaximizeCreditCardBenefitsEntry:
-    case SuggestionType::kMerchantPromoCodeEntry: {
-      if (base::FeatureList::IsEnabled(
-              features::kAutofillEnableWalletDirectOffers)) {
-        return std::make_unique<PopupRowView>(
-            a11y_selection_delegate, selection_delegate, controller,
-            line_number,
-            CreateWalletDirectOfferRowContentView(suggestion, show_new_badge,
-                                                  std::move(filter_match)));
-      }
-      [[fallthrough]];
-    }
     case SuggestionType::kOneTimePasswordEntry:
     case SuggestionType::kOpenGmailForOtps:
     case SuggestionType::kPasswordFieldByFieldFilling:
     case SuggestionType::kPendingStateSignin:
+    case SuggestionType::kPendingStateTrustedVaultError:
     case SuggestionType::kPersonalContextNotice:
     case SuggestionType::kRemoveAutofillAi:
     case SuggestionType::kScanCreditCard:
-    case SuggestionType::kSeePromoCodeDetails:
     case SuggestionType::kTitle:
     case SuggestionType::kUndo:
     case SuggestionType::kViewPasswordDetails:

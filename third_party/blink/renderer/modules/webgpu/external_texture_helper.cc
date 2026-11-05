@@ -10,7 +10,7 @@
 #include "media/base/video_frame.h"
 #include "media/base/video_transformation.h"
 #include "media/base/video_util.h"
-#include "media/renderers/paint_canvas_video_renderer.h"
+#include "media/gfx/paint_canvas_video_renderer.h"
 #include "third_party/blink/renderer/core/html/media/html_video_element.h"
 #include "third_party/blink/renderer/modules/webcodecs/video_frame.h"
 #include "third_party/blink/renderer/modules/webgpu/dawn_conversions.h"
@@ -24,6 +24,7 @@
 #include "third_party/blink/renderer/platform/graphics/gpu/shared_gpu_context.h"
 #include "third_party/blink/renderer/platform/graphics/gpu/webgpu_mailbox_texture.h"
 #include "third_party/blink/renderer/platform/graphics/gpu/webgpu_shared_image_cache.h"
+#include "third_party/blink/renderer/platform/graphics/skia/skia_utils.h"
 #include "third_party/blink/renderer/platform/instrumentation/tracing/trace_event.h"
 #include "third_party/skia/include/effects/SkColorMatrix.h"
 #include "third_party/skia/modules/skcms/skcms.h"
@@ -231,8 +232,6 @@ std::optional<ExternalTexture> CreateExternalTexture(
     src_color_space = gfx::ColorSpace::CreateREC709();
   }
 
-  // TODO(crbug.com/1306753): Use SharedImageProducer and CompositeSharedImage
-  // rather than check 'is_webgpu_compatible'.
   // Note that the feature is checked on the adapter and not the device, because
   // we assume that the GPU-process side automatically adds
   // DawnMultiPlanarFormats to the requested extension list (since we don't do
@@ -275,12 +274,20 @@ std::optional<ExternalTexture> CreateExternalTexture(
     external_texture_desc.mirrored = metadata.transformation->mirrored;
   }
 
+  // TODO(crbug.com/425634684): The SharedMemory buffer check is due to
+  // historical reasons, and the SharedImage system should now be able to
+  // support zero copy with SharedMemory buffers.
+  const bool si_supports_zero_copy =
+      media_video_frame->HasSharedImage() &&
+      media_video_frame->shared_image()->usage().Has(
+          gpu::SHARED_IMAGE_USAGE_WEBGPU_READ) &&
+      media_video_frame->shared_image()->GetGpuMemoryBufferType() !=
+          gfx::GpuMemoryBufferType::SHARED_MEMORY_BUFFER;
   const bool zero_copy =
-      (media_video_frame->HasSharedImage() &&
-       (media_video_frame->format() == media::PIXEL_FORMAT_NV12) &&
-       device_support_zero_copy &&
-       media_video_frame->metadata().is_webgpu_compatible &&
-       DstColorSpaceSupportedByZeroCopy(dst_predefined_color_space));
+      si_supports_zero_copy &&
+      media_video_frame->format() == media::PIXEL_FORMAT_NV12 &&
+      device_support_zero_copy &&
+      DstColorSpaceSupportedByZeroCopy(dst_predefined_color_space);
 
   TRACE_EVENT_INSTANT(
       TRACE_DISABLED_BY_DEFAULT("webgpu"), "CreateExternalTexture", "zero_copy",
@@ -408,10 +415,7 @@ std::optional<ExternalTexture> CreateExternalTexture(
     return {};
   }
 
-  scoped_refptr<gpu::ClientSharedImage> shared_image = lease->GetSharedImage();
-  if (!shared_image) {
-    return {};
-  }
+  scoped_refptr<gpu::ClientSharedImage> shared_image = lease->shared_image();
 
   viz::RasterContextProvider* raster_context_provider =
       context_provider_wrapper->ContextProvider().RasterContextProvider();
@@ -424,8 +428,8 @@ std::optional<ExternalTexture> CreateExternalTexture(
     // SharedImage, completely overwriting the SharedImage.
     gpu::SyncToken sync_token = video_renderer->CopyVideoFrameToSharedImage(
         raster_context_provider, std::move(media_video_frame), shared_image,
-        lease->GetSyncToken(), /*use_visible_rect=*/true);
-    lease->WaitSyncToken(sync_token);
+        lease->sync_token(), /*use_visible_rect=*/true);
+    lease->SetSyncToken(sync_token);
   } else {
     // Delegate video transformation to Dawn.
     if (media_video_frame->HasSharedImage()) {
@@ -462,7 +466,7 @@ std::optional<ExternalTexture> CreateExternalTexture(
           context_provider_wrapper);
 
       lease->SetSyncToken(context_provider.RasterInterface()->RasterSharedImage(
-          shared_image, lease->GetSyncToken(), std::move(last_recording),
+          shared_image, lease->sync_token(), std::move(last_recording),
           &image_provider, needs_clear));
 
       image_provider.ReleaseLockedImages();
@@ -470,19 +474,15 @@ std::optional<ExternalTexture> CreateExternalTexture(
     }
   }
 
-  // The copy or draw operation above might have encountered GPU context loss,
-  // in which case GetSharedImage() returns null.
-  if (!lease->GetSharedImage()) {
+  // The copy or draw operation above might have encountered GPU context loss.
+  if (context_provider_wrapper->ContextProvider().IsContextLost()) {
     return {};
   }
 
-  gpu::SyncToken sync_token = lease->GetSyncToken();
-
   scoped_refptr<WebGPUMailboxTexture> mailbox_texture =
-      WebGPUMailboxTexture::FromCanvasResource(
+      WebGPUMailboxTexture::FromWebGpuSharedImageLease(
           device->GetDawnControlClient(), device->GetHandle(),
-          wgpu::TextureUsage::TextureBinding, std::move(shared_image),
-          sync_token, std::move(lease));
+          wgpu::TextureUsage::TextureBinding, std::move(lease));
   if (!mailbox_texture) {
     return {};
   }

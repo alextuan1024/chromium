@@ -8,6 +8,7 @@
 #import <UIKit/UIKit.h>
 
 @class MagicStackCollectionViewController;
+@class MostVisitedTilesCollectionView;
 @class NewTabPageBottomSheetViewController;
 
 // Delegate for events in the bottom sheet view controller.
@@ -22,6 +23,11 @@
 // sheet.
 - (void)bottomSheetViewControllerDidEscape:
     (NewTabPageBottomSheetViewController*)bottomSheetViewController;
+
+// Called when the feed sign-in promo changes visibility in the viewport.
+- (void)bottomSheetViewController:
+            (NewTabPageBottomSheetViewController*)bottomSheetViewController
+    didChangeSigninPromoVisibility:(BOOL)visible;
 
 // Returns the preferred resting offset for the bottom sheet.
 - (CGFloat)restingOffsetForBottomSheetViewController:
@@ -57,15 +63,35 @@ enum class BottomSheetSnappingState {
 // The feed view controller embedded under the "Read" tab.
 @property(nonatomic, strong) UIViewController* feedViewController;
 
+// The feed top section view controller containing promos (e.g. Sign-in promo).
+@property(nonatomic, strong) UIViewController* feedTopSectionViewController;
+
+// Indicates whether the feed top section promo is visible.
+@property(nonatomic, assign) BOOL feedTopSectionVisible;
+
 // The magic stack view controller.
 @property(nonatomic, strong)
     MagicStackCollectionViewController* magicStackViewController;
 
-// Embeds the Most Visited view.
-- (void)embedMostVisitedView:(UIView*)mostVisitedView;
+// Embeds the Most Visited view and its collection view.
+- (void)embedMostVisitedView:(UIView*)mostVisitedView
+              collectionView:(MostVisitedTilesCollectionView*)collectionView;
 
 // Clears state and delegates.
 - (void)invalidate;
+
+// Handles layout and insets when the feed top section promo is closed.
+- (void)handleFeedTopSectionClosed;
+
+// Updates feed content insets and scroll offsets.
+- (void)updateFeedInsets;
+
+// Triggers re-layout and inset recalculation when feed content or promos
+// update.
+- (void)updateFeedLayout;
+
+// Returns the height of the feed top section promo.
+- (CGFloat)feedTopSectionHeight;
 
 // Updates whether the omnibox is in the bottom position.
 - (void)setOmniboxInBottomPosition:(BOOL)isBottomOmnibox;

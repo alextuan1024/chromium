@@ -49,6 +49,7 @@
 #include "base/check_deref.h"
 #include "chromeos/ash/components/account_manager/account_manager_factory.h"
 #include "components/account_manager_core/chromeos/account_manager.h"
+#include "components/policy/core/common/policy_pref_names.h"
 #include "components/signin/internal/identity_manager/test_profile_oauth2_token_service_delegate_chromeos.h"
 #endif
 
@@ -209,7 +210,8 @@ IdentityTestEnvironment::IdentityTestEnvironment(
   SigninPrefs::RegisterProfilePrefs(test_pref_service->registry());
   IdentityManager::RegisterLocalStatePrefs(test_pref_service->registry());
 #if BUILDFLAG(IS_CHROMEOS)
-  account_manager::AccountManager::RegisterPrefs(test_pref_service->registry());
+  test_pref_service->registry()->RegisterBooleanPref(
+      policy::policy_prefs::kSecondaryGoogleAccountSigninAllowed, true);
 #endif  // BUILDFLAG(IS_CHROMEOS)
   owned_identity_manager_ = BuildIdentityManagerForTests(
       test_signin_client, test_pref_service,
@@ -344,6 +346,9 @@ IdentityTestEnvironment::FinishBuildIdentityManagerForTests(
   std::unique_ptr<GaiaCookieManagerService> gaia_cookie_manager_service =
       std::make_unique<GaiaCookieManagerService>(
           account_tracker_service.get(), token_service.get(), signin_client);
+  // Tests fake /ListAccounts responses without setting cookies.
+  gaia_cookie_manager_service->set_ignore_missing_gaia_cookies_for_testing(
+      true);
   IdentityManager::InitParameters init_params;
   init_params.primary_account_mutator =
       std::make_unique<PrimaryAccountMutatorImpl>(account_tracker_service.get(),
@@ -806,6 +811,10 @@ int IdentityTestEnvironment::
                  ->GetAccountFetcherService()
                  ->GetAccountFetcherFactoryForTest())
       ->GetNumCallsToPrepareForFetchingAccountCapabilities();
+}
+
+base::WeakPtr<IdentityTestEnvironment> IdentityTestEnvironment::GetWeakPtr() {
+  return weak_ptr_factory_.GetWeakPtr();
 }
 
 }  // namespace signin

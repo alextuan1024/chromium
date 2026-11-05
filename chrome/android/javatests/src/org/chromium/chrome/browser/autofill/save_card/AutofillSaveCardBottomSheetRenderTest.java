@@ -65,7 +65,8 @@ public class AutofillSaveCardBottomSheetRenderTest {
     @Rule
     public final RenderTestRule mRenderTestRule =
             RenderTestRule.Builder.withPublicCorpus()
-                    .setRevision(4)
+                    .setRevision(6)
+                    .setDescription("Separate LegalMessageLines with paragraph break")
                     .setBugComponent(Component.UI_BROWSER_AUTOFILL)
                     .build();
 
@@ -203,7 +204,8 @@ public class AutofillSaveCardBottomSheetRenderTest {
         BottomSheetTestSupport.waitForOpen(mBottomSheetController);
 
         // Render the activity to show the content sheet and its contents.
-        mRenderTestRule.render(activityContentView, "save_card_bottom_sheet_content_upload");
+        mRenderTestRule.render(
+                activityContentView, "save_card_bottom_sheet_content_upload_gradient_logo_disabled");
     }
 
     @Test
@@ -246,7 +248,9 @@ public class AutofillSaveCardBottomSheetRenderTest {
         BottomSheetTestSupport.waitForOpen(mBottomSheetController);
 
         // Render the activity to show the content sheet and its contents.
-        mRenderTestRule.render(activityContentView, "save_card_bottom_sheet_content_upload");
+        mRenderTestRule.render(
+                activityContentView,
+                "save_card_bottom_sheet_content_upload_wallet_branding_v2_disabled");
     }
 
     @Test

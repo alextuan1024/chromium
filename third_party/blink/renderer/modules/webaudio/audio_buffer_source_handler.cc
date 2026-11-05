@@ -157,9 +157,9 @@ void AudioBufferSourceHandler::Process(uint32_t frames_to_process) {
       return;
     }
 
-    uint32_t quantum_frame_offset;
-    uint32_t buffer_frames_to_process;
-    double start_time_offset;
+    uint32_t quantum_frame_offset = 0;
+    uint32_t buffer_frames_to_process = 0;
+    double start_time_offset = 0.0;
 
     std::tie(quantum_frame_offset, buffer_frames_to_process,
              start_time_offset) =
@@ -215,8 +215,7 @@ AudioBufferSourceHandler::ProcessFastPath(double virtual_delta_frames,
 
   while (frames_to_process > 0) {
     const int frames_to_end = end_frame - read_index;
-    int frames_this_time = std::min(frames_to_process, frames_to_end);
-    frames_this_time = std::max(0, frames_this_time);
+    int frames_this_time = std::clamp(frames_to_end, 0, frames_to_process);
     const size_t frames_this_time_size =
         base::checked_cast<size_t>(frames_this_time);
 
@@ -288,6 +287,12 @@ AudioBufferSourceHandler::ProcessInterpolatedPath(double virtual_start_frame,
   DCHECK_GT(buffer_length, 0u);
   const unsigned max_index = buffer_length - 1;
 
+  // Hoisted out of the per-frame loop below: these are loop-invariant.
+  const base::span<const base::raw_span<float>> destinations =
+      destination_channels_.as_span();
+  const base::span<const base::raw_span<const float>> sources =
+      source_channels_.as_span();
+
   for (int i = 0; i < frames_to_process; ++i) {
     const uint32_t frames_remaining = frames_to_process - i - 1;
     unsigned read_index = static_cast<unsigned>(virtual_read_index);
@@ -306,7 +311,7 @@ AudioBufferSourceHandler::ProcessInterpolatedPath(double virtual_start_frame,
       // the start of the loop. We calculate this instead of directly setting to
       // virtual_start_frame to preserve fractional loop bounds, and defensively
       // clamp to protect against floating point rounding issues.
-      double wrapped_index;
+      double wrapped_index = 0.0;
       if (virtual_delta_frames >= 1.0) {
         wrapped_index = virtual_read_index + 1.0 - virtual_delta_frames;
       } else if (virtual_delta_frames > 0) {
@@ -328,13 +333,15 @@ AudioBufferSourceHandler::ProcessInterpolatedPath(double virtual_start_frame,
 
     // Linear interpolation.
     for (unsigned channel = 0; channel < number_of_channels; ++channel) {
-      auto destination = destination_channels_[channel];
-      auto source = source_channels_[channel];
+      // Not `auto`: it would deduce and copy a `base::raw_span`, which is
+      // not free under BackupRefPtr.
+      base::span<float> destination = destinations[channel];
+      base::span<const float> source = sources[channel];
 
       // The source channel may have been transferred already, so don't try
       // to read from it if it was. Just set the destination to 0.
       if (!source.empty()) {
-        double sample;
+        double sample = 0.0;
         if (read_index == read_index2 && read_index >= 1) {
           // We're at the end of the buffer, so just linearly extrapolate
           // from the last two samples.

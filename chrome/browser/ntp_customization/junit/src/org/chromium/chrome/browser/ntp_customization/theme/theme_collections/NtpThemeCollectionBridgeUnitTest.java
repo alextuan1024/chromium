@@ -147,7 +147,7 @@ public class NtpThemeCollectionBridgeUnitTest {
         String collectionId = "collectionId";
         GURL imageUrl = JUnitTestGURLs.URL_1;
         GURL previewImageUrl = JUnitTestGURLs.URL_2;
-        String[] attribution = new String[] {"foo", "bar"};
+        List<String> attribution = List.of("foo", "bar");
         GURL attributionUrl = JUnitTestGURLs.URL_3;
         CollectionImage image =
                 NtpThemeCollectionBridge.createImage(
@@ -219,15 +219,19 @@ public class NtpThemeCollectionBridgeUnitTest {
 
     @Test
     public void testCreateCustomBackgroundInfo() {
-        testCreateCustomBackgroundInfoImpl("Attribution 1,Attribution 2");
+        testCreateCustomBackgroundInfoImpl("Attribution 1", "Attribution 2", JUnitTestGURLs.URL_2);
     }
 
     @Test
     public void testCreateCustomBackgroundInfo_nullAttribution() {
-        testCreateCustomBackgroundInfoImpl(null);
+        testCreateCustomBackgroundInfoImpl(
+                /* attributionLine1= */ null, /* attributionLine2= */ null, GURL.emptyGURL());
     }
 
-    private void testCreateCustomBackgroundInfoImpl(@Nullable String attribution) {
+    private void testCreateCustomBackgroundInfoImpl(
+            @Nullable String attributionLine1,
+            @Nullable String attributionLine2,
+            GURL attributionActionUrl) {
         String collectionId = "collection_id";
         CustomBackgroundInfo info =
                 NtpThemeCollectionBridge.createCustomBackgroundInfo(
@@ -235,11 +239,15 @@ public class NtpThemeCollectionBridgeUnitTest {
                         collectionId,
                         /* isUploadedImage= */ false,
                         /* isDailyRefreshEnabled= */ true,
-                        attribution);
+                        attributionLine1,
+                        attributionLine2,
+                        attributionActionUrl);
         assertEquals(JUnitTestGURLs.URL_1, info.backgroundUrl);
         assertEquals(collectionId, info.collectionId);
         assertFalse(info.isUploadedImage);
         assertTrue(info.isDailyRefreshEnabled);
-        assertEquals(attribution, info.attribution);
+        assertEquals(attributionLine1, info.attributionLine1);
+        assertEquals(attributionLine2, info.attributionLine2);
+        assertEquals(attributionActionUrl, info.attributionActionUrl);
     }
 }

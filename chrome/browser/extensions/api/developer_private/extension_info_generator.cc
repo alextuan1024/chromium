@@ -25,6 +25,7 @@
 #include "chrome/browser/extensions/extension_management.h"
 #include "chrome/browser/extensions/extension_safety_check_utils.h"
 #include "chrome/browser/extensions/extension_service.h"
+#include "chrome/browser/extensions/extension_ui_util.h"
 #include "chrome/browser/extensions/extension_util.h"
 #include "chrome/browser/extensions/shared_module_service_factory.h"
 #include "chrome/browser/extensions/sync/account_extension_tracker.h"
@@ -35,7 +36,6 @@
 #include "chrome/common/pref_names.h"
 #include "chrome/grit/generated_resources.h"
 #include "components/signin/public/base/signin_switches.h"
-#include "components/sync/base/features.h"
 #include "content/public/browser/render_frame_host.h"
 #include "extensions/browser/blocklist_extension_prefs.h"
 #include "extensions/browser/blocklist_state.h"
@@ -909,12 +909,10 @@ void ExtensionInfoGenerator::FillExtensionInfo(const Extension& extension,
 
   info.can_upload_as_account_extension =
       AccountExtensionTracker::Get(profile)->CanUploadAsAccountExtension(
-          extension)
-#if BUILDFLAG(IS_CHROMEOS)
-      &&
-      base::FeatureList::IsEnabled(syncer::kReplaceSyncPromosWithSignInPromos)
-#endif
-      ;
+          extension);
+
+  info.can_show_review_prompt =
+      ui_util::ShouldShowReviewPrompt(extension, *profile);
 
   // The icon. This section must come last as it moves `info`.
   ExtensionResource icon = IconsInfo::GetIconResource(

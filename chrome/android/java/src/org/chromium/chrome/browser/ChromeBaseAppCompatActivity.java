@@ -40,7 +40,6 @@ import org.chromium.base.BundleUtils;
 import org.chromium.base.CommandLine;
 import org.chromium.base.ContextUtils;
 import org.chromium.base.DeviceInfo;
-import org.chromium.base.FeatureList;
 import org.chromium.base.metrics.RecordHistogram;
 import org.chromium.base.supplier.MonotonicObservableSupplier;
 import org.chromium.base.supplier.ObservableSuppliers;
@@ -53,6 +52,7 @@ import org.chromium.chrome.R;
 import org.chromium.chrome.browser.automotivetoolbar.AutomotiveBackButtonToolbarCoordinator;
 import org.chromium.chrome.browser.base.SplitChromeApplication;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
+import org.chromium.chrome.browser.flags.ChromeFeatures;
 import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.browser.language.GlobalAppLocaleController;
 import org.chromium.chrome.browser.night_mode.GlobalNightModeStateProviderHolder;
@@ -243,8 +243,7 @@ public class ChromeBaseAppCompatActivity extends AppCompatActivity
                         mEdgeToEdgeStateProvider,
                         createSystemBarColorHelperSupplier(),
                         shouldDrawEdgeToEdgeOnCreate(),
-                        canColorStatusBarWithEdgeToEdgeHelper(),
-                        canSetTransparentStatusBarWithoutDelegate());
+                        canColorStatusBarWithEdgeToEdgeHelper());
 
         if (canColorStatusBarWithEdgeToEdgeHelper()) {
             initializeSystemBarColors(mEdgeToEdgeManager.getEdgeToEdgeSystemBarColorHelper());
@@ -293,11 +292,6 @@ public class ChromeBaseAppCompatActivity extends AppCompatActivity
         return EdgeToEdgeUtils.isEdgeToEdgeEverywhereEnabled();
     }
 
-    /** Returns whether the helper may make the status bar transparent without a delegate helper. */
-    protected boolean canSetTransparentStatusBarWithoutDelegate() {
-        return false;
-    }
-
     /**
      * Returns a one-shot supplier for the {@link SystemBarColorHelper} that's appropriate for the
      * activity.
@@ -322,7 +316,8 @@ public class ChromeBaseAppCompatActivity extends AppCompatActivity
                         new EdgeToEdgeControllerCreator(
                                 new WeakReference<Activity>(this),
                                 getInsetObserver(),
-                                this::ensureEdgeToEdgeController);
+                                this::ensureEdgeToEdgeController,
+                                /* supportsTopInset= */ false);
             }
         } else {
             ensureEdgeToEdgeController();
@@ -406,11 +401,7 @@ public class ChromeBaseAppCompatActivity extends AppCompatActivity
     @Override
     public final void onMultiWindowModeChanged(boolean inMultiWindowMode) {
         // Some OEMs double-notify about multi-window mode changes (eg. Samsung tablets).
-        if (FeatureList.isNativeInitialized()
-                && ChromeFeatureList.isEnabled(ChromeFeatureList.AVOID_DOUBLE_MULTIWINDOW_CHANGES)
-                && mInMultiWindowMode == inMultiWindowMode) {
-            return;
-        }
+        if (mInMultiWindowMode == inMultiWindowMode) return;
         mInMultiWindowMode = inMultiWindowMode;
         handleMultiWindowModeChanged(inMultiWindowMode);
         super.onMultiWindowModeChanged(inMultiWindowMode);
@@ -508,7 +499,7 @@ public class ChromeBaseAppCompatActivity extends AppCompatActivity
      * #applyOverrideConfiguration(Configuration)}.
      *
      * @param baseContext The base {@link Context} attached to this class.
-     * @param overrideConfig The {@link Configuration} that will be passed to {@link}
+     * @param overrideConfig The {@link Configuration} that will be passed to {@link
      *     #applyOverrideConfiguration(Configuration)} if necessary.
      * @return True if any configuration overrides were applied, and false otherwise.
      */
@@ -814,8 +805,7 @@ public class ChromeBaseAppCompatActivity extends AppCompatActivity
         return new InsetObserver(
                 new ImmutableWeakReference<>(getWindow().getDecorView().getRootView()),
                 new ImmutableWeakReference<>(this),
-                ChromeFeatureList.isEnabled(
-                        ChromeFeatureList.ACCOUNT_FOR_SUPPRESSED_KEYBOARD_INSETS),
+                ChromeFeatures.AccountForSuppressedKeyboardInsets.isEnabled(),
                 ChromeFeatureList.sEdgeToEdgeExtraLogs.isEnabled());
     }
 

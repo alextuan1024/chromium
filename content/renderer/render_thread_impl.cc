@@ -142,6 +142,7 @@
 #include "third_party/blink/public/common/features.h"
 #include "third_party/blink/public/common/origin_trials/origin_trials_settings_provider.h"
 #include "third_party/blink/public/common/page/launching_process_state.h"
+#include "third_party/blink/public/common/scheme_registry.h"
 #include "third_party/blink/public/common/switches.h"
 #include "third_party/blink/public/common/thread_safe_browser_interface_broker_proxy.h"
 #include "third_party/blink/public/mojom/cpu_performance.mojom.h"
@@ -175,7 +176,9 @@
 
 #if BUILDFLAG(IS_ANDROID)
 #include <cpu-features.h>
+
 #include "media/base/android/media_codec_util.h"
+#include "third_party/blink/public/web/web_memory_features.h"
 #endif
 
 #if BUILDFLAG(IS_MAC)
@@ -540,9 +543,10 @@ void RenderThreadImpl::Init() {
     int client_id = 0;
     CHECK(base::StringToInt(
         command_line.GetSwitchValueASCII(switches::kGpuClientId), &client_id));
-    gpu_ = viz::Gpu::Create(std::move(remote_gpu), GetIOTaskRunner(), client_id,
-                            std::move(initial_gpu_channel),
-                            std::move(gpu_channel_established_callback));
+    gpu_ = viz::Gpu::CreateWithMessagePipe(
+        std::move(remote_gpu), GetIOTaskRunner(), client_id,
+        viz::mojom::GpuClientType::kRenderer, std::move(initial_gpu_channel),
+        std::move(gpu_channel_established_callback));
   } else {
     // In the standard path, we create a new pipe and ask the browser to
     // connect it on demand.
@@ -911,6 +915,11 @@ void RenderThreadImpl::RegisterSchemes() {
     WebSecurityPolicy::RegisterURLSchemeAsCodeCacheWithHashing(chrome_scheme);
     WebSecurityPolicy::RegisterURLSchemeAsCodeCacheWithHashing(
         chrome_untrusted_scheme);
+  }
+  for (const std::string& scheme :
+       blink::CommonSchemeRegistry::CodeCacheAllowedSchemes()) {
+    WebSecurityPolicy::RegisterURLSchemeAsCodeCacheWithHashing(
+        WebString::FromAscii(scheme));
   }
 
   if (base::FeatureList::IsEnabled(features::kWebUIBundledCodeCache)) {
@@ -1680,6 +1689,9 @@ void RenderThreadImpl::OnRendererHidden() {
   }
 
   blink_isolates_pressure_listener_.OnRendererHidden();
+#if BUILDFLAG(IS_ANDROID)
+  blink::WebMemoryFeatures::SetRendererVisible(false);
+#endif
 }
 
 void RenderThreadImpl::OnRendererVisible() {
@@ -1689,6 +1701,9 @@ void RenderThreadImpl::OnRendererVisible() {
         base::Process::Priority::kUserBlocking);
   }
   blink_isolates_pressure_listener_.OnRendererVisible();
+#if BUILDFLAG(IS_ANDROID)
+  blink::WebMemoryFeatures::SetRendererVisible(true);
+#endif
 }
 
 bool RenderThreadImpl::RendererIsBackgrounded() const {

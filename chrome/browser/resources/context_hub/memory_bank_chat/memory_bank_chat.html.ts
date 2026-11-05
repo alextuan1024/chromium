@@ -9,6 +9,7 @@ import {ChatRole} from '../context_hub.mojom-webui.js';
 import type {MemoryBankChatElement} from './memory_bank_chat.js';
 
 export function getHtml(this: MemoryBankChatElement) {
+  // clang-format off
   return html`
     <main id="memory-bank-chat-view" class="chat-container">
       <div class="chat-header">
@@ -30,6 +31,36 @@ export function getHtml(this: MemoryBankChatElement) {
           <div class="message-bubble ${
               msg.role === ChatRole.kUser ? 'user' : 'assistant'}">
             <div class="message-content">${msg.content}</div>
+            ${msg.references && msg.references.length > 0 ? html`
+              <div class="references-section">
+                <span class="references-label">From:</span>
+                <div class="references-list">
+                  ${msg.references.map(ref => html`
+                    <a class="${ref.imageUrl ?
+                        'reference-image-row' : 'reference-link'}"
+                        href="${ref.url}"
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        title="${ref.title}">
+                      ${ref.imageUrl ? html`
+                        <img is="cr-auto-img" class="reference-image-thumb"
+                            auto-src="${ref.imageUrl}" alt="">
+                        <div class="reference-image-meta">
+                          <span class="reference-image-title">
+                            ${ref.title}
+                          </span>
+                          <!-- TODO(crbug.com/558572977): Use internationalized
+                               strings once GRD strings are added. -->
+                          <span class="reference-image-subtitle">
+                            Saved image
+                          </span>
+                        </div>
+                      ` : html`<span>${ref.title}</span>`}
+                    </a>
+                  `)}
+                </div>
+              </div>
+            ` : ''}
           </div>
         `)}
         ${
@@ -136,4 +167,5 @@ export function getHtml(this: MemoryBankChatElement) {
       </div>
     </main>
   `;
+  // clang-format on
 }

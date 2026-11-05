@@ -9,15 +9,23 @@
 
 #import "ios/chrome/browser/ai_prototyping/ttc/ui/ttc_mutator.h"
 
+class TTCKeyedService;
 @protocol TTCConsumer;
 
-// Mediator driving the TalkToChrome microphone input debug UI.
+// Mediator driving the TTC Session Journal UI by bridging `TTCKeyedService`
+// journal events to the consumer.
 @interface TTCMediator : NSObject <TTCMutator>
 
-// Consumer receiving updates from the mediator.
+// Consumer receiving journal updates from the mediator.
 @property(nonatomic, weak) id<TTCConsumer> consumer;
 
-// Disconnects active state observations and clears references.
+// Designated initializer injecting the profile's TTC keyed service.
+- (instancetype)initWithTTCService:(TTCKeyedService*)ttcService
+    NS_DESIGNATED_INITIALIZER;
+
+- (instancetype)init NS_UNAVAILABLE;
+
+// Disconnects active observations and cleans up references.
 - (void)disconnect;
 
 @end

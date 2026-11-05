@@ -33,10 +33,6 @@
 #include "third_party/blink/public/common/storage_key/storage_key.h"
 #include "third_party/blink/public/mojom/quota/quota_types.mojom-shared.h"
 
-namespace base {
-class Clock;
-}
-
 namespace sql {
 class Database;
 class MetaTable;
@@ -46,20 +42,6 @@ class Statement;
 namespace storage {
 
 class SpecialStoragePolicy;
-
-// These values are logged to UMA. Entries should not be renumbered and numeric
-// values should never be reused. Please keep in sync with "DatabaseResetReason"
-// in tools/metrics/histograms/enums.xml.
-enum class DatabaseResetReason {
-  kOpenDatabase = 0,
-  kOpenInMemoryDatabase = 1,
-  kCreateSchema = 2,
-  kDatabaseMigration = 3,
-  kDatabaseVersionTooNew = 4,
-  kInitMetaTable = 5,
-  kCreateDirectory = 6,
-  kMaxValue = kCreateDirectory
-};
 
 // Stores all quota managed origin bucket data and metadata.
 //
@@ -231,9 +213,6 @@ class COMPONENT_EXPORT(STORAGE_BROWSER) QuotaDatabase {
   // Manually disable database to test database error scenarios for testing.
   void SetDisabledForTesting(bool disable);
 
-  static base::Time GetNow();
-  static void SetClockForTesting(const base::Clock* clock);
-
   void SetAlreadyEvictedStaleStorageForTesting(
       bool already_evicted_stale_storage);
 
@@ -262,7 +241,6 @@ class COMPONENT_EXPORT(STORAGE_BROWSER) QuotaDatabase {
 
   QuotaError EnsureOpened();
   void OnSqliteError(int sqlite_error_code, sql::Statement* statement);
-  bool MoveLegacyDatabase();
   bool OpenDatabase();
   bool EnsureDatabaseVersion();
   bool ResetStorage();
@@ -286,7 +264,6 @@ class COMPONENT_EXPORT(STORAGE_BROWSER) QuotaDatabase {
 
   const std::unique_ptr<StorageDirectory> storage_directory_;
   const base::FilePath db_file_path_;
-  const base::FilePath legacy_db_file_path_;
 
   std::unique_ptr<sql::Database> db_ GUARDED_BY_CONTEXT(sequence_checker_);
   // The long-running transaction that batches writes between two commits.
@@ -319,7 +296,7 @@ class COMPONENT_EXPORT(STORAGE_BROWSER) QuotaDatabase {
   // We need to delay evicting stale buckets until after any session
   // restore has taken place, otherwise we might fail to record current usage.
   // See crbug.com/40281870 for more info.
-  base::Time evict_stale_buckets_after_{GetNow() + base::Minutes(1)};
+  base::Time evict_stale_buckets_after_{base::Time::Now() + base::Minutes(1)};
 
   // We only need to evict stale storage once per profile load. Unlike
   // expired storage, there is no contract with the site to evict storage

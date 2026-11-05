@@ -5,6 +5,7 @@
 #include "components/autofill/content/renderer/form_autofill_util.h"
 
 #include <algorithm>
+#include <array>
 #include <limits>
 #include <map>
 #include <memory>
@@ -73,6 +74,7 @@
 #include "third_party/blink/public/web/web_remote_frame.h"
 #include "third_party/blink/public/web/web_select_element.h"
 #include "third_party/re2/src/re2/re2.h"
+#include "url/gurl.h"
 
 using blink::WebAutofillState;
 using blink::WebDocument;
@@ -109,8 +111,8 @@ constexpr size_t kMaxShadowLevelsUp = 2;
 // on analysis of real forms and their buttons.
 // TODO(crbug.com/41429204): Consider to add more features (e.g. non-English
 // features).
-const char* const kButtonFeatures[] = {"button", "btn", "submit",
-                                       "boton" /* "button" in Spanish */};
+constexpr auto kButtonFeatures = std::to_array<std::string_view>(
+    {"button", "btn", "submit", "boton" /* "button" in Spanish */});
 
 // Number of form neighbor nodes to traverse in search of four digit
 // combinations on the webpage.
@@ -207,8 +209,11 @@ bool IsAdmissibleUrl(const blink::WebURL& url) {
       url.ProtocolIs("data")) {
     return true;
   }
-  if (url.ProtocolIs("about") && GURL(url).IsAboutSrcdoc()) {
-    return true;
+  if (url.ProtocolIs("about")) {
+    GURL gurl(url);
+    if (gurl.IsAboutBlank() || gurl.IsAboutSrcdoc()) {
+      return true;
+    }
   }
   return false;
 }
@@ -537,15 +542,17 @@ void AddButtonTitleToList(std::u16string title,
 
 // Returns true iff |attribute| contains one of |kButtonFeatures|.
 bool AttributeHasButtonFeature(const WebString& attribute) {
-  if (attribute.IsNull())
+  if (attribute.IsNull()) {
     return false;
+  }
   std::string value = attribute.Utf8();
   for (char& c : value) {
-    c = ::tolower(c);
+    c = base::ToLowerASCII(c);
   }
-  for (const char* const button_feature : kButtonFeatures) {
-    if (value.find(button_feature, 0) != std::string::npos)
+  for (const std::string_view button_feature : kButtonFeatures) {
+    if (value.contains(button_feature)) {
       return true;
+    }
   }
   return false;
 }
@@ -1090,9 +1097,9 @@ void RemoveDuplicatesAndLimitTotalLength(ButtonTitleList* result) {
   int total_length = 0;
   for (const auto& immutable_title : *result) {
     auto title = immutable_title;
-    if (already_added.find(title) != already_added.end())
+    if (!already_added.insert(title).second) {
       continue;
-    already_added.insert(title);
+    }
 
     total_length += title.first.length();
     if (total_length > kMaxLengthForAllButtonTitles) {
@@ -1554,7 +1561,8 @@ bool IsAdIframe(const WebElement& element) {
 //
 // Note that WebElement::BoundsInWidget(), WebElement::GetClientSize(),
 // and WebElement::GetScrollSize() include the padding but do not include the
-// border and margin. BoundsInWidget() additionally scales the
+// border and margin. For text fields, GetClientSize() and GetScrollSize()
+// also leave out the inline padding. BoundsInWidget() additionally scales the
 // dimensions according to the zoom factor.
 //
 // It seems that invisible fields on websites typically have dimensions between
@@ -1710,9 +1718,10 @@ bool IsRelevantChildFrame(const WebElement& element) {
           IsVisibleIframe(element));
 }
 
-// Returns the <iframe> elements that are associated with `form_element`.
+// Returns the <iframe> elements that are owned by `form_element`.
 //
-// An iframe is owned by `form_element` iff it is in the light DOM and
+// An iframe is owned by `form_element` iff it is accessible, in the light DOM,
+// and
 // - if `form_element` is non-null:
 //   `form_element` is the iframe's outermost <form> ancestor
 // - if `form_element` is null:
@@ -1720,6 +1729,7 @@ bool IsRelevantChildFrame(const WebElement& element) {
 //
 // The restriction to the light DOM is only because Blink currently does not
 // provide a shadow-including way of listing iframes.
+// See crbug.com/569934654#comment9 for possible fixes.
 std::vector<WebElement> GetIframeElements(const WebDocument& document,
                                           const WebFormElement& form_element) {
   std::vector<WebElement> relevant_iframes;
@@ -1727,7 +1737,8 @@ std::vector<WebElement> GetIframeElements(const WebDocument& document,
       document.GetElementsByHTMLTagName(GetWebString<kIframe>());
   for (WebElement iframe = iframes.FirstItem(); iframe;
        iframe = iframes.NextItem()) {
-    if (GetOutermostAncestorFormElement(iframe) == form_element &&
+    if (IsAccessible(iframe) &&
+        GetOutermostAncestorFormElement(iframe) == form_element &&
         IsRelevantChildFrame(iframe)) {
       relevant_iframes.push_back(iframe);
     }
@@ -1836,10 +1847,9 @@ std::vector<SelectOption> GetDataListOptions(const WebInputElement& element) {
   return options;
 }
 
-// Returns whether `node` has a shadow-tree-including ancestor that is a
-// `<form>`.
-bool HasFormAncestor(WebNode node) {
-  node = node.ParentOrShadowHostNode();
+// Returns whether `node` is a `<form>` itself or has a shadow-tree-including
+// ancestor that is a `<form>`.
+bool HasFormInclusiveAncestor(WebNode node) {
   while (node) {
     if (HasTagName<kForm>(node)) {
       return true;
@@ -1849,7 +1859,7 @@ bool HasFormAncestor(WebNode node) {
   return false;
 }
 
-// Populates out a FormFieldData object from a given autofillable
+// Populates a FormFieldData object from a given autofillable
 // WebFormControlElement. Field properties are copied from |field_data_manager|,
 // if the argument is not null and has entry for |element| (see properties in
 // FieldPropertiesFlags).
@@ -1860,7 +1870,6 @@ void WebFormControlElementToFormField(
     FormFieldData* field) {
   DCHECK(field);
   DCHECK(element);
-  DCHECK(element.GetDocument().GetFrame());
   DCHECK(IsAccessible(element));
   DCHECK(IsAutofillableElement(element));
 
@@ -2006,10 +2015,14 @@ void WebFormControlElementToFormField(
     }
   }
 
+  // `BoundsInWidget()` triggers style and layout updates, which may
+  // synchronously detach the frame and destroy the `content::RenderFrame`.
+  // Evaluate it before retrieving the frame.
+  gfx::Rect bounds = element.BoundsInWidget();
   if (auto* local_frame = element.GetDocument().GetFrame()) {
     if (auto* render_frame = content::RenderFrame::FromWebFrame(local_frame)) {
-      field->set_bounds(gfx::RectF(
-          render_frame->ConvertViewportToWindow(element.BoundsInWidget())));
+      field->set_bounds(
+          gfx::RectF(render_frame->ConvertViewportToWindow(bounds)));
     }
   }
 
@@ -2043,15 +2056,16 @@ bool IsLikelyCaptchaIframe(const WebElement& element) {
 
 std::optional<FormData> ExtractFormDataWithFieldsAndFrames(
     const WebDocument& document,
-    const WebFormElement& form_element,
+    FormRendererId form_id,
     const FieldDataManager& field_data_manager,
     ButtonTitlesCache* button_titles_cache) {
-  LOG_IF(ERROR, form_element && form_element.GetDocument() != document)
-      << "<form> belongs to a different document";
-
-  if (form_element && !IsAccessible(form_element)) {
+  WebFormElement form_element = GetFormByRendererId(form_id);
+  if (form_id.is_null() != form_element.IsNull()) {
     return std::nullopt;
   }
+
+  LOG_IF(ERROR, form_element && form_element.GetDocument() != document)
+      << "<form> belongs to a different document";
 
   if (!IsAdmissibleUrl(document.Url())) {
     return std::nullopt;
@@ -2142,10 +2156,15 @@ std::optional<FormData> ExtractFormDataWithFieldsAndFrames(
     } else if (iframe && iframe->IsWebRemoteFrame()) {
       child_frame.token = RemoteFrameToken(
           iframe->ToWebRemoteFrame()->GetRemoteFrameToken().value());
-    } else {
-      NOTREACHED();
     }
   }
+  // `WebFormControlElementToFormField()` triggers layout via
+  // `BoundsInWidget()`, which may synchronously detach frames that were alive
+  // when `iframe_elements` was filtered above.
+  std::erase_if(child_frames, [](const FrameTokenWithPredecessor& child_frame) {
+    return std::visit([](const auto& token) { return token.is_empty(); },
+                      child_frame.token);
+  });
 
   FormData form;
   if (!form_element) {
@@ -2156,7 +2175,7 @@ std::optional<FormData> ExtractFormDataWithFieldsAndFrames(
     form.set_name(GetFormIdentifier(form_element));
     form.set_id_attribute(form_element.GetIdAttribute().Utf16());
     form.set_name_attribute(GetAttribute<kName>(form_element).Utf16());
-    form.set_renderer_id(GetFormRendererId(form_element));
+    form.set_renderer_id(form_id);
     form.set_action(GetCanonicalActionForForm(form_element));
     if (!form.action().is_valid()) {
       form.set_action(blink::WebStringToGURL(form_element.Action()));
@@ -2224,13 +2243,13 @@ std::string GetAutocompleteAttribute(const WebElement& element) {
 
 std::optional<FormData> ExtractFormData(
     const WebDocument& document,
-    const WebFormElement& form_element,
+    FormRendererId form_id,
     const FieldDataManager& field_data_manager,
     const CallTimerState& timer_state,
     ButtonTitlesCache* button_titles_cache) {
   ScopedCallTimer timer("ExtractFormData", timer_state);
   return ExtractFormDataWithFieldsAndFrames(
-      document, form_element, field_data_manager, button_titles_cache);
+      document, form_id, field_data_manager, button_titles_cache);
 }
 
 GURL GetCanonicalActionForForm(const WebFormElement& form) {
@@ -2263,9 +2282,14 @@ std::optional<FormControlType> GetAutofillFormControlType(
   if (!element) {
     return std::nullopt;
   }
+  return GetAutofillFormControlType(element.FormControlTypeForAutofill());
+}
+
+std::optional<FormControlType> GetAutofillFormControlType(
+    blink::mojom::FormControlType type) {
   // Note that adding a new field type here automatically makes
   // IsAutofillableElement() return true.
-  switch (element.FormControlTypeForAutofill()) {
+  switch (type) {
     case blink::mojom::FormControlType::kInputEmail:
       return FormControlType::kInputEmail;
     case blink::mojom::FormControlType::kInputMonth:
@@ -2377,7 +2401,7 @@ std::vector<WebFormControlElement> GetOwnedFormControls(
     // A form control element may be unassociated inside its Shadow DOM, but
     // owned (in the Autofill sense) by a <form> containing the shadow host.
     std::erase_if(form_controls, [](const WebFormControlElement& e) {
-      return e.OwnerShadowHost() && HasFormAncestor(e);
+      return HasFormInclusiveAncestor(e.OwnerShadowHost());
     });
   }
   std::erase_if(form_controls, std::not_fn(&IsAccessible));
@@ -2406,9 +2430,14 @@ std::optional<FormAndField> FindFormAndFieldForFormControlElement(
   }
 
   WebDocument document = element.GetDocument();
+  if (!IsAdmissibleUrl(document.Url())) {
+    return std::nullopt;
+  }
+
   WebFormElement owning_form = element.GetOwningFormForAutofill();
+  FormRendererId owning_form_id = GetFormRendererId(owning_form);
   std::optional<FormData> form =
-      form_cache.GetOrExtractForm(document, owning_form, field_data_manager,
+      form_cache.GetOrExtractForm(document, owning_form_id, field_data_manager,
                                   timer_state, button_titles_cache);
   const bool extract_form_data_succeeded = form.has_value();
 
@@ -2419,7 +2448,7 @@ std::optional<FormAndField> FindFormAndFieldForFormControlElement(
     WebFormControlElementToFormField(owning_form, element,
                                      /*field_data_manager=*/nullptr, &field);
     form.emplace();
-    form->set_renderer_id(GetFormRendererId(owning_form));
+    form->set_renderer_id(owning_form_id);
     form->set_fields({std::move(field)});
   }
 
@@ -2532,10 +2561,14 @@ std::optional<FormData> FindFormForContentEditable(
   field.set_autocomplete_attribute(GetAutocompleteAttribute(content_editable));
   field.set_parsed_autocomplete(
       ParseAutocompleteAttribute(field.autocomplete_attribute()));
+  // `BoundsInWidget()` triggers style and layout updates, which may
+  // synchronously detach the frame and destroy the `content::RenderFrame`.
+  // Evaluate it before retrieving the frame.
+  gfx::Rect bounds = content_editable.BoundsInWidget();
   if (auto* local_frame = document.GetFrame()) {
     if (auto* render_frame = content::RenderFrame::FromWebFrame(local_frame)) {
-      field.set_bounds(gfx::RectF(render_frame->ConvertViewportToWindow(
-          content_editable.BoundsInWidget())));
+      field.set_bounds(
+          gfx::RectF(render_frame->ConvertViewportToWindow(bounds)));
     }
   }
   if (base::EqualsCaseInsensitiveASCII(

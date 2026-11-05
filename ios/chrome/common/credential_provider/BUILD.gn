@@ -37,6 +37,8 @@ source_set("credential_provider") {
     "user_defaults_credential_store.h",
     "user_defaults_credential_store.mm",
   ]
+  public_deps =
+      [ "//components/webauthn/core/browser/device_authorization:types" ]
   deps = [
     ":ui",
     "//base",
@@ -141,6 +143,16 @@ source_set("net_util") {
   frameworks = [ "Foundation.framework" ]
 }
 
+source_set("test_support") {
+  testonly = true
+  sources = [
+    "archivable_credential_test_util.h",
+    "archivable_credential_test_util.mm",
+  ]
+  deps = [ ":credential_provider" ]
+  frameworks = [ "Foundation.framework" ]
+}
+
 source_set("unit_tests") {
   testonly = true
   sources = [
@@ -157,8 +169,10 @@ source_set("unit_tests") {
   deps = [
     ":credential_provider",
     ":net_util",
+    ":test_support",
     "//base/test:test_support",
     "//components/sync/protocol",
+    "//components/webauthn/core/browser/device_authorization:types",
     "//components/webauthn/core/browser/device_authorization/proto",
     "//net/base:registry_controlled_domains",
     "//testing/gtest",

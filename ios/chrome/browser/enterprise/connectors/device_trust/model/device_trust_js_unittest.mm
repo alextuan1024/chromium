@@ -61,8 +61,8 @@ NSString* const kMessageHandlerName = @"DeviceTrustMessageHandler";
 
 @end
 
-// Base fixture that loads the Device Trust script but does not install the
-// public API onto `window`.
+// Base fixture that registers the native message handler but does not inject
+// the Device Trust script, as on pages that are not allowlisted.
 class DeviceTrustJsTest : public web::JavascriptTest {
  public:
   DeviceTrustJsTest()
@@ -78,7 +78,9 @@ class DeviceTrustJsTest : public web::JavascriptTest {
     web::JavascriptTest::SetUp();
 
     AddGCrWebScript();
-    AddUserScript(@"device_trust");
+    if (ShouldInjectDeviceTrustScript()) {
+      AddUserScript(@"device_trust");
+    }
     ASSERT_TRUE(LoadHtml(@"<html><body><script>"
                          @"window.testResult = null;"
                          @"window.testError = null;"
@@ -86,11 +88,14 @@ class DeviceTrustJsTest : public web::JavascriptTest {
                          @"</script></body></html>"));
   }
 
-  // Invokes the gCrWeb internal setup method to install the public API.
-  void SetupDeviceTrustAPI() {
-    ASSERT_TRUE([web::test::ExecuteJavaScript(
-        web_view(), @"__gCrWeb.callFunctionInGcrWeb('deviceTrust', "
-                    @"'setupDeviceTrustAPI', []); true;") boolValue]);
+  // Whether the Device Trust script is added to the web view, as the browser
+  // does on demand for allowlisted main frames.
+  virtual bool ShouldInjectDeviceTrustScript() const { return false; }
+
+  // Runs the Device Trust script again in the current document.
+  void RunDeviceTrustScriptAgain() {
+    web::test::ExecuteJavaScriptInWebView(
+        web_view(), web::test::GetPageScript(@"device_trust"));
   }
 
   // Waits for the JS-to-Native bridge to receive a message.
@@ -123,20 +128,17 @@ class DeviceTrustJsTest : public web::JavascriptTest {
   DeviceTrustReplyMessageHandler* handler_;
 };
 
-// Verifies that window.chrome.enterprise.deviceTrust is not exposed before
-// SetupDeviceTrustAPI() is called.
-TEST_F(DeviceTrustJsTest, APINotInstalledBeforeSetup) {
+// Verifies that window.chrome.enterprise.deviceTrust is not exposed when the
+// script has not been injected.
+TEST_F(DeviceTrustJsTest, APINotInstalledWithoutScript) {
   EXPECT_NSEQ(@NO,
               GetJsVar(@"Boolean(window.chrome?.enterprise?.deviceTrust)"));
 }
 
-// Test fixture where the Device Trust API is explicitly installed.
+// Test fixture where the Device Trust script is injected, installing the API.
 class DeviceTrustJsAPIEnabledTest : public DeviceTrustJsTest {
  protected:
-  void SetUp() override {
-    DeviceTrustJsTest::SetUp();
-    SetupDeviceTrustAPI();
-  }
+  bool ShouldInjectDeviceTrustScript() const override { return true; }
 };
 
 // Verifies that the API object is frozen and cannot be mutated.
@@ -199,24 +201,6 @@ TEST_F(DeviceTrustJsAPIEnabledTest, RejectsTooLargeChallenge) {
   EXPECT_EQ(handler_.receivedMessageCount, 0u);
 }
 
-// Verifies that concurrency limits (max 3 concurrent requests) are strictly
-// enforced.
-TEST_F(DeviceTrustJsAPIEnabledTest, EnforcesConcurrencyLimits) {
-  ASSERT_TRUE([web::test::ExecuteJavaScript(
-      web_view(),
-      @"window.chrome.enterprise.deviceTrust.getAttestation('challenge_1');"
-      @"window.chrome.enterprise.deviceTrust.getAttestation('challenge_2');"
-      @"window.chrome.enterprise.deviceTrust.getAttestation('challenge_3');"
-      @"window.chrome.enterprise.deviceTrust.getAttestation('challenge_4')."
-      @"catch(e => "
-      @"window.testError = e.code);"
-      @"true;") boolValue]);
-
-  EXPECT_TRUE(WaitForMessageCount(3));
-  EXPECT_NSEQ(@"TOO_MANY_REQUESTS", GetJsVar(@"window.testError"));
-  EXPECT_EQ(handler_.receivedMessageCount, 3u);
-}
-
 // Verifies that a valid challenge resolves with the signed payload returned
 // from native code.
 TEST_F(DeviceTrustJsAPIEnabledTest, ResolvesSuccessfully) {
@@ -234,7 +218,7 @@ TEST_F(DeviceTrustJsAPIEnabledTest, ResolvesSuccessfully) {
 }
 
 // Verifies that native error replies reject the promise with structured error
-// code and message.
+// code and message, and no detail when none is provided.
 TEST_F(DeviceTrustJsAPIEnabledTest, RejectsFromNative) {
   ASSERT_TRUE([web::test::ExecuteJavaScript(
       web_view(),
@@ -244,6 +228,7 @@ TEST_F(DeviceTrustJsAPIEnabledTest, RejectsFromNative) {
       @"  window.testError = e.code; "
       @"  window.testErrorMessage = e.message; "
       @"  window.testErrorName = e.name; "
+      @"  window.testErrorDetailType = typeof e.detail; "
       @"});"
       @"true;") boolValue]);
 
@@ -257,6 +242,30 @@ TEST_F(DeviceTrustJsAPIEnabledTest, RejectsFromNative) {
   EXPECT_NSEQ(@"CUSTOM_ERR", GetJsVar(@"window.testError"));
   EXPECT_NSEQ(@"Native failed", GetJsVar(@"window.testErrorMessage"));
   EXPECT_NSEQ(@"DeviceTrustError", GetJsVar(@"window.testErrorName"));
+  EXPECT_NSEQ(@"undefined", GetJsVar(@"window.testErrorDetailType"));
+}
+
+// Verifies that a native error detail is exposed on the rejection error.
+TEST_F(DeviceTrustJsAPIEnabledTest, RejectsFromNativeWithDetail) {
+  ASSERT_TRUE([web::test::ExecuteJavaScript(
+      web_view(),
+      @"window.chrome.enterprise.deviceTrust.getAttestation('valid_challenge')."
+      @"catch(e => { "
+      @"  window.testError = e.code; "
+      @"  window.testErrorDetail = e.detail; "
+      @"});"
+      @"true;") boolValue]);
+
+  ASSERT_TRUE(WaitForMessageCount(1));
+  [handler_ replyToNextMessage:@{
+    @"errorCode" : @"INTERNAL_ERROR",
+    @"errorMessage" : @"Device attestation is not available.",
+    @"errorDetail" : @"bad_challenge_source",
+  }];
+
+  EXPECT_TRUE(WaitForJsString(@"window.testError"));
+  EXPECT_NSEQ(@"INTERNAL_ERROR", GetJsVar(@"window.testError"));
+  EXPECT_NSEQ(@"bad_challenge_source", GetJsVar(@"window.testErrorDetail"));
 }
 
 // Verifies that default error codes and messages are assigned if native reply
@@ -311,16 +320,20 @@ TEST_F(DeviceTrustJsAPIEnabledTest, RejectsNativeBridgeError) {
   EXPECT_NSEQ(@"INTERNAL_ERROR", GetJsVar(@"window.testError"));
 }
 
-// Verifies that requests time out after the configured timeout period.
+// Verifies that native ATTESTATION_TIMEOUT error replies reject the promise
+// with ATTESTATION_TIMEOUT.
 TEST_F(DeviceTrustJsAPIEnabledTest, TimeoutBehavior) {
   ASSERT_TRUE([web::test::ExecuteJavaScript(
       web_view(),
-      @"const originalSetTimeout = window.setTimeout;"
-      @"window.setTimeout = (fn, delay) => originalSetTimeout(fn, 0);"
       @"window.chrome.enterprise.deviceTrust.getAttestation('valid_challenge')."
       @"catch(e => window.testError = e.code);"
-      @"window.setTimeout = originalSetTimeout;"
       @"true;") boolValue]);
+
+  ASSERT_TRUE(WaitForMessageCount(1));
+  [handler_ replyToNextMessage:@{
+    @"errorCode" : @"ATTESTATION_TIMEOUT",
+    @"errorMessage" : @"Timed out waiting for device attestation response.",
+  }];
 
   EXPECT_TRUE(WaitForJsString(@"window.testError"));
   EXPECT_NSEQ(@"ATTESTATION_TIMEOUT", GetJsVar(@"window.testError"));
@@ -413,15 +426,15 @@ TEST_F(DeviceTrustJsAPIEnabledTest, PreventsTamperingAndOverriding) {
   EXPECT_NSEQ(@"secure_challenge", GetLastMessage()[@"challengeRequest"]);
 }
 
-// Verifies that calling SetupDeviceTrustAPI multiple times is idempotent
-// and preserves the exact same API object reference.
-TEST_F(DeviceTrustJsAPIEnabledTest, SetupIsIdempotent) {
+// Verifies that running the script more than once in the same document is
+// idempotent and preserves the exact same API object reference.
+TEST_F(DeviceTrustJsAPIEnabledTest, RepeatedExecutionIsIdempotent) {
   ASSERT_TRUE([web::test::ExecuteJavaScript(
       web_view(),
       @"window.originalDeviceTrustAPI = window.chrome.enterprise.deviceTrust;"
       @"true;") boolValue]);
 
-  SetupDeviceTrustAPI();
+  RunDeviceTrustScriptAgain();
 
   EXPECT_NSEQ(@YES, GetJsVar(@"window.originalDeviceTrustAPI === "
                              @"window.chrome.enterprise.deviceTrust"));

@@ -13,11 +13,13 @@
 #include "base/test/bind.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/test/test_future.h"
+#include "chrome/browser/glic/public/glic_enabling.h"
 #include "chrome/browser/glic/public/glic_invoke_options.h"
-#include "chrome/browser/signin/signin_ui_delegate.h"
+#include "chrome/browser/signin/mock_signin_ui_delegate.h"
 #include "chrome/browser/signin/signin_ui_util.h"
 #include "chrome/browser/skills/skills_service_factory.h"
 #include "chrome/browser/skills/skills_ui_tab_controller_interface.h"
+#include "chrome/browser/ui/browser_window/test/mock_browser_window_interface.h"
 #include "chrome/browser/ui/webui/skills/skills_dialog_delegate.h"
 #include "chrome/test/base/chrome_render_view_host_test_harness.h"
 #include "components/prefs/pref_service.h"
@@ -39,6 +41,7 @@
 namespace skills {
 namespace {
 
+using signin_ui_util::MockSigninUiDelegate;
 using ::testing::_;
 using ::testing::NiceMock;
 using ::testing::Return;
@@ -76,32 +79,6 @@ class MockSkillsDialogDelegate : public SkillsDialogDelegate {
               (override));
 };
 
-#if BUILDFLAG(ENABLE_DICE_SUPPORT)
-class MockSigninUiDelegate : public signin_ui_util::SigninUiDelegate {
- public:
-  MOCK_METHOD(void,
-              ShowSigninUI,
-              (Profile*,
-               bool,
-               signin_metrics::AccessPoint,
-               signin_metrics::PromoAction,
-               const std::string&),
-              (override));
-  MOCK_METHOD(void,
-              ShowReauthUI,
-              (Profile*,
-               const std::string&,
-               bool,
-               signin_metrics::AccessPoint,
-               signin_metrics::PromoAction),
-              (override));
-  MOCK_METHOD(void,
-              ShowCrossDeviceSigninQrBubble,
-              (BrowserWindowInterface*, GURL, base::OnceClosure),
-              (override));
-};
-#endif
-
 class MockSkillsUiTabController : public SkillsUiTabControllerInterface {
  public:
   explicit MockSkillsUiTabController(tabs::TabInterface& tab)
@@ -135,6 +112,7 @@ class SkillsPageHandlerV2Test : public ChromeRenderViewHostTestHarness {
 
   void SetUp() override {
     ChromeRenderViewHostTestHarness::SetUp();
+    scoped_glic_bypass_.emplace();
 
     SkillsServiceFactory::GetInstance()->SetTestingFactory(
         profile(),
@@ -150,6 +128,7 @@ class SkillsPageHandlerV2Test : public ChromeRenderViewHostTestHarness {
 
   void TearDown() override {
     handler_.reset();
+    scoped_glic_bypass_.reset();
     ChromeRenderViewHostTestHarness::TearDown();
   }
 
@@ -159,6 +138,8 @@ class SkillsPageHandlerV2Test : public ChromeRenderViewHostTestHarness {
   }
 
   base::test::ScopedFeatureList feature_list_;
+  std::optional<glic::GlicEnabling::ScopedBypassEnablementChecksForTesting>
+      scoped_glic_bypass_;
   signin::IdentityTestEnvironment identity_test_env_;
   mojo::Remote<::skills::mojom::SkillsPageHandler> remote_handler_;
   std::unique_ptr<SkillsPageHandlerV2> handler_;
@@ -219,8 +200,60 @@ TEST_F(SkillsPageHandlerV2Test, SendPrompt) {
   remote_handler_.FlushForTesting();
 }
 
+// In the dialog the WebUI is hosted by a views::WebView rather than a tab, so
+// the handler must fall back to the browser's active tab.
+TEST_F(SkillsPageHandlerV2Test, SendPrompt_FromDialog) {
+  tabs::MockTabInterface mock_tab;
+  ::ui::UnownedUserDataHost tab_user_data_host;
+  EXPECT_CALL(mock_tab, GetUnownedUserDataHost())
+      .WillRepeatedly(testing::ReturnRef(tab_user_data_host));
+
+  // Note: no tabs::TabLookupFromWebContents is registered, so the WebContents
+  // does not resolve to a tab.
+  NiceMock<MockBrowserWindowInterface> mock_browser_window;
+  ON_CALL(mock_browser_window, GetActiveTabInterface())
+      .WillByDefault(Return(&mock_tab));
+
+  MockSkillsDialogDelegate mock_delegate;
+  ON_CALL(mock_delegate, GetBrowserWindowInterface())
+      .WillByDefault(Return(&mock_browser_window));
+  base::WeakPtrFactory<SkillsDialogDelegate> weak_factory(&mock_delegate);
+
+  MockSkillsUiTabController mock_tab_controller(mock_tab);
+  EXPECT_CALL(mock_tab_controller, SendPrompt("test_prompt")).Times(1);
+
+  mojo::Remote<::skills::mojom::SkillsPageHandler> remote_handler;
+  auto handler = std::make_unique<SkillsPageHandlerV2>(
+      remote_handler.BindNewPipeAndPassReceiver(), profile(),
+      identity_test_env_.identity_manager(), web_contents(),
+      weak_factory.GetWeakPtr());
+
+  remote_handler->SendPrompt("test_prompt");
+  remote_handler.FlushForTesting();
+}
+
 TEST_F(SkillsPageHandlerV2Test, InvokeSkill_NoOpWhenDisabled) {
   profile()->GetPrefs()->SetBoolean(prefs::kChromeSkillsEnabled, false);
+  tabs::MockTabInterface mock_tab;
+  ::ui::UnownedUserDataHost user_data_host;
+  EXPECT_CALL(mock_tab, GetUnownedUserDataHost())
+      .WillRepeatedly(testing::ReturnRef(user_data_host));
+
+  tabs::TabLookupFromWebContents::CreateForWebContents(web_contents(),
+                                                       &mock_tab);
+
+  MockSkillsUiTabController mock_tab_controller(mock_tab);
+
+  EXPECT_CALL(mock_tab_controller,
+              InvokeSkill(testing::_, testing::_, testing::_, testing::_))
+      .Times(0);
+
+  remote_handler_->InvokeSkill("test_skill_id", "test_name", "test_icon");
+  remote_handler_.FlushForTesting();
+}
+
+TEST_F(SkillsPageHandlerV2Test, InvokeSkill_NoOpWhenGlicDisabled) {
+  scoped_glic_bypass_.reset();
   tabs::MockTabInterface mock_tab;
   ::ui::UnownedUserDataHost user_data_host;
   EXPECT_CALL(mock_tab, GetUnownedUserDataHost())
@@ -266,7 +299,7 @@ TEST_F(SkillsPageHandlerV2Test, SignInWithPrimaryAccount) {
 
   EXPECT_CALL(
       mock_signin_ui_delegate,
-      ShowReauthUI(profile(), "test@example.com", /*enable_sync=*/false,
+      ShowReauthUI(profile(), "test@example.com", /*enable_history_sync=*/false,
                    signin_metrics::AccessPoint::kSkills,
                    signin_metrics::PromoAction::PROMO_ACTION_NO_SIGNIN_PROMO));
 
@@ -280,7 +313,7 @@ TEST_F(SkillsPageHandlerV2Test, SignInWithoutPrimaryAccount) {
       signin_ui_util::SetSigninUiDelegateForTesting(&mock_signin_ui_delegate);
 
   EXPECT_CALL(mock_signin_ui_delegate,
-              ShowSigninUI(profile(), /*enable_sync=*/false,
+              ShowSigninUI(profile(), /*enable_history_sync=*/false,
                            signin_metrics::AccessPoint::kSkills,
                            signin_metrics::PromoAction::
                                PROMO_ACTION_NEW_ACCOUNT_NO_EXISTING_ACCOUNT,

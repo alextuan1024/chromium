@@ -40,6 +40,7 @@ import static org.chromium.chrome.browser.facilitated_payments.FacilitatedPaymen
 import static org.chromium.chrome.browser.facilitated_payments.FacilitatedPaymentsPaymentMethodsProperties.PixAccountLinkingPromptProperties.SETTINGS_LINK_CALLBACK;
 import static org.chromium.chrome.browser.facilitated_payments.FacilitatedPaymentsPaymentMethodsProperties.PixAccountLinkingPromptProperties.VIDEO_LINK_CALLBACK;
 import static org.chromium.chrome.browser.facilitated_payments.FacilitatedPaymentsPaymentMethodsProperties.ProgressScreenProperties.MESSAGE_TEXT;
+import static org.chromium.chrome.browser.facilitated_payments.FacilitatedPaymentsPaymentMethodsProperties.ProgressScreenProperties.SHOW_GPAY_ICON;
 import static org.chromium.chrome.browser.facilitated_payments.FacilitatedPaymentsPaymentMethodsProperties.SCREEN;
 import static org.chromium.chrome.browser.facilitated_payments.FacilitatedPaymentsPaymentMethodsProperties.SCREEN_VIEW_MODEL;
 import static org.chromium.chrome.browser.facilitated_payments.FacilitatedPaymentsPaymentMethodsProperties.SURVIVES_NAVIGATION;
@@ -120,6 +121,8 @@ import java.util.Set;
 class FacilitatedPaymentsPaymentMethodsMediator implements SnackbarController {
     static final String PIX_BANK_ACCOUNT_TRANSACTION_LIMIT = "500";
     static final int STRIKE_THRESHOLD_FOR_HARD_DECLINE = 2;
+    static final String DEFAULT_PIX_ACCOUNT_LINKING_VIDEO_URL =
+            "https://www.youtube.com/watch?v=zXMuvna_X4c";
 
     // This histogram name should be in sync with the one in
     // components/facilitated_payments/core/metrics/facilitated_payments_metrics.cc:LogPixFopSelected.
@@ -137,6 +140,10 @@ class FacilitatedPaymentsPaymentMethodsMediator implements SnackbarController {
     // components/facilitated_payments/core/metrics/facilitated_payments_metrics.cc:LogNonCardPaymentMethodsFopSelected.
     static final String PAYMENT_LINK_FOP_SELECTOR_TYPES_USER_ACTION_HISTOGRAM =
             "FacilitatedPayments.{PaymentLinkFopSelectorTypes}.FopSelector.UserAction";
+
+    @VisibleForTesting
+    static final String PIX_ACCOUNT_LINKING_VIDEO_LINK_CLICKED_HISTOGRAM =
+            "FacilitatedPayments.Pix.AccountLinking.VideoLinkClicked";
 
     private Context mContext;
     private PropertyModel mModel;
@@ -300,7 +307,14 @@ class FacilitatedPaymentsPaymentMethodsMediator implements SnackbarController {
                     case ProgressScreenType.ACCOUNT_LINKING -> "";
                     default -> "";
                 };
+        boolean showGpayIcon =
+                switch (type) {
+                    case ProgressScreenType.PAYMENT -> true;
+                    case ProgressScreenType.ACCOUNT_LINKING -> false;
+                    default -> false;
+                };
         mModel.get(SCREEN_VIEW_MODEL).set(MESSAGE_TEXT, progressText);
+        mModel.get(SCREEN_VIEW_MODEL).set(SHOW_GPAY_ICON, showGpayIcon);
         mModel.set(SURVIVES_NAVIGATION, false);
         mModel.set(VISIBLE_STATE, SHOWN);
     }
@@ -394,9 +408,11 @@ class FacilitatedPaymentsPaymentMethodsMediator implements SnackbarController {
                                     ChromeFeatureList.getFieldTrialParamByFeature(
                                             ChromeFeatureList.ENABLE_PIX_ACCOUNT_LINKING_NATIVE,
                                             "video_url_on_prompt");
-                            if (!TextUtils.isEmpty(videoUrl)) {
-                                openUrl(videoUrl);
+                            if (TextUtils.isEmpty(videoUrl)) {
+                                videoUrl = DEFAULT_PIX_ACCOUNT_LINKING_VIDEO_URL;
                             }
+                            openUrl(videoUrl);
+                            recordHistogramOnVideoLinkClicked();
                         });
         // Prevent the bottom sheet from closing during page navigations.
         mModel.set(SURVIVES_NAVIGATION, true);
@@ -774,6 +790,11 @@ class FacilitatedPaymentsPaymentMethodsMediator implements SnackbarController {
                 histogramName,
                 PaymentLinkFopSelectorAction.TURN_OFF_PAYMENT_PROMPT_LINK_CLICKED,
                 PaymentLinkFopSelectorAction.MAX_VALUE + 1);
+    }
+
+    private void recordHistogramOnVideoLinkClicked() {
+        RecordHistogram.recordBooleanHistogram(
+                PIX_ACCOUNT_LINKING_VIDEO_LINK_CLICKED_HISTOGRAM, true);
     }
 
     private String getEwalletFopSelectorUserActionHistogram(List<Ewallet> ewallets) {

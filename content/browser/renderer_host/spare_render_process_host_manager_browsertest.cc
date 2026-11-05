@@ -8,6 +8,7 @@
 
 #include "base/callback_list.h"
 #include "base/command_line.h"
+#include "base/memory/raw_ptr.h"
 #include "base/memory_coordinator/memory_coordinator_features.h"
 #include "base/memory_coordinator/utils.h"
 #include "base/test/metrics/histogram_tester.h"
@@ -605,6 +606,52 @@ class NonSpareRendererContentBrowserClient
     return false;
   }
 };
+
+// A ContentBrowserClient that doesn't let navigations in one browser context
+// use a spare.
+class NoSpareForBrowserContextContentBrowserClient
+    : public ContentBrowserTestContentBrowserClient {
+ public:
+  explicit NoSpareForBrowserContextContentBrowserClient(
+      BrowserContext* browser_context)
+      : browser_context_(browser_context) {}
+
+  bool CanBrowserContextUseSpareRenderProcessHost(
+      BrowserContext* browser_context) override {
+    return browser_context != browser_context_;
+  }
+
+ private:
+  raw_ptr<BrowserContext> browser_context_;
+};
+
+// Tests that no spare is warmed up for a browser context whose navigations
+// can't use a spare, and that the current spare is kept.
+IN_PROC_BROWSER_TEST_F(SpareRenderProcessHostManagerTest,
+                       NoWarmupWhenSpareRefusedByEmbedder) {
+  base::ScopedAllowBlockingForTesting allow_blocking;
+  auto other_browser_context = std::make_unique<ShellBrowserContext>(true);
+  NoSpareForBrowserContextContentBrowserClient browser_client(
+      other_browser_context.get());
+  auto& spare_manager = SpareRenderProcessHostManagerImpl::Get();
+  spare_manager.WarmupSpare(browser_context());
+  ASSERT_EQ(spare_manager.GetSpares().size(), 1u);
+  RenderProcessHost* spare = spare_manager.GetSpares()[0];
+  // The launcher thread keeps using the ContentBrowserClient while the
+  // process launches, so let the launch finish before `browser_client` goes
+  // away.
+  RenderProcessHostWatcher(spare,
+                           RenderProcessHostWatcher::WATCH_FOR_PROCESS_READY)
+      .Wait();
+
+  EXPECT_FALSE(spare_manager.WarmupSpare(other_browser_context.get()));
+
+  ASSERT_EQ(spare_manager.GetSpares().size(), 1u);
+  EXPECT_EQ(spare_manager.GetSpares()[0], spare);
+  EXPECT_EQ(spare->GetBrowserContext(), browser_context());
+
+  spare_manager.CleanupSparesForTesting();
+}
 
 // Test that the spare renderer works correctly when the limit on the maximum
 // number of processes is small.
@@ -1386,7 +1433,7 @@ struct StatefulMemoryPressureTestParams {
   bool keep_one_alive;
   bool use_critical_memory_pressure_threshold;
   bool kill_spare_on_memory_pressure;
-  int memory_limit;
+  base::MemoryLimit memory_limit;
   size_t expected_spares_after_pressure;
 };
 
@@ -1496,7 +1543,7 @@ IN_PROC_BROWSER_TEST_P(
 
   // Step-up replenishment: Relieving memory pressure back to 100% allows the
   // pool to recover back to `initial_spares`.
-  memory_override.SetLimit(100);
+  memory_override.SetLimit(base::MemoryLimit::Default());
   if (spare_manager.GetSpares().empty()) {
     spare_manager.WarmupSpare(browser_context());
   }
@@ -1520,7 +1567,7 @@ INSTANTIATE_TEST_SUITE_P(
             /*keep_one_alive=*/true,
             /*use_critical_memory_pressure_threshold=*/false,
             /*kill_spare_on_memory_pressure=*/true,
-            /*memory_limit=*/50,
+            /*memory_limit=*/base::MemoryLimit::FromPercent(50),
             /*expected_spares_after_pressure=*/1u},
         // Standard multi-spare with keep_one_alive: 25% limit clamps to 1
         // spare.
@@ -1529,7 +1576,7 @@ INSTANTIATE_TEST_SUITE_P(
             /*keep_one_alive=*/true,
             /*use_critical_memory_pressure_threshold=*/false,
             /*kill_spare_on_memory_pressure=*/true,
-            /*memory_limit=*/25,
+            /*memory_limit=*/base::MemoryLimit::FromPercent(25),
             /*expected_spares_after_pressure=*/1u},
         // Standard multi-spare with keep_one_alive: 0% limit trims all to 0.
         StatefulMemoryPressureTestParams{
@@ -1537,7 +1584,7 @@ INSTANTIATE_TEST_SUITE_P(
             /*keep_one_alive=*/true,
             /*use_critical_memory_pressure_threshold=*/false,
             /*kill_spare_on_memory_pressure=*/true,
-            /*memory_limit=*/0,
+            /*memory_limit=*/base::MemoryLimit::FromPercent(0),
             /*expected_spares_after_pressure=*/0u},
         // Aggressive mode (keep_one_alive disabled): 25% limit scales to 0
         // spares.
@@ -1546,7 +1593,7 @@ INSTANTIATE_TEST_SUITE_P(
             /*keep_one_alive=*/false,
             /*use_critical_memory_pressure_threshold=*/false,
             /*kill_spare_on_memory_pressure=*/true,
-            /*memory_limit=*/25,
+            /*memory_limit=*/base::MemoryLimit::FromPercent(25),
             /*expected_spares_after_pressure=*/0u},
         // Main toggle disabled: killing disabled keeps all 2 spares at 0%
         // limit.
@@ -1555,7 +1602,7 @@ INSTANTIATE_TEST_SUITE_P(
             /*keep_one_alive=*/true,
             /*use_critical_memory_pressure_threshold=*/false,
             /*kill_spare_on_memory_pressure=*/false,
-            /*memory_limit=*/0,
+            /*memory_limit=*/base::MemoryLimit::FromPercent(0),
             /*expected_spares_after_pressure=*/2u},
         // Critical-only mode: moderate pressure (50%) does not trim.
         StatefulMemoryPressureTestParams{
@@ -1563,7 +1610,7 @@ INSTANTIATE_TEST_SUITE_P(
             /*keep_one_alive=*/true,
             /*use_critical_memory_pressure_threshold=*/true,
             /*kill_spare_on_memory_pressure=*/true,
-            /*memory_limit=*/50,
+            /*memory_limit=*/base::MemoryLimit::FromPercent(50),
             /*expected_spares_after_pressure=*/2u},
         // Critical-only mode: critical pressure (0%) trims to 0.
         StatefulMemoryPressureTestParams{
@@ -1571,7 +1618,7 @@ INSTANTIATE_TEST_SUITE_P(
             /*keep_one_alive=*/false,
             /*use_critical_memory_pressure_threshold=*/true,
             /*kill_spare_on_memory_pressure=*/true,
-            /*memory_limit=*/0,
+            /*memory_limit=*/base::MemoryLimit::FromPercent(0),
             /*expected_spares_after_pressure=*/0u},
         // Single spare with keep_one_alive: 50% limit keeps 1 spare.
         StatefulMemoryPressureTestParams{
@@ -1579,7 +1626,7 @@ INSTANTIATE_TEST_SUITE_P(
             /*keep_one_alive=*/true,
             /*use_critical_memory_pressure_threshold=*/false,
             /*kill_spare_on_memory_pressure=*/true,
-            /*memory_limit=*/50,
+            /*memory_limit=*/base::MemoryLimit::FromPercent(50),
             /*expected_spares_after_pressure=*/1u},
         // Single spare without keep_one_alive: 50% limit trims to 0 spares.
         StatefulMemoryPressureTestParams{
@@ -1587,7 +1634,7 @@ INSTANTIATE_TEST_SUITE_P(
             /*keep_one_alive=*/false,
             /*use_critical_memory_pressure_threshold=*/false,
             /*kill_spare_on_memory_pressure=*/true,
-            /*memory_limit=*/50,
+            /*memory_limit=*/base::MemoryLimit::FromPercent(50),
             /*expected_spares_after_pressure=*/0u}));
 
 }  // namespace content

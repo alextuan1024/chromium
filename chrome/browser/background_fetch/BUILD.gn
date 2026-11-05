@@ -44,7 +44,6 @@ source_set("impl") {
     "//services/network/public/mojom:mojom_permissions_policy",
     "//skia",
   ]
-  public_deps = [ "//chrome/browser:browser_public_dependencies" ]
 }
 
 source_set("unit_tests") {
@@ -58,6 +57,7 @@ source_set("unit_tests") {
     "//chrome/browser/content_settings:content_settings_factory",
     "//chrome/browser/history",
     "//chrome/test:test_support",
+    "//chrome/test/base:chrome_render_view_host_test_harness",
     "//components/content_settings/core/browser",
     "//components/history/core/browser",
     "//components/history/core/test",
@@ -86,9 +86,9 @@ if (!is_android) {
       "//chrome/browser/content_settings:content_settings_factory",
       "//chrome/browser/offline_items_collection",
       "//chrome/browser/profiles",
-      "//chrome/browser/ui",
       "//chrome/browser/ui/tabs:tab_strip",
-      "//chrome/test:test_support_ui",
+      "//chrome/test/base:in_process_browser_test",
+      "//chrome/test/base:ui_test_utils",
       "//components/content_settings/core/browser",
       "//components/ukm:test_support",
       "//content/public/browser",

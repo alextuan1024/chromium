@@ -171,6 +171,7 @@ class CORE_EXPORT SVGElement : public Element {
   bool InUseShadowTree() const;
 
   void AddReferenceTo(SVGElement*);
+  const SVGElementSet* SetOfOutgoingReferences() const;
   template <typename InvalidationFunction>
   void NotifyIncomingReferences(InvalidationFunction&&);
   void RemoveAllIncomingReferences();
@@ -233,6 +234,7 @@ class CORE_EXPORT SVGElement : public Element {
   InsertionNotificationRequest InsertedInto(ContainerNode&) override;
   void RemovedFrom(ContainerNode&) override;
   void ChildrenChanged(const ChildrenChange&) override;
+  void DidChangeIsInCanvasSubtree(CanvasSubtreePropagation) override;
 
   void DetachLayoutTree(bool performing_reattach) override;
 

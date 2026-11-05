@@ -115,7 +115,7 @@ bool SSLErrorControllerClient::CanLaunchDateAndTimeSettings() {
 }
 
 void SSLErrorControllerClient::LaunchDateAndTimeSettings() {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M163);
 
 #if BUILDFLAG(IS_CHROMEOS)
   chrome::SettingsWindowManager::GetInstance()->ShowOSSettings(
@@ -131,8 +131,8 @@ void SSLErrorControllerClient::LaunchDateAndTimeSettings() {
 #if !BUILDFLAG(IS_ANDROID)
 void SSLErrorControllerClient::ShowCertificateViewer() {
   // TODO(crbug.com/436274249): support "view certificate" on android too.
-  ::ShowCertificateViewer(web_contents(),
-                          web_contents()->GetTopLevelNativeWindow(),
-                          ssl_info_.cert.get());
+  ::ShowCertificateViewer(
+      web_contents(), web_contents()->GetTopLevelNativeWindow(),
+      ssl_info_.cert.get(), CertificateViewerEntrypoint::kSslInterstitial);
 }
 #endif

@@ -27,7 +27,6 @@ class DeviceInfoSyncClient {
   virtual ~DeviceInfoSyncClient();
 
   virtual std::string GetSigninScopedDeviceId() const = 0;
-  virtual bool GetSendTabToSelfReceivingEnabled() const = 0;
   virtual DeviceInfo::SendTabReceivingType GetSendTabToSelfReceivingType()
       const = 0;
   virtual std::optional<DeviceInfo::SharingInfo> GetLocalSharingInfo()
@@ -70,9 +69,10 @@ class DeviceInfoSyncClient {
   virtual base::flat_set<std::string>
   GetGlicExperimentalTriggeringCapabilities() const;
 
-  // Returns Personal Context specific information for this device, or
-  // std::nullopt if unavailable.
-  virtual std::optional<DeviceInfo::PersonalContextInfo>
+  // Returns Personal Context specific information for this device, or one of
+  // the special `Status` values to indicate that the information isn't ready
+  // yet or the device is not eligible.
+  virtual DeviceInfo::PersonalContextInfo::StatusOrInfo
   GetLocalPersonalContextInfo() const = 0;
 };
 

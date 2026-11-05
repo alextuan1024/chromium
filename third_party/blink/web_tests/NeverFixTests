@@ -108,8 +108,9 @@
 [ Mac ] fast/forms/calendar-picker/month-open-picker-with-f4-key.html [ Skip ]
 [ Mac ] fast/forms/calendar-picker/week-open-picker-with-f4-key.html [ Skip ]
 
-# Date/time input subfields are not focusable without a fine pointer, and
-# on fuchsia there is only a coarse pointer set in pointer_device_web_engine.cc
+# The Fuchsia port loads every test over HTTP, but only starts the HTTP server
+# when an http/ test is in the batch, so this test fails when run by itself
+# (e.g. by the new test flakiness check).
 [ Fuchsia ] fast/forms/date-multiple-fields/date-multiple-fields-ax-value-changed-notification.html [ Skip ]
 
 # Mac does not have menu key.
@@ -161,6 +162,7 @@ crbug.com/41254976 [ Mac ] fast/events/pointerevents/pointer-event-in-slop-regio
 crbug.com/41254976 [ Mac ] fast/events/touch/gesture/* [ Skip ]
 crbug.com/41254976 [ Mac ] fast/scrolling/resize-corner-tracking-touch.html [ Skip ]
 crbug.com/41254976 [ Mac ] fast/scrolling/scrollbars/touch-scrolling-on-root-scrollbar.html [ Skip ]
+crbug.com/793771 [ Mac ] media/controls/scrubbing.html [ Skip ]
 crbug.com/41254976 [ Mac ] virtual/threaded/synthetic_gestures/synthetic-pinch-zoom-gesture-touchscreen.html [ Skip ]
 
 # Thumb snapping is not supported on Linux and Mac.
@@ -838,6 +840,9 @@ paint/invalidation/compositing/subpixel-offset-scaled-transform-composited.html 
 
 # Tests that use too much storage for automation.
 http/tests/cachestorage/large-put.html [ Skip ]
+
+# System accent color has no override mechanism on mac
+[ Mac ] wpt_internal/html/canvas/drawElementImage/privacy/accent-color-ignored.html [ Skip ]
 
 # Below are manual tests from web-platform-tests without automation.
 external/wpt/css/CSS2/tables/table-footer-group-004.xht [ Skip ]
@@ -1864,4 +1869,3 @@ crbug.com/452389538 virtual/prefetch-force-off-the-main-thread-wculf/external/wp
 
 # OOM crash on Windows, marked as WontFix
 crbug.com/379516106 [ Win ] external/wpt/css/css-overflow/scrollbar-large-scale-in-iframe.html [ Skip ]
-

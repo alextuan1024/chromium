@@ -40,6 +40,7 @@ import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.tab.TabCreationState;
 import org.chromium.chrome.browser.tab.TabLaunchType;
 import org.chromium.chrome.browser.tab_ui.TabModelDotInfo;
+import org.chromium.chrome.browser.tabmodel.StubTabModel;
 import org.chromium.chrome.browser.tabmodel.TabClosingSource;
 import org.chromium.chrome.browser.tabmodel.TabGroupObserver;
 import org.chromium.chrome.browser.tabmodel.TabModel;
@@ -100,7 +101,7 @@ public class TabModelNotificationDotManagerUnitTest {
         when(mTabModelSelector.getModel(false)).thenReturn(mTabModel);
         when(mTabModel.getTabsInGroup(TAB_GROUP_ID)).thenReturn(List.of(mTab));
         when(mTabModel.getTabGroupTitle(TAB_GROUP_ID)).thenReturn(TITLE);
-        when(mTabModel.tabGroupExists(TAB_GROUP_ID)).thenReturn(true);
+        when(mTabModel.containsTabGroup(TAB_GROUP_ID)).thenReturn(true);
         when(mTabModel.getProfile()).thenReturn(mProfile);
         when(mTabModel.getTabById(EXISTING_TAB_ID)).thenReturn(mTab);
         when(mTab.getTabGroupId()).thenReturn(TAB_GROUP_ID);
@@ -376,5 +377,16 @@ public class TabModelNotificationDotManagerUnitTest {
                 mTabModelNotificationDotManager.getNotificationDotObservableSupplier().get();
         assertTrue(tabModelDotInfo.showDot);
         assertEquals(expectedTitle, tabModelDotInfo.tabGroupTitle);
+    }
+
+    @Test
+    public void testInitWithNative_StubTabModel() {
+        StubTabModel stubTabModel = new StubTabModel(/* isIncognito= */ false, mProfile);
+        when(mTabModelSelector.getModel(false)).thenReturn(stubTabModel);
+        Context context = ApplicationProvider.getApplicationContext();
+        TabModelNotificationDotManager manager = new TabModelNotificationDotManager(context);
+        manager.initWithNative(mTabModelSelector);
+        assertFalse(manager.getNotificationDotObservableSupplier().get().showDot);
+        manager.destroy();
     }
 }

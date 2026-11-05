@@ -8,6 +8,7 @@
 
 #include "base/functional/bind.h"
 #include "base/logging.h"
+#include "base/memory/self_deleting.h"
 #include "build/build_config.h"
 #include "content/public/browser/browser_context.h"
 #include "content/public/browser/browser_thread.h"
@@ -68,7 +69,7 @@ const uint32_t kCurrentStorageIdVersion = 1;
 
 std::vector<uint8_t> GetStorageIdSaltFromProfile(
     content::RenderFrameHost* rfh) {
-  DCHECK(rfh);
+  CHECK(rfh, base::NotFatalUntil::M161);
   Profile* profile =
       Profile::FromBrowserContext(rfh->GetProcess()->GetBrowserContext());
   return MediaStorageIdSalt::GetSalt(profile);
@@ -209,7 +210,7 @@ bool CreateCdmStorePathRootAndGrantAccessIfNeeded(
 std::unique_ptr<media::MediaFoundationCdmData>
 GetMediaFoundationCdmDataInternal(const base::FilePath profile_path,
                                   std::unique_ptr<CdmPrefData> pref_data) {
-  DCHECK(pref_data);
+  CHECK(pref_data, base::NotFatalUntil::M161);
 
   auto cdm_store_path_root = GetCdmStorePathRootForProfile(profile_path);
   if (!CreateCdmStorePathRootAndGrantAccessIfNeeded(cdm_store_path_root)) {
@@ -244,33 +245,32 @@ void CdmDocumentServiceImpl::Create(
 
   // PlatformVerificationFlow and the pref service requires to be run/accessed
   // on the UI thread.
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
 
   // The object is bound to the lifetime of |render_frame_host| and the mojo
   // connection. See DocumentService for details.
-  new CdmDocumentServiceImpl(*render_frame_host, std::move(receiver));
+  base::MakeSelfDeleting<CdmDocumentServiceImpl>(*render_frame_host,
+                                                 std::move(receiver));
 }
 
 CdmDocumentServiceImpl::CdmDocumentServiceImpl(
     content::RenderFrameHost& render_frame_host,
-    mojo::PendingReceiver<media::mojom::CdmDocumentService> receiver)
-    : DocumentService(render_frame_host, std::move(receiver)) {}
+    mojo::PendingReceiver<media::mojom::CdmDocumentService> receiver,
+    base::SelfDeletingPassKey key)
+    : DocumentService(render_frame_host, std::move(receiver), key) {}
 
 CdmDocumentServiceImpl::~CdmDocumentServiceImpl() {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
 }
 
+#if BUILDFLAG(IS_CHROMEOS)
 void CdmDocumentServiceImpl::ChallengePlatform(
     const std::string& service_id,
     const std::string& challenge,
     ChallengePlatformCallback callback) {
   DVLOG(2) << __func__;
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
 
-  // TODO(crbug.com/40499115). This should be commented out at the mojom
-  // level so that it's only available for ChromeOS.
-
-#if BUILDFLAG(IS_CHROMEOS)
   bool success = platform_verification::PerformBrowserChecks(
       render_frame_host().GetMainFrame());
   if (!success) {
@@ -287,13 +287,8 @@ void CdmDocumentServiceImpl::ChallengePlatform(
       service_id, challenge,
       base::BindOnce(&CdmDocumentServiceImpl::OnPlatformChallenged,
                      weak_factory_.GetWeakPtr(), std::move(callback)));
-#else
-  // Not supported, so return failure.
-  std::move(callback).Run(false, std::string(), std::string(), std::string());
-#endif  // BUILDFLAG(IS_CHROMEOS)
 }
 
-#if BUILDFLAG(IS_CHROMEOS)
 void CdmDocumentServiceImpl::OnPlatformChallenged(
     ChallengePlatformCallback callback,
     PlatformVerificationResult result,
@@ -301,62 +296,24 @@ void CdmDocumentServiceImpl::OnPlatformChallenged(
     const std::string& signature,
     const std::string& platform_key_certificate) {
   DVLOG(2) << __func__ << ": " << result;
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
 
   if (result != ash::attestation::PlatformVerificationFlow::SUCCESS) {
-    DCHECK(signed_data.empty());
-    DCHECK(signature.empty());
-    DCHECK(platform_key_certificate.empty());
+    CHECK(signed_data.empty(), base::NotFatalUntil::M161);
+    CHECK(signature.empty(), base::NotFatalUntil::M161);
+    CHECK(platform_key_certificate.empty(), base::NotFatalUntil::M161);
     LOG(ERROR) << "Platform verification failed.";
     std::move(callback).Run(false, "", "", "");
     return;
   }
 
-  DCHECK(!signed_data.empty());
-  DCHECK(!signature.empty());
-  DCHECK(!platform_key_certificate.empty());
+  CHECK(!signed_data.empty(), base::NotFatalUntil::M161);
+  CHECK(!signature.empty(), base::NotFatalUntil::M161);
+  CHECK(!platform_key_certificate.empty(), base::NotFatalUntil::M161);
   std::move(callback).Run(true, signed_data, signature,
                           platform_key_certificate);
 }
-#endif  // BUILDFLAG(IS_CHROMEOS)
 
-void CdmDocumentServiceImpl::GetStorageId(uint32_t version,
-                                          GetStorageIdCallback callback) {
-  DVLOG(2) << __func__ << " version: " << version;
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
-
-  // TODO(crbug.com/40499115). This should be commented out at the mojom
-  // level so that it's only available if Storage Id is available.
-
-#if BUILDFLAG(ENABLE_CDM_STORAGE_ID)
-  // Check that the request is for a supported version.
-  if (version == kCurrentStorageIdVersion ||
-      version == kRequestLatestStorageIdVersion) {
-    ComputeStorageId(
-        GetStorageIdSaltFromProfile(&render_frame_host()), origin(),
-        base::BindOnce(&CdmDocumentServiceImpl::OnStorageIdResponse,
-                       weak_factory_.GetWeakPtr(), std::move(callback)));
-    return;
-  }
-#endif  // BUILDFLAG(ENABLE_CDM_STORAGE_ID)
-
-  // Version not supported, so no Storage Id to return.
-  DVLOG(2) << __func__ << " not supported";
-  std::move(callback).Run(version, std::vector<uint8_t>());
-}
-
-#if BUILDFLAG(ENABLE_CDM_STORAGE_ID)
-void CdmDocumentServiceImpl::OnStorageIdResponse(
-    GetStorageIdCallback callback,
-    const std::vector<uint8_t>& storage_id) {
-  DVLOG(2) << __func__ << " version: " << kCurrentStorageIdVersion
-           << ", size: " << storage_id.size();
-
-  std::move(callback).Run(kCurrentStorageIdVersion, storage_id);
-}
-#endif  // BUILDFLAG(ENABLE_CDM_STORAGE_ID)
-
-#if BUILDFLAG(IS_CHROMEOS)
 void CdmDocumentServiceImpl::IsVerifiedAccessEnabled(
     IsVerifiedAccessEnabledCallback callback) {
   // If we are in guest/incognito mode, then verified access is effectively
@@ -374,6 +331,37 @@ void CdmDocumentServiceImpl::IsVerifiedAccessEnabled(
   std::move(callback).Run(enabled_for_device);
 }
 #endif  // BUILDFLAG(IS_CHROMEOS)
+
+#if BUILDFLAG(ENABLE_CDM_STORAGE_ID)
+void CdmDocumentServiceImpl::GetStorageId(uint32_t version,
+                                          GetStorageIdCallback callback) {
+  DVLOG(2) << __func__ << " version: " << version;
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
+
+  // Check that the request is for a supported version.
+  if (version == kCurrentStorageIdVersion ||
+      version == kRequestLatestStorageIdVersion) {
+    ComputeStorageId(
+        GetStorageIdSaltFromProfile(&render_frame_host()), origin(),
+        base::BindOnce(&CdmDocumentServiceImpl::OnStorageIdResponse,
+                       weak_factory_.GetWeakPtr(), std::move(callback)));
+    return;
+  }
+
+  // Version not supported, so no Storage Id to return.
+  DVLOG(2) << __func__ << " not supported";
+  std::move(callback).Run(version, std::vector<uint8_t>());
+}
+
+void CdmDocumentServiceImpl::OnStorageIdResponse(
+    GetStorageIdCallback callback,
+    const std::vector<uint8_t>& storage_id) {
+  DVLOG(2) << __func__ << " version: " << kCurrentStorageIdVersion
+           << ", size: " << storage_id.size();
+
+  std::move(callback).Run(kCurrentStorageIdVersion, storage_id);
+}
+#endif  // BUILDFLAG(ENABLE_CDM_STORAGE_ID)
 
 #if BUILDFLAG(IS_WIN)
 void CdmDocumentServiceImpl::GetMediaFoundationCdmData(

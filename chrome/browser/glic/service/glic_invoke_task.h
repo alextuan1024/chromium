@@ -52,7 +52,8 @@ enum class GlicTaskType : int {
   kClipboardPolicy = 14,
   kCopyPolicy = 15,
   kPastePolicy = 16,
-  kMaxValue = kPastePolicy,
+  kWaitForClientReady = 17,
+  kMaxValue = kWaitForClientReady,
 };
 // LINT.ThenChange(//tools/metrics/histograms/metadata/glic/enums.xml:GlicInvokeTimeoutStage)
 
@@ -221,6 +222,48 @@ class WaitForClientConnectedTask : public GlicInvokeTask,
   const base::raw_ref<Host> host_;
   base::ScopedObservation<Host, Host::Observer> observation_{this};
   base::OnceClosure done_callback_;
+};
+
+// What WaitForClientReadyTask does when the client stops on the sign-in panel
+// (`Host::client_load_state()` is `kError` with `client_load_error_reason()`
+// `kSignIn`). Unlike other load failures the client has not given up: it
+// reloads and becomes ready once the user signs in.
+enum class SignInBehavior {
+  // The task completes. An invocation with nothing to send the client is done
+  // once the panel shows what it should, and the sign-in panel is that.
+  kCompletes,
+  // The task keeps waiting for the user to sign in. An invocation that needs
+  // the client can do nothing before then; if the user never does, the
+  // invocation times out (GlicInvokeHandler reports that as kSignInRequired).
+  kWaits,
+};
+
+// Task that waits for the client load state to reach kReady.
+class WaitForClientReadyTask : public GlicInvokeTask, public Host::Observer {
+ public:
+  std::optional<GlicTaskType> GetType() const override;
+
+  WaitForClientReadyTask(
+      Host& host,
+      SignInBehavior sign_in_behavior,
+      base::OnceCallback<void(GlicInvokeError)> error_callback);
+  ~WaitForClientReadyTask() override;
+  void Start(base::OnceClosure done_callback) override;
+
+  // Host::Observer:
+  void ClientLoadStateChanged(ClientLoadState state) override;
+
+ private:
+  void OnWaitForLoadComplete(bool failed);
+  void CheckState(ClientLoadState state);
+
+  const base::raw_ref<Host> host_;
+  const SignInBehavior sign_in_behavior_;
+  base::OnceCallback<void(GlicInvokeError)> error_callback_;
+  base::ScopedObservation<Host, Host::Observer> observation_{this};
+  base::OnceClosure done_callback_;
+  bool wait_for_load_complete_ = false;
+  base::WeakPtrFactory<WaitForClientReadyTask> weak_ptr_factory_{this};
 };
 
 // Task that posts a callback asynchronously.

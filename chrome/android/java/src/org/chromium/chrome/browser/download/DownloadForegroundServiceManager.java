@@ -164,8 +164,8 @@ public class DownloadForegroundServiceManager extends DownloadContinuityManager 
                         Log.w(
                                 TAG,
                                 "Not from DownloadNotificationService, do not connect."
-                                        + " Component name: "
-                                        + className);
+                                        + " Component name: %s",
+                                className);
                         return;
                     }
                     mBoundService = localBinder.getService();
@@ -186,10 +186,9 @@ public class DownloadForegroundServiceManager extends DownloadContinuityManager 
     void startOrUpdateForegroundService(DownloadUpdate update) {
         Log.w(
                 TAG,
-                "startOrUpdateForegroundService id: "
-                        + update.mNotificationId
-                        + ", startForeground() Called: "
-                        + mStartForegroundCalled);
+                "startOrUpdateForegroundService id: %d, startForeground() Called: %b",
+                update.mNotificationId,
+                mStartForegroundCalled);
 
         int notificationId = update.mNotificationId;
         Notification notification = update.mNotification;
@@ -238,6 +237,7 @@ public class DownloadForegroundServiceManager extends DownloadContinuityManager 
                                 NotificationUmaTracker.SystemNotificationType.DOWNLOAD_FILES,
                                 null,
                                 notificationId));
+        builder.setSmallIcon(android.R.drawable.stat_sys_download);
         return builder.build();
     }
 

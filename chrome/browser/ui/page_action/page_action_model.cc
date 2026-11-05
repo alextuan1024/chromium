@@ -246,6 +246,10 @@ void PageActionModel::SetExemptFromOmniboxSuppression(PageActionPassKey,
   NotifyChange(Property::kExemptFromOmniboxSuppression);
 }
 
+bool PageActionModel::IsAffectedByOmniboxSuppression() const {
+  return is_suppressed_by_omnibox_ && !is_exempt_from_omnibox_suppression_;
+}
+
 void PageActionModel::SetIsChipShowing(PageActionPassKey,
                                        bool is_chip_showing) {
   did_show_chip_ |= is_chip_showing;
@@ -441,6 +445,21 @@ void PageActionModel::SetOverrideBackgroundColorId(
 std::optional<ui::ColorId> PageActionModel::GetOverrideBackgroundColorId()
     const {
   return override_background_color_id_;
+}
+
+void PageActionModel::SetOverrideForegroundColorId(
+    PageActionPassKey,
+    std::optional<ui::ColorId> override_foreground_color_id) {
+  if (override_foreground_color_id_ == override_foreground_color_id) {
+    return;
+  }
+  override_foreground_color_id_ = override_foreground_color_id;
+  NotifyChange(Property::kOverrideForegroundColor);
+}
+
+std::optional<ui::ColorId> PageActionModel::GetOverrideForegroundColorId()
+    const {
+  return override_foreground_color_id_;
 }
 
 }  // namespace page_actions

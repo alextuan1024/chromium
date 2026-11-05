@@ -18,12 +18,15 @@
 #include "base/component_export.h"
 #include "base/containers/flat_set.h"
 #include "base/containers/span.h"
-#include "base/i18n/language_tag.h"
 #include "build/build_config.h"
 
 #if BUILDFLAG(IS_APPLE)
 #include "ui/base/l10n/l10n_util_mac.h"
 #endif  // BUILDFLAG(IS_APPLE)
+
+namespace base::i18n {
+class LanguageTag;
+}  // namespace base::i18n
 
 namespace l10n_util {
 
@@ -244,6 +247,12 @@ const std::vector<std::string>& GetUserFacingUILocaleList();
 COMPONENT_EXPORT(UI_BASE)
 std::vector<std::string> GetAcceptLanguagesForLocale(
     std::string_view display_locale);
+
+// Same as `GetAcceptLanguagesForLocale()`, but takes and returns
+// `LanguageTag`s.
+COMPONENT_EXPORT(UI_BASE)
+std::vector<base::i18n::LanguageTag> GetAcceptLanguageTagsForLocale(
+    const base::i18n::LanguageTag& display_locale);
 
 // Returns a vector of untranslated locale codes usable for accept-languages.
 COMPONENT_EXPORT(UI_BASE)

@@ -11,6 +11,7 @@
 #include "base/functional/callback.h"
 #include "base/strings/strcat.h"
 #include "base/task/single_thread_task_runner.h"
+#include "base/test/gtest_util.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/task_environment.h"
 #include "net/base/ip_address.h"
@@ -21,6 +22,7 @@
 #include "net/quic/address_utils.h"
 #include "net/quic/quic_chromium_packet_reader.h"
 #include "net/quic/quic_chromium_packet_writer.h"
+#include "net/quic/quic_socket_config_step.h"
 #include "net/socket/socket_test_util.h"
 #include "net/test/gtest_util.h"
 #include "net/third_party/quiche/src/quiche/quic/test_tools/mock_clock.h"
@@ -35,9 +37,10 @@ const IPEndPoint kIpEndPoint{IPAddress::IPv4Localhost(), 443};
 class QuicMigrationAttemptContextTest : public ::testing::Test {
  public:
   std::unique_ptr<QuicMigrationAttemptContext> CreateAttemptContext(
-      MigrationCause cause,
+      QuicMigrationAttemptCause cause,
       base::RepeatingCallback<bool()> is_session_alive =
-          base::BindRepeating([]() { return true; })) {
+          base::BindRepeating([]() { return true; }),
+      bool is_google_host = false) {
     auto reads = std::make_unique<std::vector<MockRead>>();
     reads->push_back(MockRead(SYNCHRONOUS, ERR_IO_PENDING, 0));
     auto socket_data =
@@ -64,7 +67,7 @@ class QuicMigrationAttemptContextTest : public ::testing::Test {
     return std::make_unique<QuicMigrationAttemptContext>(
         cause, /*from_network=*/1, /*target_network=*/2,
         ToQuicSocketAddress(peer_address), std::move(reader), std::move(writer),
-        std::move(is_session_alive));
+        std::move(is_session_alive), is_google_host);
   }
 
  protected:
@@ -81,7 +84,7 @@ TEST_F(QuicMigrationAttemptContextTest, DestructorFallbackSessionDestroyed) {
   bool session_alive = true;
   {
     auto context = CreateAttemptContext(
-        ON_NETWORK_DISCONNECTED,
+        QuicMigrationAttemptCause::kOnNetworkDisconnected,
         base::BindRepeating([](bool* alive) { return *alive; },
                             base::Unretained(&session_alive)));
     // Simulate session destruction before the migration attempt completes.
@@ -106,8 +109,9 @@ TEST_F(QuicMigrationAttemptContextTest, DestructorFallbackSessionDestroyed) {
 TEST_F(QuicMigrationAttemptContextTest, DestructorSessionAlive) {
   base::HistogramTester histogram_tester;
   {
-    auto context = CreateAttemptContext(
-        ON_NETWORK_DISCONNECTED, base::BindRepeating([]() { return true; }));
+    auto context =
+        CreateAttemptContext(QuicMigrationAttemptCause::kOnNetworkDisconnected,
+                             base::BindRepeating([]() { return true; }));
     // Context destructs while in flight, but session is still alive.
   }
 
@@ -123,27 +127,36 @@ TEST_F(QuicMigrationAttemptContextTest, DestructorSessionAlive) {
 TEST_F(QuicMigrationAttemptContextTest, SetIneligibleAndRecordIneligible) {
   base::HistogramTester histogram_tester;
   {
-    auto context = CreateAttemptContext(CHANGE_NETWORK_ON_PATH_DEGRADING);
+    auto context = CreateAttemptContext(
+        QuicMigrationAttemptCause::kChangeNetworkOnPathDegrading);
     context->SetIneligible(
         QuicMigrationAttemptIneligibleReason::kSessionBecameIdleDuringProbing);
   }
 
   QuicMigrationAttemptContext::RecordIneligible(
-      ON_WRITE_ERROR, QuicMigrationAttemptIneligibleReason::kDisabledByServer);
+      QuicMigrationAttemptCause::kOnWriteError,
+      QuicMigrationAttemptIneligibleReason::kDisabledByServer);
   QuicMigrationAttemptContext::RecordIneligible(
-      ON_SERVER_PREFERRED_ADDRESS_AVAILABLE,
+      QuicMigrationAttemptCause::kOnServerPreferredAddressAvailable,
       QuicMigrationAttemptIneligibleReason::kDisabledByClient);
   QuicMigrationAttemptContext::RecordIneligible(
-      ON_NETWORK_DISCONNECTED,
+      QuicMigrationAttemptCause::kOnNetworkDisconnected,
       QuicMigrationAttemptIneligibleReason::kOnlyNonMigratableStreams);
   QuicMigrationAttemptContext::RecordIneligible(
-      ON_NETWORK_DISCONNECTED,
+      QuicMigrationAttemptCause::kOnNetworkDisconnected,
       QuicMigrationAttemptIneligibleReason::kHandshakeNotConfirmed);
   QuicMigrationAttemptContext::RecordIneligible(
-      ON_WRITE_ERROR, QuicMigrationAttemptIneligibleReason::kTooManyMigrations);
+      QuicMigrationAttemptCause::kOnWriteError,
+      QuicMigrationAttemptIneligibleReason::kTooManyMigrations);
   QuicMigrationAttemptContext::RecordIneligible(
-      CHANGE_PORT_ON_PATH_DEGRADING,
+      QuicMigrationAttemptCause::kChangePortOnPathDegrading,
       QuicMigrationAttemptIneligibleReason::kTooManyPacketReaders);
+  QuicMigrationAttemptContext::RecordIneligible(
+      QuicMigrationAttemptCause::kWaitForNewNetworkPostNetworkDisconnected,
+      QuicMigrationAttemptIneligibleReason::kOnlyNonMigratableStreams);
+  QuicMigrationAttemptContext::RecordIneligible(
+      QuicMigrationAttemptCause::kWaitForNewNetworkPostWriteError,
+      QuicMigrationAttemptIneligibleReason::kDisabledByServer);
 
   histogram_tester.ExpectBucketCount(
       "Net.Quic.Migration.Attempt.Ineligible",
@@ -154,9 +167,13 @@ TEST_F(QuicMigrationAttemptContextTest, SetIneligibleAndRecordIneligible) {
       QuicMigrationAttemptIneligibleReason::kSessionBecameIdleDuringProbing, 1);
   histogram_tester.ExpectBucketCount(
       "Net.Quic.Migration.Attempt.Ineligible",
-      QuicMigrationAttemptIneligibleReason::kDisabledByServer, 1);
+      QuicMigrationAttemptIneligibleReason::kDisabledByServer, 2);
   histogram_tester.ExpectBucketCount(
       "Net.Quic.Migration.Attempt.Ineligible.ByTrigger.OnWriteError",
+      QuicMigrationAttemptIneligibleReason::kDisabledByServer, 1);
+  histogram_tester.ExpectBucketCount(
+      "Net.Quic.Migration.Attempt.Ineligible.ByTrigger."
+      "WaitForNewNetworkPostWriteError",
       QuicMigrationAttemptIneligibleReason::kDisabledByServer, 1);
   histogram_tester.ExpectBucketCount(
       "Net.Quic.Migration.Attempt.Ineligible",
@@ -167,9 +184,13 @@ TEST_F(QuicMigrationAttemptContextTest, SetIneligibleAndRecordIneligible) {
       QuicMigrationAttemptIneligibleReason::kDisabledByClient, 1);
   histogram_tester.ExpectBucketCount(
       "Net.Quic.Migration.Attempt.Ineligible",
-      QuicMigrationAttemptIneligibleReason::kOnlyNonMigratableStreams, 1);
+      QuicMigrationAttemptIneligibleReason::kOnlyNonMigratableStreams, 2);
   histogram_tester.ExpectBucketCount(
       "Net.Quic.Migration.Attempt.Ineligible.ByTrigger.OnNetworkDisconnected",
+      QuicMigrationAttemptIneligibleReason::kOnlyNonMigratableStreams, 1);
+  histogram_tester.ExpectBucketCount(
+      "Net.Quic.Migration.Attempt.Ineligible.ByTrigger."
+      "WaitForNewNetworkPostNetworkDisconnected",
       QuicMigrationAttemptIneligibleReason::kOnlyNonMigratableStreams, 1);
   histogram_tester.ExpectBucketCount(
       "Net.Quic.Migration.Attempt.Ineligible",
@@ -190,23 +211,40 @@ TEST_F(QuicMigrationAttemptContextTest, SetIneligibleAndRecordIneligible) {
       "Net.Quic.Migration.Attempt.Ineligible.ByTrigger."
       "ChangePortOnPathDegrading",
       QuicMigrationAttemptIneligibleReason::kTooManyPacketReaders, 1);
-  histogram_tester.ExpectTotalCount("Net.Quic.Migration.Attempt.Ineligible", 7);
+  histogram_tester.ExpectTotalCount("Net.Quic.Migration.Attempt.Ineligible", 9);
   histogram_tester.ExpectTotalCount("Net.Quic.Migration.Attempt.Eligible", 0);
   histogram_tester.ExpectTotalCount("Net.Quic.Migration.Attempt.FailureReason",
                                     0);
   histogram_tester.ExpectTotalCount("Net.Quic.Migration.Attempt.Superseded", 0);
 }
 
-TEST_F(QuicMigrationAttemptContextTest, SetSuperseded) {
+TEST_F(QuicMigrationAttemptContextTest, SetSupersededAndRecordSuperseded) {
   base::HistogramTester histogram_tester;
   {
-    auto context = CreateAttemptContext(CHANGE_NETWORK_ON_PATH_DEGRADING);
+    auto context = CreateAttemptContext(
+        QuicMigrationAttemptCause::kChangeNetworkOnPathDegrading);
     context->SetSuperseded(QuicMigrationAttemptCause::kOnNetworkDisconnected);
   }
 
-  histogram_tester.ExpectUniqueSample(
+  QuicMigrationAttemptContext::RecordSuperseded(
+      QuicMigrationAttemptCause::kWaitForNewNetworkPostWriteError,
+      QuicMigrationAttemptCause::kOnWriteError);
+
+  histogram_tester.ExpectBucketCount(
       "Net.Quic.Migration.Attempt.Superseded",
       QuicMigrationAttemptCause::kOnNetworkDisconnected, 1);
+  histogram_tester.ExpectBucketCount("Net.Quic.Migration.Attempt.Superseded",
+                                     QuicMigrationAttemptCause::kOnWriteError,
+                                     1);
+  histogram_tester.ExpectTotalCount("Net.Quic.Migration.Attempt.Superseded", 2);
+  histogram_tester.ExpectUniqueSample(
+      "Net.Quic.Migration.Attempt.Superseded.ByTrigger."
+      "ChangeNetworkOnPathDegrading",
+      QuicMigrationAttemptCause::kOnNetworkDisconnected, 1);
+  histogram_tester.ExpectUniqueSample(
+      "Net.Quic.Migration.Attempt.Superseded.ByTrigger."
+      "WaitForNewNetworkPostWriteError",
+      QuicMigrationAttemptCause::kOnWriteError, 1);
   histogram_tester.ExpectTotalCount("Net.Quic.Migration.Attempt.Eligible", 0);
   histogram_tester.ExpectTotalCount("Net.Quic.Migration.Attempt.FailureReason",
                                     0);
@@ -216,11 +254,13 @@ TEST_F(QuicMigrationAttemptContextTest, SetSuperseded) {
 TEST_F(QuicMigrationAttemptContextTest, MultiPortPathSkipped) {
   base::HistogramTester histogram_tester;
   {
-    auto context = CreateAttemptContext(MULTI_PORT_PATH);
+    auto context =
+        CreateAttemptContext(QuicMigrationAttemptCause::kMultiPortPath);
     context->SetSuccess();
   }
   {
-    auto context = CreateAttemptContext(MULTI_PORT_PATH);
+    auto context =
+        CreateAttemptContext(QuicMigrationAttemptCause::kMultiPortPath);
     // Leaves in flight.
   }
 
@@ -232,7 +272,8 @@ TEST_F(QuicMigrationAttemptContextTest, MultiPortPathSkipped) {
 }
 
 TEST_F(QuicMigrationAttemptContextTest, SpuriousOutcome) {
-  auto context = CreateAttemptContext(ON_NETWORK_DISCONNECTED);
+  auto context =
+      CreateAttemptContext(QuicMigrationAttemptCause::kOnNetworkDisconnected);
 
   base::HistogramTester histogram_tester;
   context->SetSuccess();
@@ -241,18 +282,20 @@ TEST_F(QuicMigrationAttemptContextTest, SpuriousOutcome) {
 
   // Calling Set* when an outcome has already been set records into
   // Net.Quic.Migration.Attempt.SpuriousOutcome.
-  context->SetFailure(QuicMigrationAttemptFailureReason::kProbeFailed);
+  context->SetFailure(QuicMigrationAttemptFailureReason::kProbeUnknownFailure);
+  context->SetSocketConfigFailure(QuicSocketConfigStep::kConnect, ERR_FAILED);
   context->SetIneligible(QuicMigrationAttemptIneligibleReason::kIdleSession);
   context->SetSuperseded(QuicMigrationAttemptCause::kOnNetworkDisconnected);
   context->SetSuccess();
   histogram_tester.ExpectUniqueSample(
-      "Net.Quic.Migration.Attempt.SpuriousOutcome", true, 4);
+      "Net.Quic.Migration.Attempt.SpuriousOutcome", true, 5);
 }
 
 TEST_F(QuicMigrationAttemptContextTest, SetSuccess) {
   base::HistogramTester histogram_tester;
   {
-    auto context = CreateAttemptContext(ON_NETWORK_MADE_DEFAULT);
+    auto context =
+        CreateAttemptContext(QuicMigrationAttemptCause::kOnNetworkMadeDefault);
     context->SetSuccess();
   }
 
@@ -266,33 +309,39 @@ TEST_F(QuicMigrationAttemptContextTest, SetSuccess) {
   histogram_tester.ExpectTotalCount("Net.Quic.Migration.Attempt.Ineligible", 0);
   histogram_tester.ExpectTotalCount("Net.Quic.Migration.Attempt.Superseded", 0);
   histogram_tester.ExpectTotalCount(
-      "Net.Quic.Migration.Attempt.RedundantOutcome", 0);
+      "Net.Quic.Migration.Attempt.SpuriousOutcome", 0);
   histogram_tester.ExpectTotalCount(
       "Net.Quic.Migration.Attempt.UnclassifiedOutcome", 0);
 }
 
 TEST_F(QuicMigrationAttemptContextTest, SetFailure) {
   struct TestCase {
-    MigrationCause cause;
+    QuicMigrationAttemptCause cause;
     const char* trigger_name;
     QuicMigrationAttemptFailureReason failure_reason;
   } test_cases[] = {
-      {ON_WRITE_ERROR, "OnWriteError",
-       QuicMigrationAttemptFailureReason::kSocketConfigFailed},
-      {ON_NETWORK_MADE_DEFAULT, "OnNetworkMadeDefault",
+      {QuicMigrationAttemptCause::kOnNetworkMadeDefault, "OnNetworkMadeDefault",
        QuicMigrationAttemptFailureReason::kProbeTimeout},
-      {ON_NETWORK_DISCONNECTED, "OnNetworkDisconnected",
+      {QuicMigrationAttemptCause::kOnNetworkDisconnected,
+       "OnNetworkDisconnected",
        QuicMigrationAttemptFailureReason::kNoUnusedConnectionId},
-      {CHANGE_NETWORK_ON_PATH_DEGRADING, "ChangeNetworkOnPathDegrading",
+      {QuicMigrationAttemptCause::kChangeNetworkOnPathDegrading,
+       "ChangeNetworkOnPathDegrading",
        QuicMigrationAttemptFailureReason::kStatelessReset},
-      {ON_NETWORK_MADE_DEFAULT, "OnNetworkMadeDefault",
-       QuicMigrationAttemptFailureReason::kProbeFailed},
+      {QuicMigrationAttemptCause::kOnWriteError, "OnWriteError",
+       QuicMigrationAttemptFailureReason::kProbeUnknownFailure},
+      {QuicMigrationAttemptCause::kChangePortOnPathDegrading,
+       "ChangePortOnPathDegrading",
+       QuicMigrationAttemptFailureReason::kProbeWriteError},
   };
 
   base::HistogramTester histogram_tester;
   for (const auto& test_case : test_cases) {
     auto context = CreateAttemptContext(test_case.cause);
     context->SetFailure(test_case.failure_reason);
+    ASSERT_NE(nullptr, context->failure_reason());
+    EXPECT_EQ(test_case.failure_reason, *context->failure_reason());
+    EXPECT_EQ(nullptr, context->socket_config_failure_details());
   }
 
   histogram_tester.ExpectUniqueSample("Net.Quic.Migration.Attempt.Eligible",
@@ -301,7 +350,7 @@ TEST_F(QuicMigrationAttemptContextTest, SetFailure) {
       "Net.Quic.Migration.Attempt.Eligible.ByTrigger.OnWriteError", false, 1);
   histogram_tester.ExpectBucketCount(
       "Net.Quic.Migration.Attempt.Eligible.ByTrigger.OnNetworkMadeDefault",
-      false, 2);
+      false, 1);
   histogram_tester.ExpectBucketCount(
       "Net.Quic.Migration.Attempt.Eligible.ByTrigger.OnNetworkDisconnected",
       false, 1);
@@ -309,10 +358,15 @@ TEST_F(QuicMigrationAttemptContextTest, SetFailure) {
       "Net.Quic.Migration.Attempt.Eligible.ByTrigger."
       "ChangeNetworkOnPathDegrading",
       false, 1);
+  histogram_tester.ExpectBucketCount(
+      "Net.Quic.Migration.Attempt.Eligible.ByTrigger."
+      "ChangePortOnPathDegrading",
+      false, 1);
 
   for (const auto& test_case : test_cases) {
     histogram_tester.ExpectBucketCount(
-        "Net.Quic.Migration.Attempt.FailureReason", test_case.failure_reason, 1);
+        "Net.Quic.Migration.Attempt.FailureReason", test_case.failure_reason,
+        1);
     histogram_tester.ExpectBucketCount(
         base::StrCat({"Net.Quic.Migration.Attempt.FailureReason.ByTrigger.",
                       test_case.trigger_name}),
@@ -322,9 +376,232 @@ TEST_F(QuicMigrationAttemptContextTest, SetFailure) {
   histogram_tester.ExpectTotalCount("Net.Quic.Migration.Attempt.Ineligible", 0);
   histogram_tester.ExpectTotalCount("Net.Quic.Migration.Attempt.Superseded", 0);
   histogram_tester.ExpectTotalCount(
-      "Net.Quic.Migration.Attempt.RedundantOutcome", 0);
+      "Net.Quic.Migration.Attempt.SpuriousOutcome", 0);
   histogram_tester.ExpectTotalCount(
       "Net.Quic.Migration.Attempt.UnclassifiedOutcome", 0);
+}
+
+TEST_F(QuicMigrationAttemptContextTest, SetSocketConfigFailure) {
+  struct TestCase {
+    QuicMigrationAttemptCause cause;
+    const char* trigger_name;
+    QuicSocketConfigStep step;
+    const char* step_name;
+    int net_error;
+  } test_cases[] = {
+      {QuicMigrationAttemptCause::kOnNetworkMadeDefault, "OnNetworkMadeDefault",
+       QuicSocketConfigStep::kConnect, "Connect", ERR_ADDRESS_UNREACHABLE},
+      {QuicMigrationAttemptCause::kOnNetworkDisconnected,
+       "OnNetworkDisconnected", QuicSocketConfigStep::kSetReceiveBufferSize,
+       "SetReceiveBufferSize", ERR_FAILED},
+      {QuicMigrationAttemptCause::kChangeNetworkOnPathDegrading,
+       "ChangeNetworkOnPathDegrading", QuicSocketConfigStep::kSetDoNotFragment,
+       "SetDoNotFragment", ERR_ACCESS_DENIED},
+      {QuicMigrationAttemptCause::kChangePortOnPathDegrading,
+       "ChangePortOnPathDegrading", QuicSocketConfigStep::kSetReceiveEcn,
+       "SetReceiveEcn", ERR_NETWORK_CHANGED},
+      {QuicMigrationAttemptCause::kOnWriteError, "OnWriteError",
+       QuicSocketConfigStep::kSetSendBufferSize, "SetSendBufferSize",
+       ERR_UNEXPECTED},
+  };
+
+  base::HistogramTester histogram_tester;
+  for (const auto& test_case : test_cases) {
+    auto context = CreateAttemptContext(test_case.cause);
+    context->SetSocketConfigFailure(test_case.step, test_case.net_error);
+    ASSERT_NE(nullptr, context->socket_config_failure_details());
+    EXPECT_EQ(test_case.step, context->socket_config_failure_details()->step);
+    EXPECT_EQ(test_case.net_error,
+              context->socket_config_failure_details()->net_error);
+    EXPECT_EQ(nullptr, context->failure_reason());
+  }
+
+  histogram_tester.ExpectUniqueSample("Net.Quic.Migration.Attempt.Eligible",
+                                      false, std::size(test_cases));
+  histogram_tester.ExpectUniqueSample(
+      "Net.Quic.Migration.Attempt.FailureReason",
+      QuicMigrationAttemptFailureReason::kSocketConfigFailed,
+      std::size(test_cases));
+
+  for (const auto& test_case : test_cases) {
+    histogram_tester.ExpectBucketCount(
+        base::StrCat({"Net.Quic.Migration.Attempt.FailureReason.ByTrigger.",
+                      test_case.trigger_name}),
+        QuicMigrationAttemptFailureReason::kSocketConfigFailed, 1);
+    histogram_tester.ExpectBucketCount(
+        "Net.Quic.Migration.Attempt.SocketConfigError.Step", test_case.step, 1);
+    histogram_tester.ExpectBucketCount(
+        base::StrCat(
+            {"Net.Quic.Migration.Attempt.SocketConfigError.Step.ByTrigger.",
+             test_case.trigger_name}),
+        test_case.step, 1);
+    histogram_tester.ExpectBucketCount(
+        "Net.Quic.Migration.Attempt.SocketConfigError.NetError",
+        -test_case.net_error, 1);
+    histogram_tester.ExpectBucketCount(
+        base::StrCat(
+            {"Net.Quic.Migration.Attempt.SocketConfigError.NetError.ByStep.",
+             test_case.step_name}),
+        -test_case.net_error, 1);
+    histogram_tester.ExpectBucketCount(
+        base::StrCat(
+            {"Net.Quic.Migration.Attempt.SocketConfigError.NetError.ByTrigger.",
+             test_case.trigger_name}),
+        -test_case.net_error, 1);
+  }
+
+  histogram_tester.ExpectTotalCount("Net.Quic.Migration.Attempt.Ineligible", 0);
+  histogram_tester.ExpectTotalCount("Net.Quic.Migration.Attempt.Superseded", 0);
+  histogram_tester.ExpectTotalCount(
+      "Net.Quic.Migration.Attempt.SpuriousOutcome", 0);
+  histogram_tester.ExpectTotalCount(
+      "Net.Quic.Migration.Attempt.UnclassifiedOutcome", 0);
+}
+
+TEST_F(QuicMigrationAttemptContextTest, DeferredMigrationCauses) {
+  base::HistogramTester histogram_tester;
+  {
+    auto context = CreateAttemptContext(
+        QuicMigrationAttemptCause::kWaitForNewNetworkPostNetworkDisconnected);
+    context->SetSuccess();
+  }
+  {
+    auto context = CreateAttemptContext(
+        QuicMigrationAttemptCause::kWaitForNewNetworkPostWriteError);
+    context->SetSuccess();
+  }
+
+  histogram_tester.ExpectUniqueSample(
+      "Net.Quic.Migration.Attempt.Eligible.ByTrigger."
+      "WaitForNewNetworkPostNetworkDisconnected",
+      true, 1);
+  histogram_tester.ExpectUniqueSample(
+      "Net.Quic.Migration.Attempt.Eligible.ByTrigger."
+      "WaitForNewNetworkPostWriteError",
+      true, 1);
+  histogram_tester.ExpectUniqueSample("Net.Quic.Migration.Attempt.Eligible",
+                                      true, 2);
+}
+
+TEST_F(QuicMigrationAttemptContextTest, RecordWaitForNewNetworkDuration) {
+  base::HistogramTester histogram_tester;
+
+  QuicMigrationAttemptContext::RecordWaitForNewNetworkDuration(
+      QuicMigrationAttemptCause::kWaitForNewNetworkPostNetworkDisconnected,
+      base::Milliseconds(350));
+  QuicMigrationAttemptContext::RecordWaitForNewNetworkDuration(
+      QuicMigrationAttemptCause::kWaitForNewNetworkPostWriteError,
+      base::Milliseconds(1200));
+
+  histogram_tester.ExpectTotalCount(
+      "Net.Quic.Migration.Attempt.WaitForNewNetwork.Duration", 2);
+  histogram_tester.ExpectTimeBucketCount(
+      "Net.Quic.Migration.Attempt.WaitForNewNetwork.Duration",
+      base::Milliseconds(350), 1);
+  histogram_tester.ExpectTimeBucketCount(
+      "Net.Quic.Migration.Attempt.WaitForNewNetwork.Duration",
+      base::Milliseconds(1200), 1);
+
+  histogram_tester.ExpectUniqueTimeSample(
+      "Net.Quic.Migration.Attempt.WaitForNewNetwork.Duration.ByTrigger."
+      "WaitForNewNetworkPostNetworkDisconnected",
+      base::Milliseconds(350), 1);
+  histogram_tester.ExpectUniqueTimeSample(
+      "Net.Quic.Migration.Attempt.WaitForNewNetwork.Duration.ByTrigger."
+      "WaitForNewNetworkPostWriteError",
+      base::Milliseconds(1200), 1);
+}
+
+#if GTEST_HAS_DEATH_TEST
+TEST_F(QuicMigrationAttemptContextTest, SetFailureSocketConfigFailedCrashes) {
+  auto context =
+      CreateAttemptContext(QuicMigrationAttemptCause::kOnNetworkMadeDefault);
+  EXPECT_CHECK_DEATH(context->SetFailure(
+      QuicMigrationAttemptFailureReason::kSocketConfigFailed));
+}
+
+TEST_F(QuicMigrationAttemptContextTest,
+       SetSocketConfigFailureNonNegativeErrorCrashes) {
+  auto context =
+      CreateAttemptContext(QuicMigrationAttemptCause::kOnNetworkMadeDefault);
+  EXPECT_CHECK_DEATH(
+      context->SetSocketConfigFailure(QuicSocketConfigStep::kConnect, OK));
+}
+#endif
+
+TEST_F(QuicMigrationAttemptContextTest, SetFailureGoogleHost) {
+  base::HistogramTester histogram_tester;
+  {
+    auto context =
+        CreateAttemptContext(QuicMigrationAttemptCause::kOnNetworkDisconnected,
+                             base::BindRepeating([]() { return true; }),
+                             /*is_google_host=*/true);
+    context->SetFailure(
+        QuicMigrationAttemptFailureReason::kNoUnusedConnectionId);
+  }
+
+  {
+    auto context =
+        CreateAttemptContext(QuicMigrationAttemptCause::kOnNetworkDisconnected,
+                             base::BindRepeating([]() { return true; }),
+                             /*is_google_host=*/true);
+    context->SetSocketConfigFailure(QuicSocketConfigStep::kConnect,
+                                    ERR_CONNECTION_REFUSED);
+  }
+
+  histogram_tester.ExpectBucketCount(
+      "Net.Quic.Migration.Attempt.FailureReason",
+      QuicMigrationAttemptFailureReason::kNoUnusedConnectionId, 1);
+  histogram_tester.ExpectBucketCount(
+      "Net.Quic.Migration.Attempt.FailureReason",
+      QuicMigrationAttemptFailureReason::kSocketConfigFailed, 1);
+  histogram_tester.ExpectBucketCount(
+      "Net.Quic.Migration.Attempt.FailureReason.GoogleHost",
+      QuicMigrationAttemptFailureReason::kNoUnusedConnectionId, 1);
+  histogram_tester.ExpectBucketCount(
+      "Net.Quic.Migration.Attempt.FailureReason.GoogleHost",
+      QuicMigrationAttemptFailureReason::kSocketConfigFailed, 1);
+  histogram_tester.ExpectBucketCount(
+      "Net.Quic.Migration.Attempt.FailureReason.ByTrigger."
+      "OnNetworkDisconnected.GoogleHost",
+      QuicMigrationAttemptFailureReason::kNoUnusedConnectionId, 1);
+  histogram_tester.ExpectBucketCount(
+      "Net.Quic.Migration.Attempt.FailureReason.ByTrigger."
+      "OnNetworkDisconnected.GoogleHost",
+      QuicMigrationAttemptFailureReason::kSocketConfigFailed, 1);
+
+  // Non-Google host should not record the GoogleHost histogram.
+  {
+    auto context =
+        CreateAttemptContext(QuicMigrationAttemptCause::kOnNetworkDisconnected,
+                             base::BindRepeating([]() { return true; }),
+                             /*is_google_host=*/false);
+    context->SetFailure(QuicMigrationAttemptFailureReason::kProbeTimeout);
+  }
+
+  {
+    auto context =
+        CreateAttemptContext(QuicMigrationAttemptCause::kOnNetworkDisconnected,
+                             base::BindRepeating([]() { return true; }),
+                             /*is_google_host=*/false);
+    context->SetSocketConfigFailure(QuicSocketConfigStep::kConnect,
+                                    ERR_CONNECTION_REFUSED);
+  }
+
+  histogram_tester.ExpectBucketCount(
+      "Net.Quic.Migration.Attempt.FailureReason",
+      QuicMigrationAttemptFailureReason::kProbeTimeout, 1);
+  histogram_tester.ExpectBucketCount(
+      "Net.Quic.Migration.Attempt.FailureReason",
+      QuicMigrationAttemptFailureReason::kSocketConfigFailed, 2);
+  histogram_tester.ExpectTotalCount("Net.Quic.Migration.Attempt.FailureReason",
+                                    4);
+  histogram_tester.ExpectTotalCount(
+      "Net.Quic.Migration.Attempt.FailureReason.GoogleHost", 2);
+  histogram_tester.ExpectTotalCount(
+      "Net.Quic.Migration.Attempt.FailureReason.ByTrigger."
+      "OnNetworkDisconnected.GoogleHost",
+      2);
 }
 
 }  // namespace

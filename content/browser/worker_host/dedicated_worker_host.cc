@@ -42,6 +42,7 @@
 #include "content/browser/worker_host/dedicated_worker_service_impl.h"
 #include "content/browser/worker_host/worker_script_fetcher.h"
 #include "content/browser/worker_host/worker_util.h"
+#include "content/common/features.h"
 #include "content/public/browser/browser_context.h"
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/network_service_util.h"
@@ -227,8 +228,8 @@ void DedicatedWorkerHost::CreateLockManager(
     mojo::PendingReceiver<blink::mojom::LockManager> receiver) {
   GetStoragePartitionImpl()->BindLockManager(
       GetWorkerStorageKey(), GetToken().value(), std::move(receiver));
-  GetStoragePartitionImpl()->GetLockManager()->AddLockObserver(GetToken().value(),
-                                                            this);
+  GetStoragePartitionImpl()->GetLockManager()->AddLockObserver(
+      GetToken().value(), this);
 }
 
 bool DedicatedWorkerHost::OnLockContention() {
@@ -386,8 +387,7 @@ void DedicatedWorkerHost::StartScriptLoad(
     parent_service_worker_client =
         creator_render_frame_host->GetLastCommittedServiceWorkerClient();
   } else {
-    parent_service_worker_client =
-        creator_worker->service_worker_handle()->service_worker_client();
+    parent_service_worker_client = creator_worker->GetServiceWorkerClient();
   }
   std::string fetch_event_client_id;
   if (parent_service_worker_client) {
@@ -547,7 +547,6 @@ void DedicatedWorkerHost::DidStartScriptLoad(
     worker_client_security_state_->cross_origin_embedder_policy =
         result->main_script_load_params->response_head->parsed_headers
             ->cross_origin_embedder_policy;
-
   }
 
   // The worker global scope's document isolation policy is the same as its
@@ -599,6 +598,9 @@ void DedicatedWorkerHost::DidStartScriptLoad(
     ObserveNetworkServiceCrash(GetStoragePartitionImpl());
   }
 
+  policy_container_host_ = base::MakeRefCounted<PolicyContainerHost>(
+      std::move(result->policy_container_policies));
+
   // Set up the default network loader factory.
   bool bypass_redirect_checks = false;
   result->subresource_loader_factories->pending_default_factory() =
@@ -607,12 +609,21 @@ void DedicatedWorkerHost::DidStartScriptLoad(
   result->subresource_loader_factories->set_bypass_redirect_checks(
       bypass_redirect_checks);
 
-  auto policy_container_host = base::MakeRefCounted<PolicyContainerHost>(
-      std::move(result->policy_container_policies));
+  // A worker sandboxed without `allow-same-origin` has an opaque origin and
+  // is not eligible to use service workers (mirroring
+  // `NavigationRequest::CommitNavigation()`).
+  if (base::FeatureList::IsEnabled(
+          features::kServiceWorkerDropHandleForCSPSandboxedWorker) &&
+      service_worker_handle_ &&
+      (policy_container_host_->policies().sandbox_flags &
+       network::mojom::WebSandboxFlags::kOrigin) ==
+          network::mojom::WebSandboxFlags::kOrigin) {
+    service_worker_handle_.reset();
+  }
 
   blink::mojom::ServiceWorkerContainerInfoForClientPtr container_info;
   blink::mojom::ControllerServiceWorkerInfoPtr controller;
-  if (service_worker_handle_->service_worker_client()) {
+  if (GetServiceWorkerClient()) {
     // TODO(crbug.com/40153087): Propagate dedicated worker ukm::SourceId
     // here.
     mojo::PendingRemote<network::mojom::CrossOriginEmbedderPolicyReporter>
@@ -630,7 +641,7 @@ void DedicatedWorkerHost::DidStartScriptLoad(
     std::tie(container_info, controller) =
         service_worker_handle_->scoped_service_worker_client()
             ->CommitResponseAndRelease(
-                /*rfh_id=*/std::nullopt, policy_container_host->policies(),
+                /*rfh_id=*/std::nullopt, policy_container_host_->policies(),
                 std::move(coep_reporter), std::move(dip_reporter),
                 ukm::kInvalidSourceId);
   }
@@ -641,10 +652,10 @@ void DedicatedWorkerHost::DidStartScriptLoad(
       subresource_loader_updater_.BindNewPipeAndPassReceiver(),
       std::move(controller),
       BindAndPassRemoteForBackForwardCacheControllerHost(),
-      policy_container_host->CreatePolicyContainerForBlink(),
+      policy_container_host_->CreatePolicyContainerForBlink(),
       std::move(coep_reporting_observer), std::move(dip_reporting_observer));
-  if (service_worker_handle_->service_worker_client()) {
-    service_worker_handle_->service_worker_client()->SetContainerReady();
+  if (auto service_worker_client = GetServiceWorkerClient()) {
+    service_worker_client->SetContainerReady();
   }
 }
 
@@ -889,6 +900,16 @@ void DedicatedWorkerHost::BindCacheStorage(
 void DedicatedWorkerHost::CreateNestedDedicatedWorker(
     mojo::PendingReceiver<blink::mojom::DedicatedWorkerHostFactory> receiver) {
   CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M160);
+  if (!policy_container_host_) {
+    // A non-compromised worker will always set its `policy_container_host_` in
+    // DidStartScriptLoad before it starts executing its script, and therefore
+    // will never create a nested worker without first setting
+    // `policy_container_host_`.
+    broker_receiver_.ReportBadMessage(
+        "CreateNestedDedicatedWorker called before policy_container_host_ was "
+        "set");
+    return;
+  }
   RenderFrameHost* ancestor_render_frame_host =
       ancestor_document_.AsRenderFrameHostIfValid();
   if (!ancestor_render_frame_host) {
@@ -904,8 +925,9 @@ void DedicatedWorkerHost::CreateNestedDedicatedWorker(
       *ancestor_render_frame_host, std::move(receiver),
       worker_process_host_->GetID(), /*creator=*/token_, ancestor_document_,
       GetWorkerStorageKey(), isolation_info_,
-      worker_client_security_state_->Clone(), creator_policies_,
-      creator_coep_reporter, network_restrictions_id_);
+      worker_client_security_state_->Clone(),
+      policy_container_host_->policies(), creator_coep_reporter,
+      network_restrictions_id_);
 }
 
 void DedicatedWorkerHost::CreateIdleManager(
@@ -972,10 +994,12 @@ void DedicatedWorkerHost::CreateBlobUrlStoreProvider(
           weak_factory_.GetWeakPtr()),
       !(GetContentClient()->browser()->IsBlobUrlPartitioningEnabled(
           GetProcessHost()->GetBrowserContext())),
-      base::FeatureList::IsEnabled(blink::features::kDataUrlWorkerOpaqueOrigin)
-          ? storage::BlobURLValidityCheckBehavior::DEFAULT
-          : storage::BlobURLValidityCheckBehavior::
-                ALLOW_OPAQUE_ORIGIN_STORAGE_KEY_MISMATCH);
+      (!base::FeatureList::IsEnabled(
+           blink::features::kDataUrlWorkerOpaqueOrigin) &&
+       renderer_origin_.opaque())
+          ? storage::BlobURLValidityCheckBehavior::
+                ALLOW_OPAQUE_ORIGIN_STORAGE_KEY_MISMATCH
+          : storage::BlobURLValidityCheckBehavior::DEFAULT);
 }
 
 void DedicatedWorkerHost::CreateCodeCacheHost(

@@ -11,6 +11,8 @@ import android.os.Bundle;
 
 import androidx.fragment.app.Fragment;
 
+import org.chromium.base.task.PostTask;
+import org.chromium.base.task.TaskTraits;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.tab.Tab;
@@ -51,7 +53,11 @@ public class SettingsInTabNavigationDelegate implements SettingsNavigation {
             Context context, @SettingsFragment int settingsFragment, boolean addToBackStack) {
         Class<? extends Fragment> fragmentClass =
                 SettingsNavigationImpl.getFragmentClassFromEnum(settingsFragment);
-        startSettings(context, fragmentClass, null, addToBackStack);
+        startSettings(
+                context,
+                fragmentClass,
+                SettingsNavigationImpl.getFragmentArgsFromEnum(context, settingsFragment),
+                addToBackStack);
     }
 
     @Override
@@ -89,18 +95,42 @@ public class SettingsInTabNavigationDelegate implements SettingsNavigation {
             return;
         }
 
-        String targetUrl = SettingsFragmentRegistry.createUrlForFragment(fragment, fragmentArgs);
+        // While the search UI is open it owns the screen, and the pages it opens are steps inside
+        // a search rather than places the user navigated the tab to. Navigating the tab from under
+        // search would purge the fragment back stack it records those pages on.
+        SettingsHostFragment hostFragment = findHostFragment(/* fragment= */ null);
+        boolean searchOpen = hostFragment != null && hostFragment.isSearchOpen();
+
+        String targetUrl =
+                searchOpen
+                        ? null
+                        : SettingsFragmentRegistry.createUrlForFragment(fragment, fragmentArgs);
         if (targetUrl != null) {
             // Executing loadUrl updates the Omnibox, creates a WebContents navigation history
             // entry, and triggers SettingsPage.updateForUrl() on the current tab.
             mTab.loadUrl(new LoadUrlParams(targetUrl));
-        } else {
-            // Unmapped fragments fall back to launching an Intent so un-migrated subpages continue
-            // to function.
-            Intent intent =
-                    createSettingsIntent(context, fragment, fragmentArgs, addToBackStack, tag);
-            context.startActivity(intent);
+            return;
         }
+
+        // Show the page in the current host on the fragment back stack: it either has no URL,
+        // because it has not been migrated yet or cannot have one (ChosenObjectSettings, for
+        // instance, is identified by a serialized device descriptor), or it belongs to an open
+        // search. Launching an Intent here would open a second settings tab at the root URL,
+        // which is never what the user asked for from inside settings.
+        if (hostFragment != null) {
+            hostFragment.showFragment(
+                    Fragment.instantiate(context, fragment.getName(), fragmentArgs),
+                    // Always added to the back stack, whatever the caller asked for. This page has
+                    // no navigation entry of its own, so the fragment back stack is the only thing
+                    // a back press has to pop; passing the caller's addToBackStack through would
+                    // strand the user on a page with no way back.
+                    /* addToBackStack= */ true,
+                    tag);
+            return;
+        }
+
+        Intent intent = createSettingsIntent(context, fragment, fragmentArgs, addToBackStack, tag);
+        context.startActivity(intent);
     }
 
     @Override
@@ -198,6 +228,23 @@ public class SettingsInTabNavigationDelegate implements SettingsNavigation {
     }
 
     /**
+     * Replaces the entry currently being navigated to with {@code url}.
+     *
+     * <p>For a URL that turned out not to name a page that can be shown, discovered while the tab
+     * is resolving a navigation to it. The replacement is deferred to the next message rather than
+     * run inline, because the navigation that led here is still being committed and starting
+     * another one underneath it is not something the navigation controller expects.
+     */
+    void redirectFromNavigation(String url) {
+        PostTask.postTask(
+                TaskTraits.UI_DEFAULT,
+                () -> {
+                    if (!mTab.isInitialized()) return;
+                    navigateReplacingCurrentEntry(url);
+                });
+    }
+
+    /**
      * Navigates to {@code url}, replacing the current navigation entry instead of pushing a new
      * one.
      *
@@ -220,19 +267,42 @@ public class SettingsInTabNavigationDelegate implements SettingsNavigation {
     }
 
     /**
+     * Navigates up without leaving settings: goes back to the previous settings page if there is
+     * one, otherwise replaces the current entry with main settings, so that the next back press
+     * leaves settings.
+     */
+    void navigateUp() {
+        if (goBackToPreviousSettingsEntry()) return;
+
+        navigateReplacingCurrentEntry(UrlConstants.SETTINGS_URL);
+    }
+
+    /**
      * Goes back if the previous navigation entry is a settings page, and returns whether it did.
      *
      * <p>The previous entry is deliberately required to be a settings page: going back out of
      * settings altogether is not what finishing a settings page means.
      */
     private boolean goBackToPreviousSettingsEntry() {
+        if (getPreviousSettingsPageUrl() == null) return false;
+        mTab.goBack();
+        return true;
+    }
+
+    /**
+     * Returns the URL of the entry preceding the current one if it is a settings page, or null.
+     *
+     * <p>For a page that has to know where it was opened from after the tab's history may have
+     * changed. Deleting browsing data, for instance, can delete the entries before the current one.
+     * Such a page should ask while the history is still intact.
+     */
+    public @Nullable String getPreviousSettingsPageUrl() {
         String previousUrl = getPreviousEntryUrl();
         if (previousUrl == null
                 || SettingsFragmentRegistry.getFragmentClassForUrl(previousUrl) == null) {
-            return false;
+            return null;
         }
-        mTab.goBack();
-        return true;
+        return previousUrl;
     }
 
     /** Returns the URL of the entry preceding the current one, or null if there is none. */
@@ -250,13 +320,15 @@ public class SettingsInTabNavigationDelegate implements SettingsNavigation {
     }
 
     /**
-     * Resolves the host fragment, preferring the fragment's own parent hierarchy. When Chrome is in
-     * the background or during lifecycle transitions the host fragment's view may not report
+     * Resolves the host fragment, preferring the given fragment's own parent hierarchy. When Chrome
+     * is in the background or during lifecycle transitions the host fragment's view may not report
      * isShown(), which makes the activity-level lookup return null.
      */
-    private @Nullable SettingsHostFragment findHostFragment(Fragment fragment) {
-        SettingsHostFragment hostFragment = SettingsHostFragment.get(fragment);
-        if (hostFragment != null) return hostFragment;
+    private @Nullable SettingsHostFragment findHostFragment(@Nullable Fragment fragment) {
+        if (fragment != null) {
+            SettingsHostFragment hostFragment = SettingsHostFragment.get(fragment);
+            if (hostFragment != null) return hostFragment;
+        }
 
         WindowAndroid windowAndroid = mTab.getWindowAndroid();
         Activity activity = windowAndroid != null ? windowAndroid.getActivity().get() : null;

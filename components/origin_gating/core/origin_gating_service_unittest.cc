@@ -13,10 +13,11 @@
 #include "base/test/task_environment.h"
 #include "base/test/test_future.h"
 #include "components/origin_gating/core/checker_id.h"
+#include "components/origin_gating/core/gateable_event.h"
+#include "components/origin_gating/core/gating_decision.h"
 #include "components/origin_gating/core/origin_gating_checker.h"
 #include "components/origin_gating/core/origin_gating_configuration.h"
 #include "components/origin_gating/core/origin_gating_registration.h"
-#include "components/origin_gating/core/types.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "url/gurl.h"
@@ -36,9 +37,7 @@ class MockDelegate : public OriginGatingChecker::Delegate {
   MOCK_METHOD(void,
               DoesOriginRequireUserConfirmation,
               (GatingDecisionContext * context,
-               GateableEvent event,
-               const GURL& source,
-               const GURL& destination,
+               const GateableEvent& event,
                DoesOriginRequireUserConfirmationCallback callback),
               (const, override));
   MOCK_METHOD(void,
@@ -49,9 +48,7 @@ class MockDelegate : public OriginGatingChecker::Delegate {
   MOCK_METHOD(void,
               OnNoVerdict,
               (GatingDecisionContext * context,
-               GateableEvent event,
-               const GURL& source,
-               const GURL& destination,
+               const GateableEvent& event,
                bool requires_user_confirmation,
                base::OnceCallback<void(NoVerdictResult)> callback),
               (override));
@@ -76,14 +73,16 @@ TEST_F(OriginGatingServiceTest, CreateAndRegisterChecker) {
   std::unique_ptr<OriginGatingRegistration> reg1 =
       service_->CreateAndRegisterChecker(
           delegate.GetWeakPtr(),
-          OriginGatingConfiguration({}, /*use_site_keyed_cache=*/false));
+          OriginGatingConfiguration(
+              {}, OriginGatingConfiguration::CacheScope::kOrigin));
   CheckerId id1 = reg1->id();
   EXPECT_FALSE(id1.is_null());
 
   std::unique_ptr<OriginGatingRegistration> reg2 =
       service_->CreateAndRegisterChecker(
           delegate.GetWeakPtr(),
-          OriginGatingConfiguration({}, /*use_site_keyed_cache=*/false));
+          OriginGatingConfiguration(
+              {}, OriginGatingConfiguration::CacheScope::kOrigin));
   CheckerId id2 = reg2->id();
   EXPECT_FALSE(id2.is_null());
   EXPECT_NE(id1, id2);
@@ -106,11 +105,13 @@ TEST_F(OriginGatingServiceTest, Shutdown) {
   std::unique_ptr<OriginGatingRegistration> reg1 =
       service_->CreateAndRegisterChecker(
           delegate.GetWeakPtr(),
-          OriginGatingConfiguration({}, /*use_site_keyed_cache=*/false));
+          OriginGatingConfiguration(
+              {}, OriginGatingConfiguration::CacheScope::kOrigin));
   std::unique_ptr<OriginGatingRegistration> reg2 =
       service_->CreateAndRegisterChecker(
           delegate.GetWeakPtr(),
-          OriginGatingConfiguration({}, /*use_site_keyed_cache=*/false));
+          OriginGatingConfiguration(
+              {}, OriginGatingConfiguration::CacheScope::kOrigin));
   CheckerId id1 = reg1->id();
   CheckerId id2 = reg2->id();
 
@@ -130,7 +131,8 @@ TEST_F(OriginGatingServiceTest, RegistrationUnregistersOnDestruction) {
     std::unique_ptr<OriginGatingRegistration> registration =
         service_->CreateAndRegisterChecker(
             delegate.GetWeakPtr(),
-            OriginGatingConfiguration({}, /*use_site_keyed_cache=*/false));
+            OriginGatingConfiguration(
+                {}, OriginGatingConfiguration::CacheScope::kOrigin));
     id = registration->id();
     EXPECT_FALSE(id.is_null());
     EXPECT_TRUE(service_->GetChecker(id));

@@ -66,6 +66,11 @@ const OS_WIDGET_TOGGLE_ELEMENT_ID = 'kGlicOsToggleElementId';
 const OS_WIDGET_KEYBOARD_SHORTCUT_ELEMENT_ID =
     'kGlicOsWidgetKeyboardShortcutElementId';
 
+const WEB_ACTUATION_ENABLED_PREF_KEY =
+    'synthetic.settings.glic.web_actuation_enabled';
+const EXPERIMENTAL_TRIGGERING_ENABLED_PREF_KEY =
+    'synthetic.settings.glic.experimental_triggering_enabled';
+
 // Partial structure of the glic.user_status dictionary pref.
 interface GlicUserStatusPref {
   isEnterpriseAccountDataProtected?: boolean;
@@ -93,13 +98,10 @@ export class SettingsGlicSubpageElement extends SettingsGlicSubpageElementBase {
       disallowedByAdmin_: {type: Boolean},
       userStatusPref_: {type: Object},
       launcherEnabledPref_: {type: Object},
-      hotkeyGlobalScopeEnabledPref_: {type: Object},
-      selectedScope_: {type: String},
       registeredShortcut_: {type: String},
       registeredFocusToggleShortcut_: {type: String},
       registeredSelectionShortcut_: {type: String},
       tabAccessToggleExpanded_: {type: Boolean},
-      fakePref_: {type: Object},
       closedCaptionsToggleEnabled_: {type: Boolean},
       headlessCaptionsEnabled_: {type: Boolean},
       glicExtensionsFeatureEnabled_: {type: Boolean},
@@ -117,39 +119,31 @@ export class SettingsGlicSubpageElement extends SettingsGlicSubpageElementBase {
       defaultTabAccessToggleExpanded_: {type: Boolean},
       webActuationFeatureEnabled_: {type: Boolean},
       webActuationEnabledPref_: {type: Object},
-      experimentalTriggeringEnabledPref_: {type: Object},
       isWebActuationDisabledForEnterprise_: {type: Boolean},
-      webActuationDisabledForEnterprisePref_: {type: Object},
       webActuationEnabledExpanded_: {type: Boolean},
       actorLoginFederatedLoginSupportEnabled_: {type: Boolean},
     };
   }
 
   protected accessor disallowedByAdmin_: boolean = false;
-  protected accessor userStatusPref_:
+  private accessor userStatusPref_:
       chrome.settingsPrivate.PrefObject<GlicUserStatusPref>|
       undefined = undefined;
-  protected accessor launcherEnabledPref_:
+  private accessor launcherEnabledPref_:
       chrome.settingsPrivate.PrefObject<boolean>|undefined = undefined;
-  protected accessor hotkeyGlobalScopeEnabledPref_:
+  private accessor webActuationEnabledPref_:
       chrome.settingsPrivate.PrefObject<boolean>|undefined = undefined;
-  protected accessor selectedScope_: 'GLOBAL'|'CHROME' = 'CHROME';
   protected accessor registeredShortcut_: string = '';
   protected accessor registeredFocusToggleShortcut_: string = '';
   protected accessor registeredSelectionShortcut_: string = '';
   protected accessor tabAccessToggleExpanded_: boolean = false;
-  protected accessor fakePref_: chrome.settingsPrivate.PrefObject = {
-    key: 'glic.fake_pref',
-    type: chrome.settingsPrivate.PrefType.BOOLEAN,
-    value: 0,
-  };
   protected accessor closedCaptionsToggleEnabled_: boolean =
       loadTimeData.getBoolean('glicCanUseLive');
   protected accessor headlessCaptionsEnabled_: boolean =
       loadTimeData.getBoolean('headlessCaptionsEnabled');
   protected accessor glicExtensionsFeatureEnabled_: boolean =
       loadTimeData.getBoolean('glicExtensionsFeatureEnabled');
-  protected accessor glicUserStatusCheckFeatureEnabled_: boolean =
+  private accessor glicUserStatusCheckFeatureEnabled_: boolean =
       loadTimeData.getBoolean('glicUserStatusCheckFeatureEnabled');
   protected accessor glicSelectionFeatureEnabled_: boolean =
       loadTimeData.getBoolean('glicSelectionFeatureEnabled');
@@ -172,28 +166,8 @@ export class SettingsGlicSubpageElement extends SettingsGlicSubpageElementBase {
       loadTimeData.getBoolean('glicCanUseLive');
   protected accessor defaultTabAccessToggleExpanded_: boolean = false;
   protected accessor webActuationFeatureEnabled_: boolean = false;
-  protected accessor webActuationEnabledPref_:
-      chrome.settingsPrivate.PrefObject<boolean> = {
-    key: 'glic.web_actuation_enabled',
-    type: chrome.settingsPrivate.PrefType.BOOLEAN,
-    value: false,
-  };
-  protected accessor experimentalTriggeringEnabledPref_:
-      chrome.settingsPrivate.PrefObject<boolean> = {
-    key: 'glic.experimental_triggering_enabled',
-    type: chrome.settingsPrivate.PrefType.BOOLEAN,
-    value: true,
-  };
   protected accessor isWebActuationDisabledForEnterprise_: boolean =
       loadTimeData.getBoolean('isWebActuationDisabledForEnterprise');
-  protected accessor webActuationDisabledForEnterprisePref_:
-      chrome.settingsPrivate.PrefObject<boolean> = {
-    key: 'glic.web_actuation_disabled_for_enterprise',
-    type: chrome.settingsPrivate.PrefType.BOOLEAN,
-    value: false,
-    enforcement: chrome.settingsPrivate.Enforcement.ENFORCED,
-    controlledBy: chrome.settingsPrivate.ControlledBy.DEVICE_POLICY,
-  };
   protected accessor webActuationEnabledExpanded_: boolean = false;
   protected accessor actorLoginFederatedLoginSupportEnabled_: boolean =
       loadTimeData.getBoolean('actorLoginFederatedLoginSupportEnabled');
@@ -212,8 +186,7 @@ export class SettingsGlicSubpageElement extends SettingsGlicSubpageElementBase {
       [SettingsGlicPageFeaturePrefName.USER_STATUS]: 'userStatusPref_',
       [SettingsGlicPageFeaturePrefName.LAUNCHER_ENABLED]:
           'launcherEnabledPref_',
-      [SettingsGlicPageFeaturePrefName.HOTKEY_GLOBAL_SCOPE_ENABLED]:
-          'hotkeyGlobalScopeEnabledPref_',
+      [WEB_ACTUATION_ENABLED_PREF_KEY]: 'webActuationEnabledPref_',
     });
     this.addPrefObserver(
         SettingsGlicPageFeaturePrefName.TAB_CONTEXT_ENABLED,
@@ -225,6 +198,11 @@ export class SettingsGlicSubpageElement extends SettingsGlicSubpageElementBase {
         (pref: chrome.settingsPrivate.PrefObject<boolean>) => {
           this.defaultTabAccessToggleExpanded_ = pref.value;
         });
+    this.addPrefObserver(
+        EXPERIMENTAL_TRIGGERING_ENABLED_PREF_KEY,
+        (pref: chrome.settingsPrivate.PrefObject<boolean>) => {
+          this.experimentalTriggeringExpanded_ = pref.value;
+        });
 
     this.browserProxy_.getDisallowedByAdmin().then(
         this.disallowedByAdminChanged_.bind(this));
@@ -232,46 +210,48 @@ export class SettingsGlicSubpageElement extends SettingsGlicSubpageElementBase {
         'glic-disallowed-by-admin-changed',
         this.disallowedByAdminChanged_.bind(this));
     this.addWebUiListener(
-        'glic-web-actuation-capability-changed',
-        (canActOnWeb: boolean) =>
-            this.onWebActuationCapabilityChanged_(canActOnWeb));
+        'glic-web-actuation-disabled-for-enterprise-changed',
+        (disabledForEnterprise: boolean) =>
+            this.onWebActuationDisabledForEnterpriseChanged_(
+                disabledForEnterprise));
     this.addWebUiListener(
         'glic-web-actuation-toggle-visibility-changed',
         (visible: boolean) =>
             this.onWebActuationToggleVisibilityChanged_(visible));
     this.addWebUiListener(
         'glic-web-actuation-enabled-changed', (enabled: boolean) => {
-          this.webActuationEnabledPref_ = {
-            ...this.webActuationEnabledPref_,
-            value: enabled,
-          };
+          PrefService.getInstance().setPrefValue(
+              WEB_ACTUATION_ENABLED_PREF_KEY, enabled);
         });
     this.addWebUiListener(
         'glic-experimental-triggering-enabled-changed', (enabled: boolean) => {
-          this.experimentalTriggeringEnabledPref_ = {
-            ...this.experimentalTriggeringEnabledPref_,
-            value: enabled,
-          };
+          PrefService.getInstance().setPrefValue(
+              EXPERIMENTAL_TRIGGERING_ENABLED_PREF_KEY, enabled);
         });
 
     this.browserProxy_.getWebActuationToggleVisibility().then(
         (visible: boolean) => {
-            this.onWebActuationToggleVisibilityChanged_(visible);
+          this.onWebActuationToggleVisibilityChanged_(visible);
         });
 
-    this.browserProxy_.getWebActuationEnabled().then((enabled: boolean) => {
-      this.webActuationEnabledPref_ = {
-        ...this.webActuationEnabledPref_,
-        value: enabled,
-      };
-    });
+    Promise
+        .all([
+          this.browserProxy_.getWebActuationEnabled(),
+          PrefService.getInstance().whenInitialized(),
+        ])
+        .then(([enabled]) => {
+          PrefService.getInstance().setPrefValue(
+              WEB_ACTUATION_ENABLED_PREF_KEY, enabled);
+        });
 
-    this.browserProxy_.getExperimentalTriggeringEnabled().then(
-        (enabled: boolean) => {
-          this.experimentalTriggeringEnabledPref_ = {
-            ...this.experimentalTriggeringEnabledPref_,
-            value: enabled,
-          };
+    Promise
+        .all([
+          this.browserProxy_.getExperimentalTriggeringEnabled(),
+          PrefService.getInstance().whenInitialized(),
+        ])
+        .then(([enabled]) => {
+          PrefService.getInstance().setPrefValue(
+              EXPERIMENTAL_TRIGGERING_ENABLED_PREF_KEY, enabled);
         });
 
     this.browserProxy_.getGlicShortcut().then(shortcut => {
@@ -290,19 +270,10 @@ export class SettingsGlicSubpageElement extends SettingsGlicSubpageElementBase {
 
     const changedPrivateProperties =
         changedProperties as Map<PropertyKey, unknown>;
-
-    if (changedPrivateProperties.has('hotkeyGlobalScopeEnabledPref_')) {
-      this.selectedScope_ = this.computeSelectedScope_(
-          !!this.hotkeyGlobalScopeEnabledPref_?.value);
-    }
-
     if (changedPrivateProperties.has('webActuationEnabledPref_')) {
-      this.onWebActuationEnabledChanged_(this.webActuationEnabledPref_.value);
-    }
-
-    if (changedPrivateProperties.has('experimentalTriggeringEnabledPref_')) {
-      this.onExperimentalTriggeringEnabledChanged_(
-          this.experimentalTriggeringEnabledPref_.value);
+      this.webActuationEnabledExpanded_ =
+          !this.isWebActuationDisabledForEnterprise_ &&
+          !!this.webActuationEnabledPref_?.value;
     }
   }
 
@@ -346,22 +317,16 @@ export class SettingsGlicSubpageElement extends SettingsGlicSubpageElementBase {
     this.hideHelpBubble(OS_WIDGET_TOGGLE_ELEMENT_ID);
   }
 
-  private computeSelectedScope_(globalEnabled: boolean): 'GLOBAL'|'CHROME' {
-    return globalEnabled ? 'GLOBAL' : 'CHROME';
-  }
-
   protected getMainShortcutOpened_(): boolean {
     return this.launcherEnabledPref_?.value ||
         this.glicHotkeyLocalScopeEnabled_;
   }
 
-  protected onScopeChange_(event: Event) {
-    const select = event.target as HTMLSelectElement;
-    const isGlobal = select.value === 'GLOBAL';
-    PrefService.getInstance().setPrefValue(
-        SettingsGlicPageFeaturePrefName.HOTKEY_GLOBAL_SCOPE_ENABLED, isGlobal);
+  protected onScopeToggleSettingsBooleanControlChange_(event: Event) {
+    const isGlobal = (event.target as SettingsToggleButtonElement).checked;
     this.metricsBrowserProxy_.recordAction(
         'Glic.Settings.HotkeyScope.' + (isGlobal ? 'Global' : 'Chrome'));
+    this.browserProxy_.onHotkeyScopeSettingsChange(isGlobal);
   }
 
   protected onGeolocationToggleSettingsBooleanControlChange_(
@@ -490,16 +455,7 @@ export class SettingsGlicSubpageElement extends SettingsGlicSubpageElementBase {
     const target = event.target as SettingsToggleButtonElement;
     const enabled = target.checked;
     this.metricsBrowserProxy_.recordAction(
-        'Glic.Settings.ShakeTrigger' +
-        (enabled ? '.Enabled' : '.Disabled'));
-  }
-
-  private onWebActuationEnabledChanged_(enabled: boolean) {
-    if (this.isWebActuationDisabledForEnterprise_) {
-      this.webActuationEnabledExpanded_ = false;
-      return;
-    }
-    this.webActuationEnabledExpanded_ = enabled;
+        'Glic.Settings.ShakeTrigger' + (enabled ? '.Enabled' : '.Disabled'));
   }
 
   protected onActivityRowClick_() {
@@ -649,10 +605,6 @@ export class SettingsGlicSubpageElement extends SettingsGlicSubpageElementBase {
     const target = event.target as SettingsToggleButtonElement;
     const enabled = target.checked;
     this.browserProxy_.setWebActuationEnabled(enabled);
-    this.webActuationEnabledPref_ = {
-      ...this.webActuationEnabledPref_,
-      value: enabled,
-    };
     this.metricsBrowserProxy_.recordAction(
         'Glic.Settings.WebActuation' + (enabled ? '.Enabled' : '.Disabled'));
   }
@@ -667,17 +619,9 @@ export class SettingsGlicSubpageElement extends SettingsGlicSubpageElementBase {
     const target = event.target as SettingsToggleButtonElement;
     const enabled = target.checked;
     this.browserProxy_.setExperimentalTriggeringEnabled(enabled);
-    this.experimentalTriggeringEnabledPref_ = {
-      ...this.experimentalTriggeringEnabledPref_,
-      value: enabled,
-    };
     this.metricsBrowserProxy_.recordAction(
         'Glic.Settings.ExperimentalTriggering' +
         (enabled ? '.Enabled' : '.Disabled'));
-  }
-
-  private onExperimentalTriggeringEnabledChanged_(enabled: boolean) {
-    this.experimentalTriggeringExpanded_ = enabled;
   }
 
   protected onExperimentalTriggeringExpandClick_() {
@@ -732,8 +676,9 @@ export class SettingsGlicSubpageElement extends SettingsGlicSubpageElementBase {
     return loadTimeData.getString('glicWebActuationToggleLearnMoreUrl');
   }
 
-  private onWebActuationCapabilityChanged_(canActOnWeb: boolean) {
-    this.isWebActuationDisabledForEnterprise_ = !canActOnWeb;
+  private onWebActuationDisabledForEnterpriseChanged_(
+      disabledForEnterprise: boolean) {
+    this.isWebActuationDisabledForEnterprise_ = disabledForEnterprise;
     if (this.isWebActuationDisabledForEnterprise_) {
       this.webActuationEnabledExpanded_ = false;
     }

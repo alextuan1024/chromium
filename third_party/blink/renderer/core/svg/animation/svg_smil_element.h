@@ -148,7 +148,10 @@ class CORE_EXPORT SVGSMILElement : public SVGElement {
  protected:
   enum BeginOrEnd { kBegin, kEnd };
 
-  void AddInstanceTimeAndUpdate(BeginOrEnd, SMILTime, SMILTimeOrigin);
+  void AddInstanceTimeAndUpdate(BeginOrEnd,
+                                SMILTime,
+                                SMILTimeOrigin,
+                                bool propagate_to_instances = true);
 
   void SetTargetElement(SVGElement*);
 
@@ -204,6 +207,10 @@ class CORE_EXPORT SVGSMILElement : public SVGElement {
   void AddInstanceTime(BeginOrEnd begin_or_end,
                        SMILTime time,
                        SMILTimeOrigin origin);
+  void ImportInstanceTimes(const SVGSMILElement& corresponding);
+  void PropagateInstanceTimeToInstances(BeginOrEnd begin_or_end,
+                                        SMILTime time,
+                                        SMILTimeOrigin origin);
   void InstanceListChanged();
   void IntervalStateChanged();
 
@@ -226,6 +233,7 @@ class CORE_EXPORT SVGSMILElement : public SVGElement {
 
     Type GetType() const { return type_; }
     BeginOrEnd GetBeginOrEnd() const { return begin_or_end_; }
+    bool HasExplicitBase() const { return !base_id_.empty(); }
     const AtomicString& GetName() const { return name_; }
     SMILTime Offset() const { return offset_; }
     unsigned Repeat() const { return repeat_; }
@@ -335,14 +343,11 @@ class CORE_EXPORT SVGSMILElement : public SVGElement {
 template <>
 struct DowncastTraits<SVGSMILElement> {
   static bool AllowFrom(const Node& node) {
-    auto* svg_element = DynamicTo<SVGElement>(node);
-    return svg_element && AllowFrom(*svg_element);
-  }
-  static bool AllowFrom(const SVGElement& svg_element) {
-    return svg_element.HasTagName(svg_names::kSetTag) ||
-           svg_element.HasTagName(svg_names::kAnimateTag) ||
-           svg_element.HasTagName(svg_names::kAnimateMotionTag) ||
-           svg_element.HasTagName(svg_names::kAnimateTransformTag);
+    const ElementType type = node.GetElementType();
+    return type == ElementType::kSVGSetElement ||
+           type == ElementType::kSVGAnimateElement ||
+           type == ElementType::kSVGAnimateMotionElement ||
+           type == ElementType::kSVGAnimateTransformElement;
   }
 };
 

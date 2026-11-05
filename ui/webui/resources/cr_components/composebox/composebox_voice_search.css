@@ -45,6 +45,11 @@
  * can overlay the animation's container div.
  * Must have static positioning otherwise so the error and placeholder
  * voice search text change the height of voice_search and thus composebox.
+ * Note: when static (in error mode), this '#container''s 'width: 100%'
+ * resolves against the parent composebox ':host'. Thus, host must set
+ * 'display: block' and '--cr-composebox-width' since others that control
+ * height/width, like '#composebox' and 'search-animated-glow', are hidden in
+ * error state.
  */
 :host(:not([is-permission-prompt-open])) #container:not(.has-error) {
   inset: 0;
@@ -103,7 +108,7 @@
 
 #error-container {
   display: none;
-  font-size: var(--cr-composebox-font-size, 18px);
+  font-size: var(--cr-composebox-font-size, 16px);
 }
 
 #error-container:not([hidden]) {
@@ -212,6 +217,14 @@
   position: relative;
 }
 
+/* Voice search uses the search token blue on every surface, instead of
+ * inheriting whichever submit color the embedding composebox happens to use.
+ * The button is always active, even before any speech has been recognized.
+ */
+#submitButton {
+  --color-composebox-submit-button-background: #346BF1;
+}
+
 :host-context([webui-rounded-icons]) #stopButton {
   --cr-icon-button-icon-size: 24px;
 }
@@ -235,9 +248,13 @@
   font-size: 16px;
   font-weight: 400;
   line-height: 24px;
-  max-height: 188px;
+  /* 20px top padding + 7 lines of 24px + 7px room for the bottom scroll fade. */
+  max-height: 195px;
   overflow-y: auto;
-  padding-bottom: 0;
+  /* Reserve 7px bottom padding for the scroll fade so it doesn't cover the
+   * bottom of the text.
+   */
+  padding-bottom: 7px;
   padding-inline-end: 20px;
   padding-inline-start: 20px;
   padding-top: 20px;
@@ -248,6 +265,10 @@
 :host([audio-wave-enabled]) #input.empty {
   max-height: 44px;
   overflow-y: hidden;
+  /* The placeholder is not scrollable and has no fade, so it does not need the
+   * padding reserved above.
+   */
+  padding-bottom: 0;
   padding-inline-end: 0;
   padding-inline-start: 0;
   padding-top: 20px;
@@ -262,9 +283,9 @@
 }
 
 /* Positioned absolute at bottom-end to stay fixed during dynamic height
- * expansion (16px bottom in single-line, 8px in multiline per Figma spec). */
+ * expansion (16px bottom per Figma spec). */
 :host([audio-wave-enabled]) #bottomActions {
-  bottom: var(--voice-bottom-actions-bottom, 12px);
+  bottom: var(--voice-bottom-actions-bottom, 16px);
   inset-inline-end: var(--voice-bottom-actions-inset-inline-end, 16px);
   margin: 0;
   position: absolute;
@@ -286,6 +307,12 @@
 #input.hidden {
   opacity: 0;
   pointer-events: none;
+}
+
+:host(.permission-prompt-showing) {
+  --voice-search-minimum-height: var(--cr_composebox_minimum_height, 121px);
+  min-height: var(--cr_composebox_minimum_height, 121px);
+  min-width: var(--cr_composebox_minimum_width, 0);
 }
 
 /* Hide submit/stop buttons (if applicable) if permission prompt is showing. */

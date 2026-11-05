@@ -94,6 +94,8 @@ class UI_ANDROID_EXPORT ViewAndroid {
     void TransferViewAndDelegateFrom(ScopedAnchorView& other);
 
     // Default copy/assign disabled by move constructor.
+
+    bool has_view_ = false;
   };
 
   enum class LayoutType {
@@ -247,8 +249,6 @@ class UI_ANDROID_EXPORT ViewAndroid {
 
   void NotifyVirtualKeyboardOverlayRect(const gfx::Rect& keyboard_rect);
 
-  void ShowInterestInElement(int);
-
   void SetLayoutForTesting(int x, int y, int width, int height);
 
   EventForwarder* event_forwarder() { return event_forwarder_.get(); }
@@ -346,7 +346,7 @@ class UI_ANDROID_EXPORT ViewAndroid {
   // child addition, removal, or reordering during event dispatch). Active
   // iterators register themselves in `active_iters_` so mutating operations can
   // update them in-place, preventing UAF and iterator invalidation.
-  class ScopedChildrenIter : public base::LinkNode<ScopedChildrenIter> {
+  class ScopedChildrenIter : public base::SafeLinkNode<ScopedChildrenIter> {
    public:
     enum class IterationType {
       kForward,
@@ -383,7 +383,7 @@ class UI_ANDROID_EXPORT ViewAndroid {
 
   // Tracks all active iterators traversing the `children_` list, allowing
   // real-time updates when the list structure changes (e.g. RemoveChild).
-  base::LinkedList<ScopedChildrenIter> active_iters_;
+  base::SafeLinkedList<ScopedChildrenIter> active_iters_;
 
   base::ObserverList<ViewAndroidObserver>::Unchecked observer_list_;
   scoped_refptr<cc::slim::Layer> layer_;
@@ -417,6 +417,7 @@ class UI_ANDROID_EXPORT ViewAndroid {
   HitTestCallback hit_test_callback_;
 
   bool controls_resize_view_ = false;
+  bool has_delegate_ = false;
 
   // Whether the view is showing. This is used to check if the view is eligible
   // for a Check Hit.

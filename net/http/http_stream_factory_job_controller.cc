@@ -685,6 +685,7 @@ void HttpStreamFactory::JobController::MaybeResumeMainJob(
   }
 
   main_job_is_blocked_ = false;
+  main_job_wait_time_ = delay;
 
   if (!main_job_->is_waiting()) {
     // There are two cases where the main job is not in WAIT state:
@@ -695,19 +696,21 @@ void HttpStreamFactory::JobController::MaybeResumeMainJob(
     return;
   }
 
-  main_job_wait_time_ = delay;
-
   ResumeMainJobLater(main_job_wait_time_);
 }
 
 void HttpStreamFactory::JobController::OnConnectionInitialized(Job* job,
                                                                int rv) {
   if (rv != OK) {
-    // Resume the main job as there's an error raised in connection
-    // initiation.
+    // `rv` is either `ERR_IO_PENDING` (the QUIC crypto handshake is in flight,
+    // so unblock the main job and start its delayed-TCP wait timer) or an
+    // actual connection initiation error (resume immediately if FastFail is
+    // enabled, or if DNS has no QUIC endpoint for `job`).
     base::TimeDelta delay = main_job_wait_time_;
     if ((job == alternative_job_.get() || job == dns_alpn_h3_job_.get()) &&
-        features::kAsyncDnsQuicJobFastFail.Get()) {
+        rv != ERR_IO_PENDING &&
+        (features::kAsyncDnsQuicJobFastFail.Get() ||
+         rv == ERR_DNS_NO_MATCHING_SUPPORTED_ALPN)) {
       delay = base::TimeDelta();
     }
     return MaybeResumeMainJob(job, delay);

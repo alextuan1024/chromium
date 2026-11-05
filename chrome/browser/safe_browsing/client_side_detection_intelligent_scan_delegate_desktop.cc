@@ -10,6 +10,7 @@
 #include "base/time/time.h"
 #include "chrome/browser/optimization_guide/optimization_guide_keyed_service.h"
 #include "chrome/browser/safe_browsing/client_side_detection_intelligent_scan_delegate_util.h"
+#include "components/optimization_guide/core/model_quality/model_quality_log_entry.h"
 #include "components/optimization_guide/core/optimization_guide_features.h"
 #include "components/optimization_guide/public/mojom/model_broker.mojom-shared.h"
 #include "components/policy/core/common/management/management_service.h"
@@ -68,7 +69,9 @@ class ClientSideDetectionIntelligentScanDelegateDesktop::Inquiry {
           IntelligentScanDoneCallback callback);
   ~Inquiry();
 
-  void Start(const std::string& rendered_texts);
+  void Start(const std::string& rendered_texts,
+             const std::string& url,
+             std::optional<std::string> tab_screenshot);
 
  private:
   void ModelExecutionCallback(
@@ -99,11 +102,20 @@ ClientSideDetectionIntelligentScanDelegateDesktop::Inquiry::~Inquiry() =
     default;
 
 void ClientSideDetectionIntelligentScanDelegateDesktop::Inquiry::Start(
-    const std::string& rendered_texts) {
+    const std::string& rendered_texts,
+    const std::string& url,
+    std::optional<std::string> tab_screenshot) {
   if (parent_->is_server_model_enabled_) {
     parent_->AddIntelligentScanQuota();
     ScamDetectionRequest request;
     request.set_rendered_text(rendered_texts);
+    if (base::FeatureList::IsEnabled(
+            kClientSideDetectionScamDetectionRequestWithUrl)) {
+      request.set_url(url);
+    }
+    if (tab_screenshot.has_value()) {
+      request.set_tab_screenshot(*tab_screenshot);
+    }
     parent_->remote_model_executor_->ExecuteModel(
         optimization_guide::ModelBasedCapabilityKey::kScamDetection, request,
         /*options=*/{},
@@ -300,6 +312,13 @@ bool ClientSideDetectionIntelligentScanDelegateDesktop::
     return false;
   }
 
+  if (verdict->client_side_detection_type() ==
+          ClientSideDetectionType::IMAGE_EMBEDDING_MATCH &&
+      verdict->is_phishing() &&
+      kCsdImageEmbeddingMatchWithIntelligentScan.Get()) {
+    return true;
+  }
+
   bool is_keyboard_lock_requested =
       verdict->client_side_detection_type() ==
       ClientSideDetectionType::KEYBOARD_LOCK_REQUESTED;
@@ -341,6 +360,10 @@ bool ClientSideDetectionIntelligentScanDelegateDesktop::ShouldShowScamWarning(
     return false;
   }
 
+  if (*verdict == IntelligentScanVerdict::SCAM_EXPERIMENT_VERDICT_BILLING) {
+    return base::FeatureList::IsEnabled(kClientSideDetectionTrickToBill);
+  }
+
   return *verdict == IntelligentScanVerdict::SCAM_EXPERIMENT_VERDICT_1 ||
          *verdict == IntelligentScanVerdict::SCAM_EXPERIMENT_VERDICT_2 ||
          *verdict == IntelligentScanVerdict::SCAM_EXPERIMENT_VERDICT_3 ||
@@ -368,6 +391,8 @@ void ClientSideDetectionIntelligentScanDelegateDesktop::OnPrefsUpdated() {
 std::optional<base::UnguessableToken>
 ClientSideDetectionIntelligentScanDelegateDesktop::StartIntelligentScan(
     std::string rendered_texts,
+    std::string url,
+    std::optional<std::string> tab_screenshot,
     IntelligentScanDoneCallback callback) {
   // We have checked the model availability prior to calling this function, but
   // we want to check one last time before creating a session.
@@ -399,7 +424,7 @@ ClientSideDetectionIntelligentScanDelegateDesktop::StartIntelligentScan(
   std::unique_ptr<Inquiry> new_inquiry =
       std::make_unique<Inquiry>(this, scan_id, std::move(callback));
   inquiries_[scan_id] = std::move(new_inquiry);
-  inquiries_[scan_id]->Start(rendered_texts);
+  inquiries_[scan_id]->Start(rendered_texts, url, std::move(tab_screenshot));
   return scan_id;
 }
 

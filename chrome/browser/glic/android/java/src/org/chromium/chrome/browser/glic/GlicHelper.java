@@ -7,6 +7,7 @@ package org.chromium.chrome.browser.glic;
 import android.Manifest;
 import android.app.Activity;
 import android.content.Context;
+import android.content.pm.PackageManager;
 
 import androidx.annotation.IntDef;
 
@@ -14,6 +15,9 @@ import org.jni_zero.CalledByNative;
 import org.jni_zero.JNINamespace;
 import org.jni_zero.JniType;
 
+import org.chromium.base.ActivityState;
+import org.chromium.base.ApplicationStatus;
+import org.chromium.base.ApplicationStatus.ActivityStateListener;
 import org.chromium.base.Callback;
 import org.chromium.base.ContextUtils;
 import org.chromium.base.metrics.RecordUserAction;
@@ -21,6 +25,9 @@ import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.actor.ActorKeyedService;
 import org.chromium.chrome.browser.actor.ActorKeyedServiceFactory;
+import org.chromium.chrome.browser.actor.ActorUtils;
+import org.chromium.chrome.browser.glic.ui.GlicMicPermissionDialogCoordinator;
+import org.chromium.chrome.browser.glic.ui.GlicUiUtils;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.ui.messages.snackbar.Snackbar;
 import org.chromium.chrome.browser.ui.messages.snackbar.SnackbarManager;
@@ -49,6 +56,16 @@ public class GlicHelper {
             new WeakHashMap<>();
 
     /**
+     * Returns whether this device can run a Glic task in the background, i.e. {@link
+     * ActorUtils#isBackgroundActuationEnabled()}. That also requires Actor notifications while the
+     * require-notifications feature param is set, which is the default.
+     */
+    @CalledByNative
+    static boolean canActuateInBackground() {
+        return ActorUtils.isBackgroundActuationEnabled();
+    }
+
+    /**
      * Shows a snackbar indicating the microphone is disabled, with a settings action button.
      *
      * @param windowAndroid The window hosting the activity.
@@ -59,10 +76,10 @@ public class GlicHelper {
             return;
         }
         Activity activity = windowAndroid.getActivity().get();
-        if (activity == null || !(activity instanceof SnackbarManageable)) {
+        if (activity == null || !(activity instanceof SnackbarManageable snackbarManageable)) {
             return;
         }
-        SnackbarManager snackbarManager = ((SnackbarManageable) activity).getSnackbarManager();
+        SnackbarManager snackbarManager = snackbarManageable.getSnackbarManager();
         if (snackbarManager == null) {
             return;
         }
@@ -115,13 +132,68 @@ public class GlicHelper {
     }
 
     /**
+     * Requests the Android RECORD_AUDIO permission. Android shows its prompt, or denies right away
+     * if it won't show it anymore.
+     *
+     * @param windowAndroid The window hosting the activity.
+     * @param callback Run with whether the permission is granted.
+     */
+    @CalledByNative
+    static void requestMicOsPermission(
+            WindowAndroid windowAndroid,
+            @JniType("base::OnceCallback<void(bool)>&&") Callback<Boolean> callback) {
+        if (windowAndroid.hasPermission(Manifest.permission.RECORD_AUDIO)) {
+            callback.onResult(true);
+            return;
+        }
+        Activity activity = windowAndroid.getActivity().get();
+        if (activity == null) {
+            callback.onResult(false);
+            return;
+        }
+        MicOsPermissionRequest request = new MicOsPermissionRequest(activity, callback);
+        windowAndroid.requestPermissions(
+                new String[] {Manifest.permission.RECORD_AUDIO},
+                (permissions, grantResults) ->
+                        request.finish(
+                                grantResults.length > 0
+                                        && grantResults[0] == PackageManager.PERMISSION_GRANTED));
+    }
+
+    /**
+     * Runs the callback for a mic permission request once. Android never answers the request if the
+     * activity is destroyed while its prompt is up, so that counts as denied.
+     */
+    private static class MicOsPermissionRequest implements ActivityStateListener {
+        private @Nullable Callback<Boolean> mCallback;
+
+        MicOsPermissionRequest(Activity activity, Callback<Boolean> callback) {
+            mCallback = callback;
+            ApplicationStatus.registerStateListenerForActivity(this, activity);
+        }
+
+        @Override
+        public void onActivityStateChange(Activity activity, @ActivityState int newState) {
+            if (newState == ActivityState.DESTROYED) finish(false);
+        }
+
+        void finish(boolean granted) {
+            Callback<Boolean> callback = mCallback;
+            if (callback == null) return;
+            mCallback = null;
+            ApplicationStatus.unregisterActivityStateListener(this);
+            callback.onResult(granted);
+        }
+    }
+
+    /**
      * Shows a snackbar indicating Glic is not available in Incognito mode.
      *
      * @param activity The Android activity.
      */
     public static void showNotAvailableInIncognitoSnackbar(Activity activity) {
-        if (activity instanceof SnackbarManageable) {
-            SnackbarManager snackbarManager = ((SnackbarManageable) activity).getSnackbarManager();
+        if (activity instanceof SnackbarManageable snackbarManageable) {
+            SnackbarManager snackbarManager = snackbarManageable.getSnackbarManager();
             if (snackbarManager != null) {
                 snackbarManager.showSnackbar(
                         Snackbar.make(
@@ -139,8 +211,8 @@ public class GlicHelper {
      * @param activity The Android activity.
      */
     public static void showUnavailableSnackbar(Activity activity) {
-        if (activity instanceof SnackbarManageable) {
-            SnackbarManager snackbarManager = ((SnackbarManageable) activity).getSnackbarManager();
+        if (activity instanceof SnackbarManageable snackbarManageable) {
+            SnackbarManager snackbarManager = snackbarManageable.getSnackbarManager();
             if (snackbarManager != null) {
                 snackbarManager.showSnackbar(
                         Snackbar.make(
@@ -160,8 +232,8 @@ public class GlicHelper {
      * @param profile The current {@link Profile}.
      */
     public static void showUnpinnedSnackbar(Activity activity, Profile profile) {
-        if (activity instanceof SnackbarManageable) {
-            SnackbarManager snackbarManager = ((SnackbarManageable) activity).getSnackbarManager();
+        if (activity instanceof SnackbarManageable snackbarManageable) {
+            SnackbarManager snackbarManager = snackbarManageable.getSnackbarManager();
             if (snackbarManager != null) {
                 showUnpinnedSnackbar(snackbarManager, activity, profile);
             }

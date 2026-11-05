@@ -222,7 +222,7 @@ class HostResolverServiceEndpointRequestTest
     : public HostResolverManagerDnsTest {
  public:
   HostResolverServiceEndpointRequestTest() {
-    feature_list_.InitAndEnableFeature(features::kHappyEyeballsV3);
+    AddScopedFeatureList().InitAndEnableFeature(features::kHappyEyeballsV3);
   }
 
   ~HostResolverServiceEndpointRequestTest() override = default;
@@ -396,12 +396,7 @@ class HostResolverServiceEndpointRequestTest
     FastForwardBy(kDefaultTtl);
   }
 
- protected:
-  base::test::ScopedFeatureList& feature_list() { return feature_list_; }
-
  private:
-  base::test::ScopedFeatureList feature_list_;
-
   bool ipv6_reachable_ = true;
   bool globally_reachable_check_is_async_ = false;
   std::optional<DnsHosts> hosts_;
@@ -768,10 +763,12 @@ TEST_F(HostResolverServiceEndpointRequestTest, EndpointsAreSorted) {
   EXPECT_THAT(rv, IsError(ERR_IO_PENDING));
   requester.WaitForFinished();
   EXPECT_THAT(*requester.finished_result(), IsOk());
+  // When sorting transactions individually, AAAA endpoints are sorted by
+  // AddressSorter while A endpoints preserve the DNS response order.
   EXPECT_THAT(requester.finished_endpoints(),
               ElementsAre(ExpectServiceEndpoint(
-                  ElementsAre(MakeIPEndPoint("192.0.2.1", 443),
-                              MakeIPEndPoint("192.0.2.2", 443)),
+                  ElementsAre(MakeIPEndPoint("192.0.2.2", 443),
+                              MakeIPEndPoint("192.0.2.1", 443)),
                   ElementsAre(MakeIPEndPoint("2001:db8::1", 443),
                               MakeIPEndPoint("2001:db8::2", 443)))));
 }
@@ -925,6 +922,61 @@ TEST_F(HostResolverServiceEndpointRequestTest, HttpsSlow) {
               ConnectionEndpointMetadata(
                   /*supported_protocol_alpns=*/{"http/1.1"},
                   /*ech_config_list=*/{}, std::string("https_slow_ok"), {})),
+          // Non-SVCB endpoints.
+          ExpectServiceEndpoint(ElementsAre(MakeIPEndPoint("127.0.0.1", 443)),
+                                ElementsAre(MakeIPEndPoint("::1", 443)))));
+}
+
+TEST_F(HostResolverServiceEndpointRequestTest, Ipv4SlowWithHttpsRecord) {
+  const std::string host = "4slow_https_ok";
+  MockDnsClientRuleList rules;
+  AddDnsRule(&rules, host, dns_protocol::kTypeA,
+             MockDnsClientRule::ResultType::kOk, /*delay=*/true);
+  AddDnsRule(&rules, host, dns_protocol::kTypeAAAA,
+             MockDnsClientRule::ResultType::kOk, /*delay=*/false);
+  std::vector<DnsResourceRecord> records = {
+      BuildTestHttpsServiceRecord(host, /*priority=*/1, /*service_name=*/".",
+                                  /*params=*/{})};
+  rules.emplace_back(host, dns_protocol::kTypeHttps, /*secure=*/false,
+                     MockDnsClientRule::Result(BuildTestDnsResponse(
+                         host, dns_protocol::kTypeHttps, records)),
+                     /*delay=*/false);
+  SetDnsRules(std::move(rules));
+
+  Requester requester = CreateRequester("https://4slow_https_ok");
+  int rv = requester.Start();
+  EXPECT_THAT(rv, IsError(ERR_IO_PENDING));
+  EXPECT_EQ(3u, resolver_->num_running_dispatcher_jobs_for_tests());
+
+  const ConnectionEndpointMetadata expected_metadata(
+      /*supported_protocol_alpns=*/{"http/1.1"},
+      /*ech_config_list=*/{}, host, {});
+
+  // AAAA and HTTPS should complete. Intermediate results should include both
+  // the HTTPS endpoint and the non-SVCB fallback endpoint.
+  ASSERT_TRUE(base::test::RunUntil([&] {
+    return resolver_->num_running_dispatcher_jobs_for_tests() == 1u;
+  }));
+  ASSERT_FALSE(requester.finished_result().has_value());
+  ASSERT_TRUE(requester.request()->EndpointsCryptoReady());
+  EXPECT_THAT(
+      requester.request()->GetEndpointResults(),
+      ElementsAre(ExpectServiceEndpoint(IsEmpty(),
+                                        ElementsAre(MakeIPEndPoint("::1", 443)),
+                                        expected_metadata),
+                  // Non-SVCB endpoints.
+                  ExpectServiceEndpoint(
+                      IsEmpty(), ElementsAre(MakeIPEndPoint("::1", 443)))));
+
+  // Complete A request, which finishes the request synchronously.
+  mock_dns_client_->CompleteDelayedTransactions();
+  EXPECT_THAT(*requester.finished_result(), IsOk());
+  EXPECT_THAT(
+      requester.finished_endpoints(),
+      ElementsAre(
+          ExpectServiceEndpoint(ElementsAre(MakeIPEndPoint("127.0.0.1", 443)),
+                                ElementsAre(MakeIPEndPoint("::1", 443)),
+                                expected_metadata),
           // Non-SVCB endpoints.
           ExpectServiceEndpoint(ElementsAre(MakeIPEndPoint("127.0.0.1", 443)),
                                 ElementsAre(MakeIPEndPoint("::1", 443)))));
@@ -1974,7 +2026,7 @@ class HostResolverServiceEndpointRequestAddressHintsTest
     : public HostResolverServiceEndpointRequestTest {
  public:
   HostResolverServiceEndpointRequestAddressHintsTest() {
-    address_hints_feature_list_.InitAndEnableFeature(
+    AddScopedFeatureList().InitAndEnableFeature(
         features::kUseDnsHttpsSvcbAddressHints);
   }
 
@@ -2002,9 +2054,6 @@ class HostResolverServiceEndpointRequestAddressHintsTest
                        /*delay=*/false);
     SetDnsRules(std::move(rules));
   }
-
- private:
-  base::test::ScopedFeatureList address_hints_feature_list_;
 };
 
 TEST_F(HostResolverServiceEndpointRequestAddressHintsTest,
@@ -2089,9 +2138,13 @@ TEST_F(HostResolverServiceEndpointRequestAddressHintsTest,
   ASSERT_FALSE(requester.finished_result().has_value());
   EXPECT_THAT(requester.request()->GetEndpointResults(),
               ElementsAre(ExpectServiceEndpoint(
-                  ElementsAre(MakeIPEndPoint("127.0.0.1", 443)),
-                  ElementsAre(MakeIPEndPoint("2001:db8::10", 443)),
-                  expected_metadata)));
+                              ElementsAre(MakeIPEndPoint("127.0.0.1", 443)),
+                              ElementsAre(MakeIPEndPoint("2001:db8::10", 443)),
+                              expected_metadata),
+                          // Non-SVCB endpoints (without hint addresses).
+                          ExpectServiceEndpoint(
+                              ElementsAre(MakeIPEndPoint("127.0.0.1", 443)),
+                              IsEmpty())));
 
   // Complete AAAA transaction, superseding IPv6 hints with real IPv6 addresses.
   mock_dns_client_->CompleteDelayedTransactions();
@@ -2114,8 +2167,7 @@ class HostResolverServiceEndpointRequestIntermediateResultsOnlyTest
     : public HostResolverServiceEndpointRequestTest {
  public:
   HostResolverServiceEndpointRequestIntermediateResultsOnlyTest() {
-    feature_list().Reset();
-    feature_list().InitWithFeatures(
+    AddScopedFeatureList().InitWithFeatures(
         /*enabled_features=*/{features::kEnableIntermediateDnsResults},
         /*disabled_features=*/{features::kHappyEyeballsV3});
   }
@@ -2192,21 +2244,22 @@ TEST_F(HostResolverServiceEndpointRequestIntermediateResultsOnlyTest,
                                          MakeIPEndPoint("2001:db8::2", 443)))));
 
   // Complete delayed A request, which finishes the request synchronously.
+  // A transactions are not sorted individually, so IPv4 endpoints preserve the
+  // raw DNS response order.
   mock_dns_client_->CompleteDelayedTransactions();
   ASSERT_TRUE(requester.request()->EndpointsCryptoReady());
   EXPECT_THAT(*requester.finished_result(), IsOk());
   EXPECT_THAT(requester.finished_endpoints(),
               ElementsAre(ExpectServiceEndpoint(
-                  ElementsAre(MakeIPEndPoint("192.0.2.1", 443),
-                              MakeIPEndPoint("192.0.2.2", 443)),
+                  ElementsAre(MakeIPEndPoint("192.0.2.2", 443),
+                              MakeIPEndPoint("192.0.2.1", 443)),
                   ElementsAre(MakeIPEndPoint("2001:db8::1", 443),
                               MakeIPEndPoint("2001:db8::2", 443)))));
 }
 
 TEST_F(HostResolverServiceEndpointRequestIntermediateResultsOnlyTest,
        SortIntermediateEndpoints_DisabledViaFeatureParam) {
-  feature_list().Reset();
-  feature_list().InitWithFeaturesAndParameters(
+  AddScopedFeatureList().InitWithFeaturesAndParameters(
       /*enabled_features=*/
       {{features::kEnableIntermediateDnsResults,
         {{"EnableIntermediateDnsResultsSortTransactionsIndividually",

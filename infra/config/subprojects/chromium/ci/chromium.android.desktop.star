@@ -300,7 +300,7 @@ ci.thin_tester(
             ),
             "chrome_public_test_apk_desktop": targets.mixin(
                 swarming = targets.swarming(
-                    shards = 3,
+                    shards = 6,
                 ),
             ),
             "chrome_public_unit_test_apk": targets.mixin(
@@ -330,7 +330,9 @@ ci.thin_tester(
     targets_settings = targets.settings(
         os_type = targets.os_type.ANDROID,
     ),
+    builderless = True,
     cores = 8,
+    ssd = None,
     gardener_rotations = gardener_rotations.ANDROID,
     console_view_entry = consoles.console_view_entry(
         category = "tester|x64",

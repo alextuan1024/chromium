@@ -12,13 +12,11 @@
 
 #include "base/check.h"
 #include "base/containers/fixed_flat_set.h"
-#include "base/containers/flat_set.h"
 #include "base/feature.h"
 #include "base/feature_list.h"
 #include "base/functional/function_ref.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/notreached.h"
-#include "base/strings/string_number_conversions.h"
 #include "base/strings/string_split.h"
 #include "base/values.h"
 #include "build/build_config.h"
@@ -33,8 +31,9 @@
 #include "components/autofill/core/common/autofill_features.h"
 #include "components/autofill/core/common/autofill_prefs.h"
 #include "components/feature_engagement/public/feature_constants.h"
+#include "components/optimization_guide/core/feature_registry/enterprise_policy_registry.h"
 #include "components/optimization_guide/core/feature_registry/feature_registration.h"
-#include "components/optimization_guide/core/model_execution/model_execution_prefs.h"
+#include "components/personal_context/core/personal_context_features.h"
 #include "components/personal_context/core/personal_context_prefs.h"
 #include "components/personal_context/core/personal_context_types.h"
 #include "components/prefs/pref_service.h"
@@ -42,7 +41,6 @@
 #include "components/signin/public/base/gaia_id_hash.h"
 #include "components/signin/public/identity_manager/identity_manager.h"
 #include "components/signin/public/identity_manager/tribool.h"
-#include "components/subscription_eligibility/subscription_eligibility_service.h"
 #include "components/sync/base/account_pref_utils.h"
 #include "components/sync/base/data_type.h"
 #include "components/sync/base/user_selectable_type.h"
@@ -415,30 +413,10 @@ void MaybeOutputReason(std::string* out, std::string_view message) {
   NOTREACHED();
 }
 
-// Returns the set of eligible subscription tiers configured by feature
-// parameters for Ambient Autofill.
-base::flat_set<int32_t> GetAutofillAmbientAutofillEligibleTiers() {
-  const std::string tier_list =
-      features::kAutofillAmbientAutofillEligibleTiers.Get();
-  const std::vector<std::string_view> tier_pieces = base::SplitStringPiece(
-      tier_list, ",", base::TRIM_WHITESPACE, base::SPLIT_WANT_NONEMPTY);
-  base::flat_set<int32_t> eligible_tiers;
-  eligible_tiers.reserve(tier_pieces.size());
-  for (std::string_view piece : tier_pieces) {
-    int32_t tier_id = 0;
-    if (base::StringToInt(piece, &tier_id)) {
-      eligible_tiers.insert(tier_id);
-    }
-  }
-  return eligible_tiers;
-}
-
 // Checks whether all requirements for `IdentityManager` state are
 // met.
 [[nodiscard]] bool SatisfiesAccountRequirements(
     const IdentityManager* identity_manager,
-    const subscription_eligibility::SubscriptionEligibilityService*
-        subscription_service,
     bool has_entity_data_saved,
     AutofillAiAction action,
     std::optional<EntityType> entity_type,
@@ -500,16 +478,6 @@ base::flat_set<int32_t> GetAutofillAmbientAutofillEligibleTiers() {
       }
       break;
     }
-    case AutofillAiAction::kAmbientAutofill:
-    case AutofillAiAction::kShowAmbientAutofillInSettings:
-    case AutofillAiAction::kTypeSupportsAmbientAutofillData: {
-      if (!IsSubscriptionTierEligibleForAmbientAutofill(subscription_service)) {
-        MaybeOutputReason(debug_message,
-                          "User subscription tier is not eligible.");
-        return false;
-      }
-      break;
-    }
     case AutofillAiAction::kOptIn: {
       if (!GetAccountGaiaIdHash(identity_manager).has_value()) {
         return false;
@@ -517,6 +485,7 @@ base::flat_set<int32_t> GetAutofillAmbientAutofillEligibleTiers() {
       break;
     }
     case AutofillAiAction::kAddLocalEntityInstanceInSettings:
+    case AutofillAiAction::kAmbientAutofill:
     case AutofillAiAction::kCrowdsourcingVote:
     case AutofillAiAction::kEditAndDeleteEntityInstanceInSettings:
     case AutofillAiAction::kFilling:
@@ -525,6 +494,8 @@ base::flat_set<int32_t> GetAutofillAmbientAutofillEligibleTiers() {
     case AutofillAiAction::kLogToMqls:
     case AutofillAiAction::kEnableOrDisable:
     case AutofillAiAction::kServerClassificationModel:
+    case AutofillAiAction::kShowAmbientAutofillInSettings:
+    case AutofillAiAction::kTypeSupportsAmbientAutofillData:
     case AutofillAiAction::kUseCachedServerClassificationModelResults:
     case AutofillAiAction::kWalletDataSharingPromotion:
       break;
@@ -693,7 +664,6 @@ bool MayPerformAutofillAiAction(const AutofillClient& client,
       client.GetIdentityManager(), client.GetSyncService(),
       client.IsWalletPublicPassStorageEnabled(), client.IsOffTheRecord(),
       client.GetVariationConfigCountryCode(),
-      client.GetSubscriptionEligibilityService(),
       client.GetPersonalContextEligibilityState(), action, entity_type,
       debug_message);
 }
@@ -709,8 +679,6 @@ bool MayPerformAutofillAiAction(
     bool is_wallet_public_pass_storage_enabled,
     bool is_off_the_record,
     const GeoIpCountryCode& country_code,
-    const subscription_eligibility::SubscriptionEligibilityService*
-        subscription_service,
     personal_context::PersonalContextEligibilityState
         personal_context_eligibility_state,
     AutofillAiAction action,
@@ -737,9 +705,8 @@ bool MayPerformAutofillAiAction(
     return false;
   }
 
-  if (!SatisfiesAccountRequirements(identity_manager, subscription_service,
-                                    has_entity_data_saved, action, entity_type,
-                                    debug_message)) {
+  if (!SatisfiesAccountRequirements(identity_manager, has_entity_data_saved,
+                                    action, entity_type, debug_message)) {
     return false;
   }
 
@@ -820,7 +787,6 @@ bool SetAutofillAiOptInStatus(AutofillClient& client,
       client.GetIdentityManager(), client.GetSyncService(),
       client.IsWalletPublicPassStorageEnabled(), client.IsOffTheRecord(),
       client.GetVariationConfigCountryCode(),
-      client.GetSubscriptionEligibilityService(),
       client.GetPersonalContextEligibilityState(), opt_in_status);
 }
 
@@ -835,8 +801,6 @@ bool SetAutofillAiOptInStatus(
     bool is_wallet_public_pass_storage_enabled,
     bool is_off_the_record,
     const GeoIpCountryCode& country_code,
-    const subscription_eligibility::SubscriptionEligibilityService*
-        subscription_service,
     personal_context::PersonalContextEligibilityState
         personal_context_eligibility_state,
     AutofillAiOptInStatus opt_in_status) {
@@ -846,8 +810,8 @@ bool SetAutofillAiOptInStatus(
 #endif
           prefs, edm, identity_manager, sync_service,
           is_wallet_public_pass_storage_enabled, is_off_the_record,
-          country_code, subscription_service,
-          personal_context_eligibility_state, AutofillAiAction::kOptIn)) {
+          country_code, personal_context_eligibility_state,
+          AutofillAiAction::kOptIn)) {
     return false;
   }
 
@@ -901,11 +865,9 @@ bool IsAutofillAiEntityTypeBlockedByPolicy(const AutofillClient& client,
   // State of the AutofillAI-specific enterprise policy pref.
   constexpr int kAutofillPredictionSettingsAllowWithoutLogging =
       std::to_underlying(
-          optimization_guide::model_execution::prefs::
-              ModelExecutionEnterprisePolicyValue::kAllowWithoutLogging);
+          optimization_guide::EnterprisePolicyValue::kAllowWithoutLogging);
   constexpr int kAutofillPredictionSettingsDisabled =
-      std::to_underlying(optimization_guide::model_execution::prefs::
-                             ModelExecutionEnterprisePolicyValue::kDisable);
+      std::to_underlying(optimization_guide::EnterprisePolicyValue::kDisable);
   static_assert(kAutofillPredictionSettingsAllowWithoutLogging == 1);
   static_assert(kAutofillPredictionSettingsDisabled == 2);
 
@@ -919,8 +881,7 @@ bool IsAutofillAiEntityTypeBlockedByPolicy(const AutofillClient& client,
     const PrefService* prefs) {
   // State of the AutofillAI-specific enterprise policy pref.
   constexpr int kAutofillPredictionSettingsAllow =
-      std::to_underlying(optimization_guide::model_execution::prefs::
-                             ModelExecutionEnterprisePolicyValue::kAllow);
+      std::to_underlying(optimization_guide::EnterprisePolicyValue::kAllow);
   static_assert(kAutofillPredictionSettingsAllow == 0);
 
   return prefs->GetInteger(
@@ -937,14 +898,6 @@ bool IsAutofillAiDefaultAvailabilityEnabled() {
 #endif
 }
 
-[[nodiscard]] bool IsSubscriptionTierEligibleForAmbientAutofill(
-    const subscription_eligibility::SubscriptionEligibilityService*
-        subscription_eligibility_service) {
-  return subscription_eligibility_service &&
-         GetAutofillAmbientAutofillEligibleTiers().contains(
-             subscription_eligibility_service->GetAiSubscriptionTier());
-}
-
 DenseSet<EntityType> GetAutofillAmbientAutofillSupportedEntityTypes() {
   const std::string type_list =
       features::kAutofillAmbientAutofillSupportedEntityTypes.Get();
@@ -956,6 +909,14 @@ DenseSet<EntityType> GetAutofillAmbientAutofillSupportedEntityTypes() {
     if (std::optional<EntityType> type = StringToEntityType(piece)) {
       supported_types.insert(*type);
     }
+  }
+  if (base::FeatureList::IsEnabled(
+          personal_context::features::kAutofillAmbientAutofillPassport)) {
+    supported_types.insert(EntityType(EntityTypeName::kPassport));
+  }
+  if (base::FeatureList::IsEnabled(
+          personal_context::features::kAutofillAmbientAutofillDriversLicense)) {
+    supported_types.insert(EntityType(EntityTypeName::kDriversLicense));
   }
   return supported_types;
 }

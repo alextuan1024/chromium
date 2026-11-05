@@ -83,8 +83,7 @@ and enforce **partial intersection** checking, install an
 ```cpp
 // In your View subclass initialization:
 InputProtectionSpecification::Install(
-    *this, base::BindRepeating(&MyView::GetLocalProtectedBounds,
-                               base::Unretained(this)));
+    *this, base::BindRepeating(&MyView::GetLocalProtectedBounds));
 ```
 
 Implement the callback to return the sensitive bounds in **local view
@@ -165,8 +164,9 @@ delegates interaction evaluations to one or more policy objects
 This is the main manager class. It is typically owned by a `View` that requires
 protection (for example, `DialogClientView` or `BubbleFrameView`).
 
-- It exposes `IsPossiblyUnintendedInteraction(event, target_view)` to check if
-  an input event should be blocked.
+- It exposes
+  `IsPossiblyUnintendedInteraction(event, allow_key_events, target_view)` to
+  check if an input event should be blocked.
 - It maintains a list of `InputProtectionPolicy` objects and delegates the check
   to them. If *any* policy recommends blocking, the event is blocked.
 - It forwards lifecycle events (like the view being shown or hidden) to the
@@ -250,6 +250,36 @@ Implemented by `WindowActivationInputProtectionPolicy`:
 - **Sudden Activation**: Triggered when a widget becomes active, but its parent
   window was previously invisible. This protects against cases where a dialog
   suddenly appears and steals focus just as the user is clicking.
+
+### View Bounds and Visibility Input Protection Policy
+
+`ViewBoundsAndVisibilityInputProtectionPolicy` protects a specific `View` (and
+its descendants) against unintended interactions by starting a cooldown when the
+observed `View`'s bounds or visibility changes, while leaving sibling and
+unrelated views in the same `Widget` unaffected:
+
+- **Bounds Change**: The observed `View` changes position or size within the
+  containing `Widget` (either directly or because an ancestor view moved) while
+  drawn in a visible `Widget`. Changes from empty bounds (such as initial
+  layout) are ignored.
+- **Visibility Change**: The observed `View` or its containing `Widget` becomes
+  visible while the `View` is drawn (including when the policy is constructed
+  for a drawn `View` in an already visible `Widget`).
+
+The policy must be constructed after the target `View` is attached to a `Widget`
+(typically in `AddedToWidget()`). Prefer observing the specific interactive
+control or movable row (such as a button or list entry view) rather than a
+top-level container, so that resizing a container does not trigger a cooldown
+for controls inside it whose bounds did not change:
+
+```cpp
+void MyView::AddedToWidget() {
+  GetWidget()->EnableInputEventActivationProtection(
+      std::make_unique<InputEventActivationProtector>(
+          std::make_unique<ViewBoundsAndVisibilityInputProtectionPolicy>(
+              *accept_button_)));
+}
+```
 
 ______________________________________________________________________
 
@@ -588,8 +618,9 @@ manually:
 
 ```cpp
 void MyView::OnButtonPressed(const ui::Event& event) {
-  if (input_protector_->IsPossiblyUnintendedInteraction(event, this)) {
-    return; // Block the event
+  if (input_protector_->IsPossiblyUnintendedInteraction(
+          event, /*allow_key_events=*/false, this)) {
+    return;  // Block the event
   }
   // Handle the event...
 }
@@ -607,8 +638,7 @@ initialization:
 ```cpp
 // In your View subclass initialization:
 InputProtectionSpecification::Install(
-    *this, base::BindRepeating(&MyView::GetLocalProtectedBounds,
-                               base::Unretained(this)));
+    *this, base::BindRepeating(&MyView::GetLocalProtectedBounds));
 ```
 
 And implement the callback method to return the bounds in **local coordinates**

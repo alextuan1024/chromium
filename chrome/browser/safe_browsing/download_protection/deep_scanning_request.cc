@@ -30,7 +30,7 @@
 #include "chrome/browser/safe_browsing/download_protection/download_protection_service.h"
 #include "chrome/browser/safe_browsing/download_protection/download_protection_util.h"
 #include "chrome/browser/safe_browsing/download_protection/download_request_maker.h"
-#include "chrome/browser/safe_browsing/safe_browsing_navigation_observer_manager_factory.h"
+#include "chrome/browser/safe_browsing/navigation_observer/safe_browsing_navigation_observer_manager_factory.h"
 #include "chrome/browser/signin/identity_manager_factory.h"
 #include "chrome/common/pref_names.h"
 #include "chrome/grit/generated_resources.h"
@@ -47,7 +47,7 @@
 #include "components/policy/core/common/policy_pref_names.h"
 #include "components/prefs/pref_service.h"
 #include "components/safe_browsing/content/browser/web_ui/web_ui_content_info_singleton.h"
-#include "components/safe_browsing/core/browser/download_check_result.h"
+#include "components/safe_browsing/core/browser/download/download_check_result.h"
 #include "components/safe_browsing/core/common/proto/csd.pb.h"
 #include "components/safe_browsing/core/common/safe_browsing_prefs.h"
 #include "components/sessions/content/session_tab_helper.h"
@@ -342,7 +342,8 @@ DownloadCheckResult ResponseToDownloadCheckResult(
             dlp_action, rule.action());
 
         if (rule.has_force_save_to_cloud_destination()) {
-          DCHECK(rule.action() == TriggeredRule::FORCE_SAVE_TO_CLOUD);
+          CHECK(rule.action() == TriggeredRule::FORCE_SAVE_TO_CLOUD,
+                base::NotFatalUntil::M162);
           force_save_to_cloud_destination =
               GetHighestPrecedenceForceSaveToCloudDestination(
                   force_save_to_cloud_destination,
@@ -515,7 +516,7 @@ void DeepScanningRequest::Start() {
 }
 
 void DeepScanningRequest::StartSingleFileScan() {
-  DCHECK(!scanning_started_);
+  CHECK(!scanning_started_, base::NotFatalUntil::M162);
   scanning_started_ = true;
   enterprise_connectors::IncrementCrashKey(
       enterprise_connectors::ScanningCrashKey::PENDING_FILE_DOWNLOADS);
@@ -560,7 +561,7 @@ void DeepScanningRequest::StartSingleFileScan() {
 }
 
 void DeepScanningRequest::StartSavePackageScan() {
-  DCHECK(!scanning_started_);
+  CHECK(!scanning_started_, base::NotFatalUntil::M162);
   scanning_started_ = true;
   enterprise_connectors::IncrementCrashKey(
       enterprise_connectors::ScanningCrashKey::PENDING_FILE_DOWNLOADS,
@@ -591,10 +592,10 @@ void DeepScanningRequest::StartSavePackageScan() {
         &DeepScanningRequest::OnGetPackageFileRequestData,
         weak_ptr_factory_.GetWeakPtr(), tmp_path_and_final_path.second,
         file_location, std::move(request)));
-    DCHECK_LT(i, tasks.size());
+    CHECK_LT(i, tasks.size(), base::NotFatalUntil::M162);
     tasks[i++].request = request_raw;
   }
-  DCHECK_EQ(i, tasks.size());
+  CHECK_EQ(i, tasks.size(), base::NotFatalUntil::M162);
 
   // Keep a reference to `file_opening_job` in each task to ensure
   // its lifetime will be longer than the request.
@@ -763,7 +764,7 @@ void DeepScanningRequest::OnConsumerScanComplete(
   LogDeepScanResult(download_result, trigger_,
                     metadata_->IsTopLevelEncryptedArchive());
 
-  DCHECK(file_metadata_.count(current_path));
+  CHECK(file_metadata_.count(current_path), base::NotFatalUntil::M162);
   file_metadata_.at(current_path).scan_response = std::move(response);
   MaybeFinishRequest(download_result);
 }
@@ -808,7 +809,7 @@ void DeepScanningRequest::OnEnterpriseScanComplete(
   // DownloadCheckResult. Can be kept here.
   Profile* profile =
       Profile::FromBrowserContext(metadata_->GetBrowserContext());
-  DCHECK(file_metadata_.count(current_path));
+  CHECK(file_metadata_.count(current_path), base::NotFatalUntil::M162);
   file_metadata_.at(current_path).scan_response = std::move(response);
   if (profile) {
     const auto& file_metadata = file_metadata_.at(current_path);
@@ -819,7 +820,7 @@ void DeepScanningRequest::OnEnterpriseScanComplete(
         reporting_event_router, this, /*source=*/"",
         /*destination=*/GetDestinationString(download_result),
         file_metadata.filename, file_metadata.sha256, file_metadata.mime_type,
-        enterprise_connectors::kFileDownloadDataTransferEventTrigger,
+        enterprise_connectors::DataTransferEventTrigger::FILE_DOWNLOAD,
         /*content_transfer_method=*/"", GetContentAreaAccountEmail(),
         file_metadata.size, result, file_metadata.scan_response));
 
@@ -991,6 +992,11 @@ DeepScanningRequest::frame_url_chain() const {
   return metadata_->CollectFrameUrls();
 }
 
+std::optional<ExtensionTelemetryReportRequest::ExtensionInfo>
+DeepScanningRequest::extension_initiator() const {
+  return metadata_->extension_initiator();
+}
+
 content::WebContents* DeepScanningRequest::web_contents() const {
   return metadata_->web_contents();
 }
@@ -1051,7 +1057,7 @@ void DeepScanningRequest::FinishRequest(DownloadCheckResult result) {
       enterprise_connectors::EventResult::UNKNOWN;
 
   if (!report_callbacks_.empty()) {
-    DCHECK(IsEnterpriseTriggered());
+    CHECK(IsEnterpriseTriggered(), base::NotFatalUntil::M162);
 
     if (ReportOnlyScan()) {
       // The event result in report-only will always match whatever danger
@@ -1076,7 +1082,8 @@ void DeepScanningRequest::FinishRequest(DownloadCheckResult result) {
               : GetEventResult(result, profile);
     }
 
-    if (base::FeatureList::IsEnabled(
+    if (!ReportOnlyScan() &&
+        base::FeatureList::IsEnabled(
             enterprise_data_protection::
                 kEnableForceSaveToCloudDeferredReporting) &&
         (result == DownloadCheckResult::FORCE_SAVE_TO_GDRIVE ||
@@ -1113,6 +1120,11 @@ void DeepScanningRequest::FinishRequest(DownloadCheckResult result) {
        event_result == enterprise_connectors::EventResult::BYPASSED ||
        result == DownloadCheckResult::UNKNOWN) &&
       metadata_->IsObfuscated()) {
+    // Guard against the DOWNLOAD_DANGER_TYPE_USER_VALIDATED path, which a
+    // single user bypass also reaches, deobfuscating the file a second time.
+    // Must happen before `metadata_` is reset below.
+    metadata_->MarkDeobfuscated();
+
     base::ThreadPool::PostTaskAndReplyWithResult(
         FROM_HERE, {base::MayBlock(), base::TaskPriority::USER_VISIBLE},
         base::BindOnce(&enterprise_obfuscation::DeobfuscateFileInPlace,
@@ -1165,6 +1177,10 @@ content::WebContents* DeepScanningRequest::MaybeGetWebContentsForForceSave(
       !base::FeatureList::IsEnabled(
           enterprise_data_protection::kEnableForceDownloadToCloud)) {
     result = DownloadCheckResult::SENSITIVE_CONTENT_BLOCK;
+    return nullptr;
+  }
+
+  if (ReportOnlyScan()) {
     return nullptr;
   }
 

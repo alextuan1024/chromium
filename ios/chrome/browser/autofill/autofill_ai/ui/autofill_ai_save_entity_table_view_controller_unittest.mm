@@ -6,9 +6,13 @@
 
 #import "base/apple/foundation_util.h"
 #import "base/strings/sys_string_conversions.h"
+#import "base/test/metrics/histogram_tester.h"
+#import "base/test/scoped_feature_list.h"
 #import "components/autofill/core/browser/data_model/autofill_ai/entity_instance.h"
+#import "components/autofill/core/browser/integrators/autofill_ai/metrics/autofill_ai_metrics.h"
 #import "components/autofill/core/browser/payments/test_legal_message_line.h"
 #import "components/autofill/core/browser/test_utils/entity_data_test_util.h"
+#import "components/autofill/core/common/autofill_features.h"
 #import "ios/chrome/browser/autofill/autofill_ai/public/autofill_ai_constants.h"
 #import "ios/chrome/browser/autofill/autofill_ai/public/autofill_ai_ui_util.h"
 #import "ios/chrome/browser/autofill/model/message/autofill_legal_message_line.h"
@@ -17,6 +21,7 @@
 #import "ios/chrome/browser/shared/ui/table_view/cells/table_view_text_edit_item.h"
 #import "ios/chrome/browser/shared/ui/table_view/table_view_utils.h"
 #import "ios/chrome/grit/ios_strings.h"
+#import "ios/chrome/test/app/uikit_test_util.h"
 #import "testing/gtest_mac.h"
 #import "testing/platform_test.h"
 #import "ui/base/l10n/l10n_util.h"
@@ -40,6 +45,16 @@ class AutofillAISaveEntityTableViewControllerTest : public PlatformTest {
     PlatformTest::SetUp();
     controller_ = [[AutofillAISaveEntityTableViewController alloc]
         initWithStyle:ChromeTableViewStyle()];
+  }
+
+  // Returns the link footer view for `section`.
+  TableViewLinkHeaderFooterView* GetLinkFooterView(NSInteger section) {
+    UIView* footerView = [controller_ tableView:controller_.tableView
+                         viewForFooterInSection:section];
+    EXPECT_TRUE(
+        [footerView isKindOfClass:[TableViewLinkHeaderFooterView class]]);
+    return base::apple::ObjCCastStrict<TableViewLinkHeaderFooterView>(
+        footerView);
   }
 
   AutofillAISaveEntityTableViewController* controller_;
@@ -90,14 +105,63 @@ TEST_F(AutofillAISaveEntityTableViewControllerTest,
 
   [controller_ loadViewIfNeeded];
 
-  // Verify Footer.
   // The footer section index is 1 if there is only new entity.
-  UIView* footerView = [controller_ tableView:controller_.tableView
-                       viewForFooterInSection:1];
-  EXPECT_TRUE([footerView isKindOfClass:[TableViewLinkHeaderFooterView class]]);
+  TableViewLinkHeaderFooterView* linkFooterView =
+      GetLinkFooterView(/*section=*/1);
+
+  ASSERT_EQ(1U, linkFooterView.urls.count);
+  EXPECT_EQ(autofill::GetManageYourInfoURL(), linkFooterView.urls[0].gurl);
+}
+
+// Tests that the table view controller displays the refined private pass
+// storage notice and both URLs (manage info and Privacy Policy) when saving a
+// private pass to Wallet with `kAutofillRegionalizedPrivatePassesUxRefine`
+// enabled.
+TEST_F(AutofillAISaveEntityTableViewControllerTest,
+       DisplayFooterWithUrlsForSavingPrivatePassWithRefinedUx) {
+  base::test::ScopedFeatureList feature_list(
+      autofill::features::kAutofillRegionalizedPrivatePassesUxRefine);
+
+  autofill::EntityInstance newEntity =
+      autofill::test::GetPassportEntityInstance(
+          {.record_type = autofill::EntityInstance::RecordType::kServerWallet});
+
+  [controller_ setNewEntity:std::move(newEntity)
+                  oldEntity:std::nullopt
+                  userEmail:u"test@example.com"];
+  [controller_ setIsPrivateWalletPass:YES];
+
+  [controller_ loadViewIfNeeded];
 
   TableViewLinkHeaderFooterView* linkFooterView =
-      base::apple::ObjCCastStrict<TableViewLinkHeaderFooterView>(footerView);
+      GetLinkFooterView(/*section=*/1);
+
+  ASSERT_EQ(2U, linkFooterView.urls.count);
+  EXPECT_EQ(autofill::GetManageYourInfoURL(), linkFooterView.urls[0].gurl);
+  EXPECT_EQ(autofill::GetGooglePrivacyPolicyURL(), linkFooterView.urls[1].gurl);
+}
+
+// Tests that the table view controller continues displaying the standard public
+// pass storage notice and single URL when saving a public pass to Wallet with
+// `kAutofillRegionalizedPrivatePassesUxRefine` enabled.
+TEST_F(AutofillAISaveEntityTableViewControllerTest,
+       DisplayFooterWithUrlsForSavingPublicPassWithRefinedUx) {
+  base::test::ScopedFeatureList feature_list(
+      autofill::features::kAutofillRegionalizedPrivatePassesUxRefine);
+
+  autofill::EntityInstance newEntity = GetTestVehicle(kCarMaker2);
+  newEntity = newEntity.CopyWithNewRecordType(
+      autofill::EntityInstance::RecordType::kServerWallet);
+
+  [controller_ setNewEntity:std::move(newEntity)
+                  oldEntity:std::nullopt
+                  userEmail:u"test@example.com"];
+  [controller_ setIsPrivateWalletPass:NO];
+
+  [controller_ loadViewIfNeeded];
+
+  TableViewLinkHeaderFooterView* linkFooterView =
+      GetLinkFooterView(/*section=*/1);
 
   ASSERT_EQ(1U, linkFooterView.urls.count);
   EXPECT_EQ(autofill::GetManageYourInfoURL(), linkFooterView.urls[0].gurl);
@@ -123,14 +187,9 @@ TEST_F(AutofillAISaveEntityTableViewControllerTest,
 
   [controller_ loadViewIfNeeded];
 
-  // Verify Footer.
   // The footer section index is 2 if there are both new and old entities.
-  UIView* footerView = [controller_ tableView:controller_.tableView
-                       viewForFooterInSection:2];
-  EXPECT_TRUE([footerView isKindOfClass:[TableViewLinkHeaderFooterView class]]);
-
   TableViewLinkHeaderFooterView* linkFooterView =
-      base::apple::ObjCCastStrict<TableViewLinkHeaderFooterView>(footerView);
+      GetLinkFooterView(/*section=*/2);
 
   ASSERT_EQ(1U, linkFooterView.urls.count);
   EXPECT_EQ(autofill::GetGoogleWalletPassesURL(), linkFooterView.urls[0].gurl);
@@ -165,13 +224,8 @@ TEST_F(AutofillAISaveEntityTableViewControllerTest,
   EXPECT_EQ(kAutofillAISaveEntityLegalDisclosureId,
             linkFooterView.accessibilityIdentifier);
 
-  UITextView* textView = nil;
-  for (UIView* subview in linkFooterView.contentView.subviews) {
-    if ([subview isKindOfClass:[UITextView class]]) {
-      textView = base::apple::ObjCCastStrict<UITextView>(subview);
-      break;
-    }
-  }
+  UITextView* textView =
+      chrome_test_util::FindViewByClass<UITextView>(linkFooterView.contentView);
   ASSERT_NE(nil, textView);
 
   NSString* expectedText = [NSString
@@ -187,6 +241,7 @@ TEST_F(AutofillAISaveEntityTableViewControllerTest,
 // the wallet notice.
 TEST_F(AutofillAISaveEntityTableViewControllerTest,
        DisplayFooterWithLegalMessagesForWalletSave) {
+  base::HistogramTester histogram_tester;
   autofill::EntityInstance newEntity = GetTestVehicle(kCarMaker2);
   newEntity = newEntity.CopyWithNewRecordType(
       autofill::EntityInstance::RecordType::kServerWallet);
@@ -201,6 +256,9 @@ TEST_F(AutofillAISaveEntityTableViewControllerTest,
   NSArray<AutofillLegalMessageLine*>* messages =
       [AutofillLegalMessageLine convertFrom:lines];
   [controller_ setLegalMessages:messages];
+  histogram_tester.ExpectUniqueSample(
+      "Autofill.Ai.WalletNotice.Save.Funnel",
+      autofill::AutofillAiWalletNoticeFunnelEvents::kLegalMessageShown, 1);
 
   [controller_ loadViewIfNeeded];
 
@@ -218,6 +276,12 @@ TEST_F(AutofillAISaveEntityTableViewControllerTest,
   ASSERT_EQ(2U, linkFooterView.urls.count);
   EXPECT_EQ(autofill::GetManageYourInfoURL(), linkFooterView.urls[0].gurl);
   EXPECT_EQ(GURL("https://www.example.com/legal"), linkFooterView.urls[1].gurl);
+
+  [linkFooterView.delegate view:linkFooterView
+                  didTapLinkURL:linkFooterView.urls[1]];
+  histogram_tester.ExpectBucketCount(
+      "Autofill.Ai.WalletNotice.Save.Funnel",
+      autofill::AutofillAiWalletNoticeFunnelEvents::kLinkClicked, 1);
 }
 
 // Tests that an invalid URL in a legal message is not formatted as a link and
@@ -246,13 +310,8 @@ TEST_F(AutofillAISaveEntityTableViewControllerTest,
   TableViewLinkHeaderFooterView* linkFooterView =
       base::apple::ObjCCastStrict<TableViewLinkHeaderFooterView>(footerView);
 
-  UITextView* textView = nil;
-  for (UIView* subview in linkFooterView.contentView.subviews) {
-    if ([subview isKindOfClass:[UITextView class]]) {
-      textView = base::apple::ObjCCastStrict<UITextView>(subview);
-      break;
-    }
-  }
+  UITextView* textView =
+      chrome_test_util::FindViewByClass<UITextView>(linkFooterView.contentView);
   ASSERT_NE(nil, textView);
 
   NSString* expectedText = [NSString
@@ -298,13 +357,8 @@ TEST_F(AutofillAISaveEntityTableViewControllerTest,
   EXPECT_EQ(kAutofillAISaveEntityLegalDisclosureId,
             linkFooterView.accessibilityIdentifier);
 
-  UITextView* textView = nil;
-  for (UIView* subview in linkFooterView.contentView.subviews) {
-    if ([subview isKindOfClass:[UITextView class]]) {
-      textView = base::apple::ObjCCastStrict<UITextView>(subview);
-      break;
-    }
-  }
+  UITextView* textView =
+      chrome_test_util::FindViewByClass<UITextView>(linkFooterView.contentView);
   ASSERT_NE(nil, textView);
 
   NSString* expectedText = [NSString

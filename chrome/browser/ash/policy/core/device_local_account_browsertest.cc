@@ -172,7 +172,7 @@
 #include "ui/base/ime/ash/input_method_manager.h"
 #include "ui/base/ime/ash/input_method_util.h"
 #include "ui/base/l10n/l10n_util.h"
-#include "ui/base/window_open_disposition.h"
+#include "ui/base/mojom/window_open_disposition.mojom-shared.h"
 #include "ui/display/display.h"
 #include "ui/display/manager/display_manager.h"
 #include "ui/display/manager/managed_display_info.h"
@@ -1590,12 +1590,13 @@ IN_PROC_BROWSER_TEST_F(DeviceLocalAccountTest, LastWindowClosedLogoutReminder) {
   // Start the platform app, causing it to open a window.
   run_loop_ = std::make_unique<base::RunLoop>();
   auto* proxy = apps::AppServiceProxyFactory::GetForProfile(profile);
-  proxy->Launch(app->id(),
-                apps::GetEventFlags(WindowOpenDisposition::NEW_WINDOW,
-                                    false /* preferred_containner */),
-                apps::LaunchSource::kFromChromeInternal,
-                std::make_unique<apps::WindowInfo>(
-                    display::Screen::Get()->GetPrimaryDisplay().id()));
+  proxy->Launch(
+      app->id(),
+      apps::GetEventFlags(ui::mojom::WindowOpenDisposition::kNewWindow,
+                          false /* preferred_containner */),
+      apps::LaunchSource::kFromChromeInternal,
+      std::make_unique<apps::WindowInfo>(
+          display::Screen::Get()->GetPrimaryDisplay().id()));
   run_loop_->Run();
   EXPECT_EQ(1U, app_window_registry->app_windows().size());
 
@@ -1983,6 +1984,40 @@ IN_PROC_BROWSER_TEST_F(DeviceLocalAccountTest, LocaleWithNoIME) {
   EXPECT_EQ(1u, ash::input_method::InputMethodManager::Get()
                     ->GetActiveIMEState()
                     ->GetNumEnabledInputMethods());
+}
+
+IN_PROC_BROWSER_TEST_F(DeviceLocalAccountTest, LocaleWithNoKeyboardLayout) {
+  // Specify a locale ("hi") that has only non-keyboard-layout IMEs and no XKB
+  // keyboard layout.
+  constexpr auto kSingleLocaleWithNoKeyboardLayout =
+      std::to_array<std::string_view>({"hi"});
+  auto* input_method_manager = ash::input_method::InputMethodManager::Get();
+  std::vector<std::string> layouts_from_locale;
+  input_method_manager->GetInputMethodUtil()->GetInputMethodIdsFromLanguageCode(
+      kSingleLocaleWithNoKeyboardLayout[0],
+      ash::input_method::kKeyboardLayoutsOnly, &layouts_from_locale);
+  ASSERT_TRUE(layouts_from_locale.empty());
+
+  SetRecommendedLocales(kSingleLocaleWithNoKeyboardLayout);
+  UploadAndInstallDeviceLocalAccountPolicy();
+  AddPublicSessionToDevicePolicy(kAccountId1);
+  EnableAutoLogin();
+
+  WaitForPolicy();
+
+  WaitForSessionStart();
+
+  EXPECT_EQ(kSingleLocaleWithNoKeyboardLayout[0],
+            g_browser_process->GetApplicationLocale());
+  EXPECT_EQ(base::i18n::GetLanguageSubtagUsingLanguageTag(
+                kSingleLocaleWithNoKeyboardLayout[0]),
+            icu::Locale::getDefault().getLanguage());
+  EXPECT_EQ(
+      input_method_manager->GetInputMethodUtil()->GetHardwareInputMethodIds()[0],
+      input_method_manager->GetActiveIMEState()->GetCurrentInputMethod().id());
+  EXPECT_GT(
+      input_method_manager->GetActiveIMEState()->GetNumEnabledInputMethods(),
+      1u);
 }
 
 IN_PROC_BROWSER_TEST_F(DeviceLocalAccountTest,

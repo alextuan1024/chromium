@@ -44,7 +44,8 @@ class EntityTableTest : public testing::Test {
   EntityTableTest() {
     scoped_feature_list_.InitWithFeatures(
         {features::kAutofillAiWithDataSchema,
-         features::kAutofillAiWalletPrivatePasses},
+         features::kAutofillAiWalletPrivatePasses,
+         features::kAutofillEnableWalletDisclosureNoticePublicPass},
         {});
   }
   void SetUp() override {
@@ -167,7 +168,10 @@ TEST_F(EntityTableTest, DeleteEntityInstancesByRecordType) {
   EntityInstance dl = GetDriversLicenseEntityInstance();
   EntityInstance wallet_vr = GetVehicleEntityInstance({
       .guid = "00000000-0000-4000-8000-123000000000",
-      .record_type = EntityInstance::RecordType::kServerWallet,
+      .record_type =
+          EntityInstance::WalletRecordTypePayload{
+              .management_url =
+                  GURL("https://wallet.google.com/wallet/passes/123")},
   });
   EntityInstance local_vr = GetVehicleEntityInstance({
       .guid = "00000000-0000-4000-8000-456000000000",
@@ -195,6 +199,9 @@ TEST_F(EntityTableTest, DeleteEntityInstancesByRecordType) {
   EXPECT_GT(count_in_table("autofill_ai_attributes", wallet_vr.guid()), 0);
   EXPECT_GT(count_in_table("autofill_ai_entities_metadata", wallet_vr.guid()),
             0);
+  EXPECT_GT(
+      count_in_table("autofill_ai_entities_metadata_wallet", wallet_vr.guid()),
+      0);
   EXPECT_GT(count_in_table("autofill_ai_attributes", local_vr.guid()), 0);
   EXPECT_GT(count_in_table("autofill_ai_entities_metadata", local_vr.guid()),
             0);
@@ -209,6 +216,9 @@ TEST_F(EntityTableTest, DeleteEntityInstancesByRecordType) {
   EXPECT_EQ(count_in_table("autofill_ai_attributes", wallet_vr.guid()), 0);
   EXPECT_EQ(count_in_table("autofill_ai_entities_metadata", wallet_vr.guid()),
             0);
+  EXPECT_EQ(
+      count_in_table("autofill_ai_entities_metadata_wallet", wallet_vr.guid()),
+      0);
 
   // Verify that Local child table entries remain intact.
   EXPECT_GT(count_in_table("autofill_ai_attributes", local_vr.guid()), 0);
@@ -514,6 +524,154 @@ TEST_F(EntityTableTest, SuppressWalletPrivatePasses) {
   base::test::ScopedFeatureList feature;
   feature.InitAndDisableFeature(features::kAutofillAiWalletPrivatePasses);
   EXPECT_THAT(table().GetEntityInstances(), IsEmpty());
+}
+
+// Tests writing, reading, updating, and removing Wallet metadata
+// (`management_url`) in `autofill_ai_entities_metadata_wallet`.
+TEST_F(EntityTableTest, WalletMetadataWriteReadUpdateAndRemove) {
+  EntityInstance wallet_vr = GetVehicleEntityInstance({
+      .guid = "00000000-0000-4000-8000-123000000000",
+      .record_type =
+          EntityInstance::WalletRecordTypePayload{
+              .management_url =
+                  GURL("https://wallet.google.com/wallet/passes/123")},
+  });
+  ASSERT_TRUE(table().AddOrUpdateEntityInstance(wallet_vr));
+  EXPECT_THAT(table().GetEntityInstances(), ElementsAre(wallet_vr));
+
+  // Update the entity's management_url and verify it is updated on disk.
+  EntityInstance updated_wallet_vr = GetVehicleEntityInstance({
+      .guid = "00000000-0000-4000-8000-123000000000",
+      .record_type =
+          EntityInstance::WalletRecordTypePayload{
+              .management_url =
+                  GURL("https://wallet.google.com/wallet/passes/456")},
+  });
+  ASSERT_TRUE(table().AddOrUpdateEntityInstance(updated_wallet_vr));
+  EXPECT_THAT(table().GetEntityInstances(), ElementsAre(updated_wallet_vr));
+
+  // Remove the entity and verify the row in
+  // `autofill_ai_entities_metadata_wallet` is removed.
+  ASSERT_TRUE(table().RemoveEntityInstance(updated_wallet_vr.guid()));
+  EXPECT_THAT(table().GetEntityInstances(), IsEmpty());
+
+  sql::Statement s;
+  s.Assign(test_api(table()).db()->GetUniqueStatement(
+      "SELECT count(*) FROM autofill_ai_entities_metadata_wallet WHERE "
+      "entity_guid = ?"));
+  s.BindString(0, *updated_wallet_vr.guid());
+  ASSERT_TRUE(s.Step());
+  EXPECT_EQ(s.ColumnInt(0), 0);
+}
+
+// Tests that reading a `kServerWallet` entity whose row in
+// `autofill_ai_entities_metadata_wallet` is missing (e.g. an entity migrated
+// from a pre-v158 database) falls back to an empty `management_url`.
+TEST_F(EntityTableTest, WalletMetadataReadTimeFallbackWhenRowMissing) {
+  EntityInstance wallet_vr = GetVehicleEntityInstance({
+      .guid = "00000000-0000-4000-8000-123000000000",
+      .record_type =
+          EntityInstance::WalletRecordTypePayload{
+              .management_url =
+                  GURL("https://wallet.google.com/wallet/passes/123")},
+  });
+  ASSERT_TRUE(table().AddOrUpdateEntityInstance(wallet_vr));
+
+  // Simulate a pre-v158 entity by deleting its row from
+  // `autofill_ai_entities_metadata_wallet`.
+  ASSERT_TRUE(test_api(table()).db()->Execute(
+      "DELETE FROM autofill_ai_entities_metadata_wallet"));
+
+  EntityInstance expected_fallback_vr = GetVehicleEntityInstance({
+      .guid = "00000000-0000-4000-8000-123000000000",
+      .record_type =
+          EntityInstance::WalletRecordTypePayload{.management_url = GURL()},
+  });
+  EXPECT_THAT(table().GetEntityInstances(), ElementsAre(expected_fallback_vr));
+}
+
+// Tests that having a row in `autofill_ai_entities_metadata_wallet` for an
+// entity whose record type is not `kServerWallet` ignores the Wallet metadata
+// and still loads the entity with its expected record type payload.
+TEST_F(EntityTableTest, WalletMetadataIncompatibleRecordType) {
+  EntityInstance local_vr = GetVehicleEntityInstance({
+      .guid = "00000000-0000-4000-8000-123000000000",
+      .record_type = EntityInstance::RecordType::kLocal,
+  });
+  ASSERT_TRUE(table().AddOrUpdateEntityInstance(local_vr));
+
+  ASSERT_TRUE(test_api(table()).db()->Execute(
+      "INSERT INTO autofill_ai_entities_metadata_wallet (entity_guid, "
+      "management_url) VALUES ('00000000-0000-4000-8000-123000000000', "
+      "'https://wallet.google.com/wallet/passes/123')"));
+
+  EXPECT_THAT(table().GetEntityInstances(), ElementsAre(local_vr));
+}
+
+// Tests writing, reading, preserving across unsynced local updates, and
+// clearing `legal_message_token` in `autofill_ai_entities_metadata_wallet`.
+TEST_F(EntityTableTest, WalletMetadataLegalMessageToken) {
+  EntityInstance wallet_vr = GetVehicleEntityInstance({
+      .guid = "00000000-0000-4000-8000-123000000000",
+      .record_type =
+          EntityInstance::WalletRecordTypePayload{
+              .management_url =
+                  GURL("https://wallet.google.com/wallet/passes/123")},
+  });
+  EntityInstance wallet_vr_no_token = GetVehicleEntityInstance({
+      .guid = "00000000-0000-4000-8000-456000000000",
+      .record_type =
+          EntityInstance::WalletRecordTypePayload{
+              .management_url =
+                  GURL("https://wallet.google.com/wallet/passes/456")},
+  });
+
+  // Adding a Wallet entity with a `legal_message_token` stores it in the table,
+  // and `GetEntityGuidsWithLegalMessageToken()` only returns entities with a
+  // non-empty token.
+  ASSERT_TRUE(table().AddOrUpdateEntityInstance(wallet_vr, "test_token"));
+  ASSERT_TRUE(table().AddOrUpdateEntityInstance(wallet_vr_no_token));
+  EXPECT_EQ(table().GetLegalMessageToken(wallet_vr.guid()), "test_token");
+  EXPECT_EQ(table().GetLegalMessageToken(wallet_vr_no_token.guid()),
+            std::nullopt);
+  EXPECT_THAT(table().GetEntityGuidsWithLegalMessageToken(),
+              ElementsAre(wallet_vr.guid()));
+
+  // Updating the entity with `std::nullopt` (e.g. a local edit before the
+  // initial creation commit completes) preserves the pending token.
+  EntityInstance updated_wallet_vr = GetVehicleEntityInstance({
+      .model = u"Updated Model",
+      .guid = "00000000-0000-4000-8000-123000000000",
+      .record_type =
+          EntityInstance::WalletRecordTypePayload{
+              .management_url =
+                  GURL("https://wallet.google.com/wallet/passes/123")},
+  });
+  ASSERT_TRUE(table().AddOrUpdateEntityInstance(updated_wallet_vr));
+  EXPECT_EQ(table().GetLegalMessageToken(wallet_vr.guid()), "test_token");
+
+  // Clearing an empty span is a no-op.
+  ASSERT_TRUE(table().ClearLegalMessageTokens({}));
+  EXPECT_EQ(table().GetLegalMessageToken(wallet_vr.guid()), "test_token");
+
+  // Explicitly clearing the token removes it while keeping the entity intact.
+  ASSERT_TRUE(table().ClearLegalMessageTokens({wallet_vr.guid()}));
+  EXPECT_EQ(table().GetLegalMessageToken(wallet_vr.guid()), std::nullopt);
+  EXPECT_THAT(table().GetEntityGuidsWithLegalMessageToken(), IsEmpty());
+  EXPECT_THAT(table().GetEntityInstances(),
+              UnorderedElementsAre(updated_wallet_vr, wallet_vr_no_token));
+
+  // Once cleared, subsequent local updates with `std::nullopt` keep it empty.
+  ASSERT_TRUE(table().AddOrUpdateEntityInstance(wallet_vr));
+  EXPECT_EQ(table().GetLegalMessageToken(wallet_vr.guid()), std::nullopt);
+
+  // Re-adding with a token and updating with an explicit empty string (e.g. an
+  // incoming remote Sync update) clears the stored token.
+  ASSERT_TRUE(table().AddOrUpdateEntityInstance(wallet_vr, "test_token_2"));
+  EXPECT_EQ(table().GetLegalMessageToken(wallet_vr.guid()), "test_token_2");
+  ASSERT_TRUE(
+      table().AddOrUpdateEntityInstance(wallet_vr, /*legal_message_token=*/""));
+  EXPECT_EQ(table().GetLegalMessageToken(wallet_vr.guid()), std::nullopt);
 }
 
 }  // namespace

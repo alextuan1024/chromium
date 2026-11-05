@@ -9,6 +9,7 @@
 #import "base/apple/foundation_util.h"
 #import "base/strings/sys_string_conversions.h"
 #import "components/autofill/core/browser/filling/field_filling_util.h"
+#import "components/autofill/core/browser/integrators/autofill_ai/metrics/autofill_ai_metrics.h"
 #import "components/strings/grit/components_strings.h"
 #import "ios/chrome/browser/autofill/autofill_ai/public/autofill_ai_constants.h"
 #import "ios/chrome/browser/autofill/autofill_ai/public/autofill_ai_ui_util.h"
@@ -31,10 +32,12 @@ constexpr CGFloat kUpdateFormSectionSpacing = 32.0;
 // 16pt padding between attributes and the footer text.
 constexpr CGFloat kFooterTopExtraPadding = 16.0;
 
-// Blank line separating the storage notice from the disclosure legal messages.
+// Blank line separating the storage notice from the disclosure legal messages
+// in the footer text.
 NSString* const kStorageNoticeSeparator = @"\n\n";
 
-// Line break separating consecutive disclosure legal messages.
+// Line break separating consecutive disclosure legal messages in the footer
+// text.
 NSString* const kDisclosureLegalMessageSeparator = @"\n";
 
 typedef NS_ENUM(NSInteger, SectionIdentifier) {
@@ -110,48 +113,6 @@ TableViewTextHeaderFooterView* GetHeaderView(UITableView* table_view,
   return header;
 }
 
-// Returns the text of `legal_message` with each valid link wrapped in link tags
-// by `autofill::WrapInLinkTags()`, appending the corresponding URLs to `urls`
-// in the order their tags appear in the returned string. Ranges that are
-// invalid or that overlap a previous one, as well as links with an invalid URL,
-// are emitted as plain text so that the number of tags always matches the
-// number of appended URLs.
-NSString* TextForDisclosureLegalMessageAppendingURLsTo(
-    AutofillLegalMessageLine* legal_message,
-    NSMutableArray<CrURL*>* urls) {
-  NSString* lineText = legal_message.messageText;
-  NSArray<NSValue*>* linkRanges = legal_message.linkRanges;
-  const std::vector<GURL>& linkURLs = legal_message.linkURLs;
-
-  NSMutableArray<NSString*>* fragments = [NSMutableArray array];
-  NSUInteger currentIndex = 0;
-  for (NSUInteger i = 0; i < linkRanges.count && i < linkURLs.size(); ++i) {
-    NSRange range = [linkRanges[i] rangeValue];
-    if (range.location == NSNotFound || range.location < currentIndex ||
-        NSMaxRange(range) > lineText.length) {
-      continue;
-    }
-
-    [fragments
-        addObject:[lineText substringWithRange:NSMakeRange(currentIndex,
-                                                           range.location -
-                                                               currentIndex)]];
-
-    NSString* linkText = [lineText substringWithRange:range];
-    const GURL& url = linkURLs[i];
-    if (url.is_valid()) {
-      [fragments addObject:autofill::WrapInLinkTags(linkText)];
-      [urls addObject:[[CrURL alloc] initWithGURL:url]];
-    } else {
-      [fragments addObject:linkText];
-    }
-
-    currentIndex = NSMaxRange(range);
-  }
-
-  [fragments addObject:[lineText substringFromIndex:currentIndex]];
-  return [fragments componentsJoinedByString:@""];
-}
 
 }  // namespace
 
@@ -172,9 +133,13 @@ NSString* TextForDisclosureLegalMessageAppendingURLsTo(
   // Legal message lines to display in the footer.
   NSArray<AutofillLegalMessageLine*>* _legalMessages;
 
+  // Denotes whether the entity is a private wallet pass.
+  BOOL _isPrivateWalletPass;
+
   // Cached footer text and URLs computed when the model updates.
   NSString* _cachedFooterText;
   NSArray<CrURL*>* _cachedFooterURLs;
+  NSArray<CrURL*>* _cachedLegalMessageURLs;
 
   // Diffable data source for the table view.
   UITableViewDiffableDataSource<NSNumber*, TableViewItem*>* _dataSource;
@@ -250,8 +215,20 @@ NSString* TextForDisclosureLegalMessageAppendingURLsTo(
   }
 }
 
+- (void)setIsPrivateWalletPass:(BOOL)isPrivateWalletPass {
+  if (_isPrivateWalletPass == isPrivateWalletPass) {
+    return;
+  }
+  _isPrivateWalletPass = isPrivateWalletPass;
+  [self updateCachedFooter];
+}
+
 - (void)setLegalMessages:(NSArray<AutofillLegalMessageLine*>*)legalMessages {
   _legalMessages = legalMessages;
+  if (_legalMessages.count > 0) {
+    autofill::LogWalletNoticeFunnelEvent(
+        autofill::AutofillAiWalletNoticeFunnelEvents::kLegalMessageShown);
+  }
   [self updateCachedFooter];
   if (self.viewLoaded && _dataSource) {
     NSDiffableDataSourceSnapshot<NSNumber*, TableViewItem*>* snapshot =
@@ -373,30 +350,34 @@ NSString* TextForDisclosureLegalMessageAppendingURLsTo(
   }
 
   NSString* email = base::SysUTF16ToNSString(_userEmail);
-  NSString* storageNoticeText =
-      [self isUpdateDialog]
-          ? autofill::GetUpdateEntitySavedInWalletFooterText(email)
-          : autofill::GetSaveEntityToWalletFooterText(email);
-  GURL url = [self isUpdateDialog] ? autofill::GetGoogleWalletPassesURL()
-                                   : autofill::GetManageYourInfoURL();
-  [urls addObject:[[CrURL alloc] initWithGURL:url]];
-  return storageNoticeText;
+  if ([self isUpdateDialog]) {
+    [urls addObject:[[CrURL alloc]
+                        initWithGURL:autofill::GetGoogleWalletPassesURL()]];
+    return autofill::GetUpdateEntitySavedInWalletFooterText(email);
+  }
+
+  return autofill::GetSaveEntityToWalletFooterTextAppendingURLsTo(
+      email, _isPrivateWalletPass, urls);
 }
 
 // Computes and caches the footer text and URLs based on current model data.
 - (void)updateCachedFooter {
-  // `urls` must be filled in the same order the links appear in the text, so
-  // the storage notice is built before the disclosure legal messages.
+  // `urls` must be populated in the exact order the link tags appear in the
+  // text so that `ParseStringWithLinks()` correctly associates each tagged
+  // range with its corresponding URL. Therefore, the storage notice URLs are
+  // added before the disclosure legal message URLs.
   NSMutableArray<CrURL*>* urls = [NSMutableArray array];
   NSString* storageNoticeText = [self textForStorageNoticeAppendingURLsTo:urls];
 
+  NSMutableArray<CrURL*>* legalMessageURLs = [NSMutableArray array];
   NSMutableArray<NSString*>* disclosureLegalMessageTexts =
       [NSMutableArray array];
   for (AutofillLegalMessageLine* disclosureLegalMessage in _legalMessages) {
     [disclosureLegalMessageTexts
-        addObject:TextForDisclosureLegalMessageAppendingURLsTo(
-                      disclosureLegalMessage, urls)];
+        addObject:autofill::TextForDisclosureLegalMessageAppendingURLsTo(
+                      disclosureLegalMessage, legalMessageURLs)];
   }
+  [urls addObjectsFromArray:legalMessageURLs];
 
   // The disclosure legal messages form a single block, separated from the
   // storage notice by a blank line.
@@ -411,6 +392,7 @@ NSString* TextForDisclosureLegalMessageAppendingURLsTo(
 
   _cachedFooterText = text;
   _cachedFooterURLs = urls;
+  _cachedLegalMessageURLs = legalMessageURLs;
 }
 
 // Configures the footer view with the cached storage notice, disclosure legal
@@ -427,6 +409,10 @@ NSString* TextForDisclosureLegalMessageAppendingURLsTo(
 #pragma mark - TableViewLinkHeaderFooterItemDelegate
 
 - (void)view:(TableViewLinkHeaderFooterView*)view didTapLinkURL:(CrURL*)URL {
+  if ([_cachedLegalMessageURLs containsObject:URL]) {
+    autofill::LogWalletNoticeFunnelEvent(
+        autofill::AutofillAiWalletNoticeFunnelEvents::kLinkClicked);
+  }
   [self.delegate didTapLinkWithURL:URL];
 }
 

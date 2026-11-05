@@ -15,8 +15,8 @@
 #include "components/strings/grit/components_strings.h"
 #include "ui/android/window_android.h"
 #include "ui/base/l10n/l10n_util.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
 #include "ui/base/page_transition_types.h"
-#include "ui/base/window_open_disposition.h"
 
 namespace autofill {
 
@@ -32,7 +32,7 @@ OfferNotificationControllerAndroid::~OfferNotificationControllerAndroid() {
 void OfferNotificationControllerAndroid::ShowIfNecessary(
     const AutofillOfferData* offer,
     const CreditCard* card) {
-  DCHECK(offer);
+  CHECK(offer, base::NotFatalUntil::M162);
   if (!card) {
     return;
   }
@@ -72,10 +72,11 @@ void OfferNotificationControllerAndroid::Dismiss() {
 }
 
 void OfferNotificationControllerAndroid::HandleMessageAction(const GURL& url) {
-  GetWebContents().OpenURL(content::OpenURLParams::CreateBrowserInitiated(
-                               url, WindowOpenDisposition::NEW_FOREGROUND_TAB,
-                               ui::PAGE_TRANSITION_LINK),
-                           /*navigation_handle_callback=*/{});
+  GetWebContents().OpenURL(
+      content::OpenURLParams::CreateBrowserInitiated(
+          url, ui::mojom::WindowOpenDisposition::kNewForegroundTab,
+          ui::PAGE_TRANSITION_LINK),
+      /*navigation_handle_callback=*/{});
 }
 
 void OfferNotificationControllerAndroid::HandleMessageDismiss(

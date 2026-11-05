@@ -15,6 +15,7 @@
 #include "ash/constants/web_app_id_constants.h"
 #include "ash/public/cpp/app_list/app_list_features.h"
 #include "ash/public/cpp/app_list/app_list_metrics.h"
+#include "ash/public/cpp/app_list/app_list_notifier.h"
 #include "ash/public/cpp/app_list/app_list_types.h"
 #include "ash/public/cpp/shelf_types.h"
 #include "ash/public/cpp/test/app_list_test_api.h"
@@ -65,12 +66,10 @@
 #include "chrome/browser/ash/login/login_manager_test.h"
 #include "chrome/browser/ash/login/test/login_manager_mixin.h"
 #include "chrome/browser/ash/system_web_apps/system_web_app_manager.h"
-#include "chrome/browser/browser_process.h"
 #include "chrome/browser/extensions/extension_browsertest.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/search_engines/template_url_service_factory.h"
 #include "chrome/browser/signin/identity_manager_factory.h"
-#include "chrome/browser/signin/identity_test_environment_profile_adaptor.h"
 #include "chrome/browser/ui/ash/assistant/assistant_browser_delegate_impl.h"
 #include "chrome/browser/ui/ash/login/user_adding_screen.h"
 #include "chrome/browser/ui/ash/shelf/shelf_controller_helper.h"
@@ -96,6 +95,7 @@
 #include "components/services/app_service/public/cpp/package_id.h"
 #include "components/session_manager/core/session.h"
 #include "components/session_manager/core/session_manager.h"
+#include "components/tabs/public/tab_interface.h"
 #include "components/user_manager/user_manager.h"
 #include "components/user_manager/user_names.h"
 #include "components/user_manager/user_type.h"
@@ -107,13 +107,16 @@
 #include "extensions/common/constants.h"
 #include "google_apis/gaia/gaia_id.h"
 #include "ui/aura/window.h"
-#include "ui/base/window_open_disposition.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
+#include "ui/base/page_transition_types.h"
+#include "ui/base/window_open_disposition_utils.h"
 #include "ui/display/display.h"
 #include "ui/display/manager/display_manager.h"
 #include "ui/display/scoped_display_for_new_windows.h"
 #include "ui/display/screen.h"
 #include "ui/display/test/display_manager_test_api.h"
 #include "ui/display/types/display_constants.h"
+#include "ui/events/event_constants.h"
 #include "ui/menus/simple_menu_model.h"
 #include "ui/wm/core/window_util.h"
 #include "url/gurl.h"
@@ -129,6 +132,35 @@ constexpr char kTestPackageName[] = "com.test.package";
 apps::PackageId GetTestPackageId() {
   return apps::PackageId(apps::PackageType::kArc, kTestPackageName);
 }
+
+class TestUrlSearchResult : public ChromeSearchResult {
+ public:
+  TestUrlSearchResult(Profile* profile,
+                      AppListControllerDelegate* list_controller,
+                      const std::string& id,
+                      const GURL& url)
+      : profile_(profile), list_controller_(list_controller), url_(url) {
+    set_id(id);
+    SetResultType(ash::AppListSearchResultType::kOmnibox);
+    SetDisplayType(ash::SearchResultDisplayType::kList);
+    SetCategory(ash::AppListSearchResultCategory::kWeb);
+    SetMetricsType(ash::OMNIBOX_URL_WHAT_YOU_TYPED);
+  }
+  TestUrlSearchResult(const TestUrlSearchResult&) = delete;
+  TestUrlSearchResult& operator=(const TestUrlSearchResult&) = delete;
+  ~TestUrlSearchResult() override = default;
+
+  // ChromeSearchResult:
+  void Open(int event_flags) override {
+    list_controller_->OpenURL(profile_, url_, ui::PAGE_TRANSITION_TYPED,
+                              ui::DispositionFromEventFlags(event_flags));
+  }
+
+ private:
+  const raw_ptr<Profile> profile_;
+  const raw_ptr<AppListControllerDelegate> list_controller_;
+  const GURL url_;
+};
 
 class TestObserver : public app_list::AppListSyncableService::Observer {
  public:
@@ -152,33 +184,6 @@ class TestObserver : public app_list::AppListSyncableService::Observer {
   size_t add_or_update_count_ = 0;
 };
 
-// A fake for AppListSyncableService that allows easy modifications.
-class AppListSyncableServiceFake : public app_list::AppListSyncableService {
- public:
-  AppListSyncableServiceFake(Profile* profile,
-                             bool was_first_sync_ever,
-                             base::OneShotEvent* on_first_sync)
-      : app_list::AppListSyncableService(profile),
-        on_first_sync_(on_first_sync),
-        was_first_sync_ever_(was_first_sync_ever) {}
-  ~AppListSyncableServiceFake() override = default;
-  AppListSyncableServiceFake(const AppListSyncableServiceFake&) = delete;
-  AppListSyncableServiceFake& operator=(const AppListSyncableServiceFake&) =
-      delete;
-
-  void OnFirstSync(
-      base::OnceCallback<void(bool was_first_sync_ever)> callback) override {
-    on_first_sync_->Post(
-        FROM_HERE, base::BindOnce(std::move(callback), was_first_sync_ever_));
-  }
-
-  // The event to signal when the first app list sync in the session has been
-  // completed.
-  const raw_ptr<base::OneShotEvent> on_first_sync_;
-
-  bool was_first_sync_ever_;
-};
-
 }  // namespace
 
 // Test AppListClient::IsAppOpen for extension apps.
@@ -198,7 +203,7 @@ IN_PROC_BROWSER_TEST_F(AppListClientImplBrowserTest, IsExtensionAppOpen) {
     content::CreateAndLoadWebContentsObserver app_loaded_observer;
     apps::AppServiceProxyFactory::GetForProfile(profile())->Launch(
         extension_app->id(),
-        apps::GetEventFlags(WindowOpenDisposition::NEW_WINDOW,
+        apps::GetEventFlags(ui::mojom::WindowOpenDisposition::kNewWindow,
                             false /* preferred_containner */),
         apps::LaunchSource::kFromTest,
         std::make_unique<apps::WindowInfo>(
@@ -741,6 +746,77 @@ IN_PROC_BROWSER_TEST_F(AppListClientImplBrowserTest, OpenSearchResult) {
   content::RunAllTasksUntilIdle();
 }
 
+// Verifies that opening a URL search result from the Launcher with Ctrl+Alt
+// (which maps to ui::mojom::WindowOpenDisposition::kNewSplitView) works when a
+// browser has an unsplit active tab, and does not crash when the active tab is
+// already in a split view or when no regular browser window is open for the
+// profile.
+IN_PROC_BROWSER_TEST_F(AppListClientImplBrowserTest,
+                       OpenSearchResultInSplitView) {
+  AppListClientImpl* client = AppListClientImpl::GetInstance();
+  ASSERT_TRUE(client);
+  client->UpdateProfile();
+
+  AppListModelUpdater* model_updater = test::GetModelUpdater(client);
+  ASSERT_TRUE(model_updater);
+  app_list::SearchController* search_controller = client->search_controller();
+  ASSERT_TRUE(search_controller);
+
+  constexpr char kResultId1[] = "https://example.com/1";
+  constexpr char kResultId2[] = "https://example.com/2";
+  constexpr char kResultId3[] = "https://example.com/3";
+
+  constexpr int kSplitViewFlags = ui::EF_CONTROL_DOWN | ui::EF_ALT_DOWN;
+
+  auto open_result_in_split_view = [&](const char* result_id) {
+    client->ShowAppList(ash::AppListShowSource::kSearchKey);
+    client->GetNotifier()->NotifySearchQueryChanged(u"example");
+    std::vector<std::unique_ptr<ChromeSearchResult>> results;
+    results.push_back(std::make_unique<TestUrlSearchResult>(
+        profile(), client, result_id, GURL(result_id)));
+    search_controller->SetResults(ash::AppListSearchResultType::kOmnibox,
+                                  std::move(results));
+    ASSERT_TRUE(search_controller->FindSearchResult(result_id));
+    client->OpenSearchResult(model_updater->model_id(), result_id,
+                             kSplitViewFlags,
+                             ash::AppListLaunchedFrom::kLaunchedFromSearchBox,
+                             ash::AppListLaunchType::kSearchResult, 0,
+                             /*launch_as_default=*/false);
+  };
+
+  // 1. Open search result with Ctrl+Alt when a regular browser window is open
+  // with 1 unsplit tab: pairs the new tab into a split view with tab 0.
+  TabStripModel* tab_strip_model = browser()->GetTabStripModel();
+  ASSERT_EQ(1, tab_strip_model->count());
+  open_result_in_split_view(kResultId1);
+  ASSERT_EQ(2, tab_strip_model->count());
+  EXPECT_TRUE(tab_strip_model->GetTabAtIndex(0)->IsSplit());
+  EXPECT_TRUE(tab_strip_model->GetTabAtIndex(1)->IsSplit());
+
+  // 2. Open search result with Ctrl+Alt when the active tab in the browser is
+  // already in a split view: must not CHECK-crash in AddToNewSplit().
+  open_result_in_split_view(kResultId2);
+  EXPECT_EQ(3, tab_strip_model->count());
+
+  // 3. Close the regular browser window (keeping an incognito window open so
+  // the browser process does not exit) and open a search result with Ctrl+Alt
+  // when no regular browser window exists for the profile: must create a new
+  // browser window with 1 active tab and not CHECK-crash in AddToNewSplit().
+  client->CreateNewWindow(/*incognito=*/true,
+                          /*should_trigger_session_restore=*/false);
+  CloseBrowserSynchronously(browser());
+  ASSERT_EQ(0U, ProfileBrowserCollection::GetForProfile(profile())->GetSize());
+
+  open_result_in_split_view(kResultId3);
+  ASSERT_EQ(1U, ProfileBrowserCollection::GetForProfile(profile())->GetSize());
+  BrowserWindowInterface* new_browser =
+      ProfileBrowserCollection::GetForProfile(profile())
+          ->GetLastActiveBrowser();
+  ASSERT_TRUE(new_browser);
+  EXPECT_EQ(1, new_browser->GetTabStripModel()->count());
+  EXPECT_FALSE(new_browser->GetTabStripModel()->GetTabAtIndex(0)->IsSplit());
+}
+
 // TODO(crbug.com/335362001): Re-enable this test.
 #if BUILDFLAG(IS_CHROMEOS)
 #define MAYBE_OpenSearchResultOnPrimaryDisplay \
@@ -1256,67 +1332,3 @@ IN_PROC_BROWSER_TEST_F(
       "ClamshellMode",
       0);
 }
-
-class AppListClientNewUserTest : public InProcessBrowserTest,
-                                 public testing::WithParamInterface<bool> {
- public:
-  AppListClientNewUserTest() = default;
-  ~AppListClientNewUserTest() override = default;
-
-  // Returns the event to signal when the first app list sync in the session has
-  // been completed.
-  base::OneShotEvent& on_first_sync() { return on_first_sync_; }
-
-  // Returns whether the first app list sync in the session was the first sync
-  // ever across all ChromeOS devices and sessions for the given user, based on
-  // test parameterization.
-  bool was_first_sync_ever() const { return GetParam(); }
-
-  // Returns the `AccountId` for the primary user.
-  const AccountId& account_id() const {
-    return session_manager::SessionManager::Get()
-        ->GetPrimarySession()
-        ->account_id();
-  }
-
- private:
-  // InProcessBrowserTest:
-  void SetUpBrowserContextKeyedServices(
-      content::BrowserContext* browser_context) override {
-    InProcessBrowserTest::SetUpBrowserContextKeyedServices(browser_context);
-
-    app_list::AppListSyncableServiceFactory::GetInstance()->SetTestingFactory(
-        browser_context,
-        base::BindLambdaForTesting([&](content::BrowserContext* browser_context)
-                                       -> std::unique_ptr<KeyedService> {
-          return std::make_unique<AppListSyncableServiceFake>(
-              Profile::FromBrowserContext(browser_context),
-              was_first_sync_ever(), &on_first_sync_);
-        }));
-  }
-
-  // The event to signal when the first app list sync in the session has been
-  // completed.
-  base::OneShotEvent on_first_sync_;
-};
-
-INSTANTIATE_TEST_SUITE_P(All, AppListClientNewUserTest, testing::Bool());
-
-IN_PROC_BROWSER_TEST_P(AppListClientNewUserTest, IsNewUser) {
-  // Until the first app list sync in the session has been completed, it is
-  // not known whether a given user can be considered new.
-  EXPECT_EQ(AppListClientImpl::GetInstance()->IsNewUser(account_id()),
-            std::nullopt);
-
-  // Signal that the first app list sync in the session has been completed.
-  on_first_sync().Signal();
-
-  // Once the first app list sync in the session has been completed, a task
-  // will be posted to the `AppListClient` which will cache whether the given
-  // user can be considered new.
-  EXPECT_TRUE(base::test::RunUntil([&]() {
-    return AppListClientImpl::GetInstance()->IsNewUser(account_id()) ==
-           was_first_sync_ever();
-  }));
-}
-

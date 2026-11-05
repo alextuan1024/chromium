@@ -26,12 +26,12 @@
 #include "chrome/browser/ash/arc/accessibility/arc_accessibility_util.h"
 #include "chrome/browser/ash/arc/accessibility/arc_serialization_delegate.h"
 #include "chrome/browser/ash/arc/input_method_manager/arc_input_method_manager_service.h"
-#include "chrome/common/extensions/api/accessibility_private.h"
 #include "chromeos/ash/experiences/arc/arc_util.h"
 #include "chromeos/ash/experiences/arc/message_center/arc_notification_surface.h"
 #include "chromeos/ash/experiences/arc/message_center/arc_notification_surface_manager.h"
 #include "chromeos/ash/experiences/arc/session/arc_bridge_service.h"
 #include "chromeos/ash/experiences/arc/session/connection_observer.h"
+#include "chromeos/ash/experiences/extensions/common/api/accessibility_private.h"
 #include "components/exo/input_method_surface.h"
 #include "components/exo/shell_surface.h"
 #include "components/exo/shell_surface_util.h"
@@ -963,8 +963,9 @@ void ArcAccessibilityTreeTracker::StartTrackingWindows(aura::Window* window) {
 
 void ArcAccessibilityTreeTracker::DispatchCustomSpokenFeedbackToggled(
     bool enabled) {
-  auto event_args(extensions::api::accessibility_private::
-                      OnCustomSpokenFeedbackToggled::Create(enabled));
+  auto event_args = base::MakeRefCounted<extensions::EventArgs>(
+      extensions::api::accessibility_private::OnCustomSpokenFeedbackToggled::
+          Create(enabled));
   auto event = std::make_unique<extensions::Event>(
       extensions::events::
           ACCESSIBILITY_PRIVATE_ON_CUSTOM_SPOKEN_FEEDBACK_TOGGLED,

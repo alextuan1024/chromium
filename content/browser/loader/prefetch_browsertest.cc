@@ -9,6 +9,7 @@
 #include "base/files/file_util.h"
 #include "base/files/scoped_temp_dir.h"
 #include "base/run_loop.h"
+#include "base/strings/strcat.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/stringprintf.h"
 #include "base/test/bind.h"
@@ -31,7 +32,6 @@
 #include "content/public/test/browser_test_utils.h"
 #include "content/public/test/content_browser_test.h"
 #include "content/public/test/content_browser_test_utils.h"
-#include "content/public/test/fenced_frame_test_util.h"
 #include "content/public/test/test_frame_navigation_observer.h"
 #include "content/public/test/url_loader_monitor.h"
 #include "content/shell/browser/shell.h"
@@ -973,9 +973,10 @@ IN_PROC_BROWSER_TEST_P(PrefetchBrowserTest, SignedExchangeWithPreload) {
       target_sxg_path,
       // We mock the SignedExchangeHandler, so just return a HTML content
       // as "application/signed-exchange;v=b3".
-      ResponseEntry(MockSignedExchangeHandler::kMockSxgPrefix +
-                        "<head><title>Prefetch Target (SXG)</title><script "
-                        "src=\"./preload.js\"></script></head>",
+      ResponseEntry(base::StrCat({MockSignedExchangeHandler::kMockSxgPrefix,
+                                  "<head><title>Prefetch Target (SXG)</title>"
+                                  "<script src=\"./preload.js\"></script>"
+                                  "</head>"}),
                     "application/signed-exchange;v=b3",
                     {{"x-content-type-options", "nosniff"}}));
   RegisterResponse(preload_path_in_sxg,
@@ -1037,9 +1038,10 @@ IN_PROC_BROWSER_TEST_P(PrefetchBrowserTest,
       target_sxg_path,
       // We mock the SignedExchangeHandler, so just return a HTML content
       // as "application/signed-exchange;v=b3".
-      ResponseEntry(MockSignedExchangeHandler::kMockSxgPrefix +
-                        "<head><title>Prefetch Target (SXG)</title><script "
-                        "src=\"./preload.js\"></script></head>",
+      ResponseEntry(base::StrCat({MockSignedExchangeHandler::kMockSxgPrefix,
+                                  "<head><title>Prefetch Target (SXG)</title>"
+                                  "<script src=\"./preload.js\"></script>"
+                                  "</head>"}),
                     "application/signed-exchange;v=b3",
                     {{"x-content-type-options", "nosniff"}}));
   RegisterResponse(preload_path_in_sxg,

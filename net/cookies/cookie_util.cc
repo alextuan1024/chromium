@@ -19,6 +19,7 @@
 #include "base/logging.h"
 #include "base/metrics/histogram_macros.h"
 #include "base/notreached.h"
+#include "base/numerics/checked_math.h"
 #include "base/strings/strcat.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_tokenizer.h"
@@ -40,8 +41,6 @@
 #include "net/cookies/cookie_options.h"
 #include "net/cookies/cookie_partition_key.h"
 #include "net/cookies/parsed_cookie.h"
-#include "net/first_party_sets/first_party_set_metadata.h"
-#include "net/first_party_sets/first_party_sets_cache_filter.h"
 #include "net/http/http_util.h"
 #include "net/storage_access_api/status.h"
 #include "url/gurl.h"
@@ -347,6 +346,15 @@ constexpr CookiePrefixData kPrefixes[] = {
 };
 
 }  // namespace
+
+bool IsCookieUrlHostValid(const GURL& url) {
+  const bool is_webby_scheme =
+      url.SchemeIsHTTPOrHTTPS() || url.SchemeIsWSOrWSS();
+  if (!is_webby_scheme || url.HostIsIPAddress()) {
+    return true;
+  }
+  return IsCanonicalizedHostCompliant(url.host());
+}
 
 bool DomainIsHostOnly(std::string_view domain_string) {
   return (domain_string.empty() || domain_string[0] != '.');
@@ -1096,22 +1104,6 @@ bool IsTimeLimitedInsecureCookiesEnabled() {
          base::FeatureList::IsEnabled(features::kTimeLimitedInsecureCookies);
 }
 
-std::pair<FirstPartySetMetadata, FirstPartySetsCacheFilter::MatchInfo>
-ComputeFirstPartySetMetadata(
-    const SchemefulSite& request_site,
-    const IsolationInfo& isolation_info,
-    const CookieAccessDelegate* cookie_access_delegate) {
-  if (cookie_access_delegate) {
-    return cookie_access_delegate->ComputeFirstPartySetMetadata(
-        request_site,
-        base::OptionalToPtr(
-            isolation_info.network_isolation_key().GetTopFrameSite()));
-  }
-
-  return std::pair(FirstPartySetMetadata(),
-                   FirstPartySetsCacheFilter::MatchInfo());
-}
-
 CookieOptions::SameSiteCookieContext::ContextMetadata::HttpMethod
 HttpMethodStringToEnum(std::string_view in) {
   using HttpMethod =
@@ -1198,6 +1190,13 @@ bool ShouldAddInitialStorageAccessApiOverride(
     base::optional_ref<const url::Origin> request_initiator) {
   return api_status == StorageAccessApiStatus::kAccessViaAPI &&
          request_initiator && request_initiator->IsSameOriginWith(url);
+}
+
+size_t NameValueSizeBytes(const CanonicalCookie& cc) {
+  base::CheckedNumeric<size_t> name_value_pair_size = cc.Name().size();
+  name_value_pair_size += cc.ValueSize().InBytes();
+  DCHECK(name_value_pair_size.IsValid());
+  return name_value_pair_size.ValueOrDie();
 }
 
 }  // namespace net::cookie_util

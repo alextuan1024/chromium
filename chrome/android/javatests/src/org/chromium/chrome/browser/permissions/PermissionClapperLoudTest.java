@@ -31,12 +31,10 @@ import org.chromium.base.test.util.Batch;
 import org.chromium.base.test.util.CommandLineFlags;
 import org.chromium.base.test.util.DisableIf;
 import org.chromium.base.test.util.Feature;
-import org.chromium.base.test.util.Features.DisableFeatures;
 import org.chromium.base.test.util.Features.EnableFeatures;
 import org.chromium.base.test.util.HistogramWatcher;
 import org.chromium.base.test.util.MinAndroidSdkLevel;
 import org.chromium.chrome.R;
-import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
 import org.chromium.chrome.test.transit.AutoResetCtaTransitTestRule;
@@ -55,15 +53,13 @@ import org.chromium.ui.base.WindowAndroid;
     ContentSwitches.HOST_RESOLVER_RULES + "=MAP * 127.0.0.1",
     "ignore-certificate-errors"
 })
-@DisableFeatures({ChromeFeatureList.SETTINGS_MULTI_COLUMN})
 @EnableFeatures({PermissionsAndroidFeatureList.PERMISSIONS_ANDROID_CLAPPER_LOUD})
 @Batch(Batch.PER_CLASS)
 public class PermissionClapperLoudTest {
 
     public AutoResetCtaTransitTestRule mActivityTestRule =
             ChromeTransitTestRules.autoResetCtaActivityRule();
-    public PermissionTestRule mPermissionRule =
-            new PermissionTestRule(mActivityTestRule.getActivityTestRule());
+    public PermissionTestRule mPermissionRule = new PermissionTestRule(mActivityTestRule);
 
     @Rule
     public RuleChain mRuleChain = RuleChain.outerRule(mActivityTestRule).around(mPermissionRule);
@@ -87,7 +83,7 @@ public class PermissionClapperLoudTest {
 
     @Before
     public void setUp() throws Exception {
-        mPermissionRule.setUpActivity();
+        mActivityTestRule.startOnBlankPage();
         safelyClosePageInfo();
         clearPermissionDelegate();
         mPermissionRule.resetNotificationsSettingsForTest(/* enableQuietUi= */ false);
@@ -120,7 +116,7 @@ public class PermissionClapperLoudTest {
             String[] permissions, RuntimePermissionTestUtils.RuntimePromptResponse response) {
         RuntimePermissionTestUtils.TestAndroidPermissionDelegate testDelegate =
                 new RuntimePermissionTestUtils.TestAndroidPermissionDelegate(permissions, response);
-        WindowAndroid windowAndroid = mPermissionRule.getActivity().getWindowAndroid();
+        WindowAndroid windowAndroid = mActivityTestRule.getActivity().getWindowAndroid();
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
                     windowAndroid.setAndroidPermissionDelegate(testDelegate);
@@ -129,7 +125,7 @@ public class PermissionClapperLoudTest {
 
     /** Clears the injected Android permission delegate. */
     private void clearPermissionDelegate() {
-        WindowAndroid windowAndroid = mPermissionRule.getActivity().getWindowAndroid();
+        WindowAndroid windowAndroid = mActivityTestRule.getActivity().getWindowAndroid();
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
                     windowAndroid.setAndroidPermissionDelegate(null);
@@ -166,8 +162,8 @@ public class PermissionClapperLoudTest {
 
         mPermissionRule.waitForMessageShownState(false);
 
-        histogramWatcher.assertExpected();
-        actionWatcher.assertExpected();
+        histogramWatcher.pollInstrumentationThreadUntilSatisfied();
+        actionWatcher.pollInstrumentationThreadUntilSatisfied();
 
         mPermissionRule.waitForStatusIcon(PermissionTestRule.NOTIFICATIONS_ALLOWED_ID);
 
@@ -211,8 +207,8 @@ public class PermissionClapperLoudTest {
         mPermissionRule.waitForPermissionSettingForOrigin(
                 ContentSettingsType.NOTIFICATIONS, ContentSetting.ASK, PAGE_URL);
 
-        histogramWatcher.assertExpected();
-        actionWatcher.assertExpected();
+        histogramWatcher.pollInstrumentationThreadUntilSatisfied();
+        actionWatcher.pollInstrumentationThreadUntilSatisfied();
 
         mPermissionRule.waitForStatusIcon(PermissionTestRule.NOTIFICATIONS_NOT_ALLOWED_ID);
 
@@ -247,10 +243,10 @@ public class PermissionClapperLoudTest {
 
         mPermissionRule.waitForPermissionSettingForOrigin(
                 ContentSettingsType.NOTIFICATIONS, ContentSetting.BLOCK, PAGE_URL);
-
-        histogramWatcher.assertExpected();
-        actionWatcher.assertExpected();
         mPermissionRule.waitForMessageShownState(false);
+
+        histogramWatcher.pollInstrumentationThreadUntilSatisfied();
+        actionWatcher.pollInstrumentationThreadUntilSatisfied();
 
         mPermissionRule.waitForStatusIcon(PermissionTestRule.NOTIFICATIONS_NOT_ALLOWED_ID);
 
@@ -286,10 +282,10 @@ public class PermissionClapperLoudTest {
 
         mPermissionRule.waitForPermissionSettingForOrigin(
                 ContentSettingsType.NOTIFICATIONS, ContentSetting.BLOCK, PAGE_URL);
-
-        histogramWatcher.assertExpected();
-        actionWatcher.assertExpected();
         mPermissionRule.waitForMessageShownState(false);
+
+        histogramWatcher.pollInstrumentationThreadUntilSatisfied();
+        actionWatcher.pollInstrumentationThreadUntilSatisfied();
 
         mPermissionRule.waitForStatusIcon(PermissionTestRule.NOTIFICATIONS_NOT_ALLOWED_ID);
     }
@@ -329,8 +325,8 @@ public class PermissionClapperLoudTest {
         mPermissionRule.waitForPermissionSettingForOrigin(
                 ContentSettingsType.NOTIFICATIONS, ContentSetting.ALLOW, PAGE_URL);
 
-        histogramWatcher.assertExpected();
-        actionWatcher.assertExpected();
+        histogramWatcher.pollInstrumentationThreadUntilSatisfied();
+        actionWatcher.pollInstrumentationThreadUntilSatisfied();
 
         pressBack();
         mPermissionRule.waitForPageInfoClose();
@@ -379,8 +375,8 @@ public class PermissionClapperLoudTest {
 
         mPermissionRule.verifyNoPageInfoPermissionsRow(PermissionTestRule.NOTIFICATIONS_TITLE_ID);
 
-        histogramWatcher.assertExpected();
-        actionWatcher.assertExpected();
+        histogramWatcher.pollInstrumentationThreadUntilSatisfied();
+        actionWatcher.pollInstrumentationThreadUntilSatisfied();
 
         pressBack();
         mPermissionRule.waitForPageInfoClose();
@@ -417,10 +413,10 @@ public class PermissionClapperLoudTest {
 
         mPermissionRule.waitForPermissionSettingForOrigin(
                 ContentSettingsType.NOTIFICATIONS, ContentSetting.ASK, PAGE_URL);
-        mPermissionRule.verifyNoPageInfoPermissionsRow(PermissionTestRule.NOTIFICATIONS_TITLE_ID);
 
-        histogramWatcher.assertExpected();
-        actionWatcher.assertExpected();
+        histogramWatcher.pollInstrumentationThreadUntilSatisfied();
+        actionWatcher.pollInstrumentationThreadUntilSatisfied();
+        mPermissionRule.verifyNoPageInfoPermissionsRow(PermissionTestRule.NOTIFICATIONS_TITLE_ID);
 
         pressBack();
         mPermissionRule.waitForPageInfoClose();
@@ -462,7 +458,7 @@ public class PermissionClapperLoudTest {
                 PermissionTestRule.NOTIFICATIONS_TITLE_ID,
                 PermissionTestRule.PERMISSIONS_SUMMARY_BLOCKED_ID);
 
-        histogramWatcher.assertExpected();
+        histogramWatcher.pollInstrumentationThreadUntilSatisfied();
         actionWatcher.assertExpected();
 
         pressBack();
@@ -498,7 +494,7 @@ public class PermissionClapperLoudTest {
         mPermissionRule.waitForPermissionSettingForOrigin(
                 ContentSettingsType.NOTIFICATIONS, ContentSetting.BLOCK, PAGE_URL);
 
-        histogramWatcher.assertExpected();
-        actionWatcher.assertExpected();
+        histogramWatcher.pollInstrumentationThreadUntilSatisfied();
+        actionWatcher.pollInstrumentationThreadUntilSatisfied();
     }
 }

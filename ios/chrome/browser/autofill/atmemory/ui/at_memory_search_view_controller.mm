@@ -4,15 +4,23 @@
 
 #import "ios/chrome/browser/autofill/atmemory/ui/at_memory_search_view_controller.h"
 
+#import <numeric>
+#import <vector>
+
 #import "base/apple/foundation_util.h"
 #import "base/check.h"
+#import "base/functional/bind.h"
 #import "base/metrics/user_metrics.h"
 #import "base/metrics/user_metrics_action.h"
+#import "base/rand_util.h"
 #import "base/strings/sys_string_conversions.h"
+#import "base/time/time.h"
+#import "base/timer/timer.h"
 #import "build/buildflag.h"
 #import "components/strings/grit/components_strings.h"
 #import "ios/chrome/browser/autofill/atmemory/public/at_memory_commands.h"
 #import "ios/chrome/browser/autofill/atmemory/public/at_memory_constants.h"
+#import "ios/chrome/browser/autofill/atmemory/ui/at_memory_empty_view.h"
 #import "ios/chrome/browser/autofill/atmemory/ui/at_memory_inline_notice_view.h"
 #import "ios/chrome/browser/autofill/atmemory/ui/at_memory_search_consumer.h"
 #import "ios/chrome/browser/autofill/atmemory/ui/at_memory_search_item.h"
@@ -24,7 +32,6 @@
 #import "ios/chrome/browser/shared/ui/buildflags.h"
 #import "ios/chrome/browser/shared/ui/symbols/symbols.h"
 #import "ios/chrome/browser/shared/ui/table_view/cells/table_view_link_header_footer_item.h"
-#import "ios/chrome/browser/shared/ui/table_view/cells/table_view_text_header_footer_item.h"
 #import "ios/chrome/browser/shared/ui/table_view/content_configuration/activity_indicator_content_configuration.h"
 #import "ios/chrome/browser/shared/ui/table_view/content_configuration/colorful_symbol_content_configuration.h"
 #import "ios/chrome/browser/shared/ui/table_view/content_configuration/table_view_cell_content_configuration.h"
@@ -39,8 +46,18 @@ namespace {
 // URL for the AI disclosure footer link.
 constexpr char kAIDisclosureURL[] = "settings://ai_disclosure";
 
-// Vertical spacing between the notice section and search results.
+// Image asset name for the zero-state empty view.
+constexpr NSString* kAtMemoryEmptyStateImage = @"at_memory_empty";
+
+// Vertical spacing between the notice section and adjacent sections.
 constexpr CGFloat kNoticeSectionSpacing = 16.0;
+
+// Footer height for the Autofill search results section to provide spacing
+// before the subsequent section.
+constexpr CGFloat kAutofillSearchResultsSectionFooterHeight = 8.0;
+
+// Duration between advances of the zero-state subtitle message.
+constexpr base::TimeDelta kZeroStateSubtitleRotationInterval = base::Seconds(3);
 
 // Section identifiers in the "AtMemory" page table view.
 enum class SectionIdentifier {
@@ -52,7 +69,8 @@ enum class SectionIdentifier {
   kUnsupportedQuerySection,
   kNoticeSection,
   kRecentFillsSection,
-  kSearchResultsSection,
+  kAutofillSearchResultsSection,
+  kPersonalContextSearchResultsSection,
 };
 
 // Item identifiers in the "AtMemory" page table view.
@@ -75,6 +93,9 @@ enum class ItemIdentifier {
 @end
 
 @implementation AtMemorySearchViewController {
+  // Custom zero-state empty view.
+  AtMemoryEmptyView* _zeroStateEmptyView;
+
   // The table view for this view controller.
   UITableViewDiffableDataSource<NSNumber*, id>* _dataSource;
   // Search controller for users to type a query for performing an AtMemory
@@ -96,6 +117,18 @@ enum class ItemIdentifier {
   AtMemoryErrorType _errorType;
   // Subtitle to display in the fetching state cell.
   NSString* _fetchingSubtitle;
+
+  // Tells if the view is currently on screen. The zero-state subtitle rotation
+  // only runs while this is YES.
+  BOOL _viewIsVisible;
+  // Timer for rotating the zero-state subtitle message.
+  base::RepeatingTimer _zeroStateSubtitleTimer;
+  // Follow-up example subtitles to rotate through in the zero state.
+  NSArray<NSString*>* _zeroStateSubtitles;
+  // Shuffled indices into `_zeroStateSubtitles`.
+  std::vector<size_t> _shuffledSubtitleIndices;
+  // Current position in `_shuffledSubtitleIndices`.
+  size_t _zeroStateSubtitleIndex;
 }
 
 #pragma mark - UIViewController
@@ -107,9 +140,10 @@ enum class ItemIdentifier {
       [[UISearchController alloc] initWithSearchResultsController:nil];
   _searchController.obscuresBackgroundDuringPresentation = NO;
   _searchController.hidesNavigationBarDuringPresentation = NO;
+  _searchController.automaticallyShowsCancelButton = NO;
   _searchController.searchResultsUpdater = self;
   _searchController.searchBar.delegate = self;
-  _searchController.searchBar.accessibilityIdentifier =
+  _searchController.searchBar.searchTextField.accessibilityIdentifier =
       kAtMemorySearchBarAccessibilityIdentifier;
 
   self.definesPresentationContext = YES;
@@ -129,10 +163,33 @@ enum class ItemIdentifier {
   self.title = l10n_util::GetNSString(IDS_IOS_AUTOFILL_AI_FIND_AND_FILL_TITLE);
 
   RegisterTableViewHeaderFooter<TableViewLinkHeaderFooterView>(self.tableView);
-  RegisterTableViewHeaderFooter<TableViewTextHeaderFooterView>(self.tableView);
+  // Remove extra spacing on top of sections.
+  self.tableView.sectionHeaderTopPadding = 0;
   self.tableView.backgroundColor =
       [UIColor colorNamed:kGroupedPrimaryBackgroundColor];
   [self loadModel];
+}
+
+- (void)viewWillAppear:(BOOL)animated {
+  [super viewWillAppear:animated];
+  _viewIsVisible = YES;
+  // Restart from the default subtitle with a fresh shuffle each time the view
+  // appears, so users always see the primary hint first.
+  if ([self isInZeroState] && !_zeroStateSubtitleTimer.IsRunning()) {
+    [self startZeroStateSubtitleRotation];
+  }
+}
+
+- (void)viewDidAppear:(BOOL)animated {
+  [super viewDidAppear:animated];
+  UIAccessibilityPostNotification(UIAccessibilityAnnouncementNotification,
+                                  self.title);
+}
+
+- (void)viewWillDisappear:(BOOL)animated {
+  [super viewWillDisappear:animated];
+  _viewIsVisible = NO;
+  _zeroStateSubtitleTimer.Stop();
 }
 
 - (void)loadModel {
@@ -241,15 +298,45 @@ enum class ItemIdentifier {
   SectionIdentifier sectionIdentifier = static_cast<SectionIdentifier>(
       [_dataSource sectionIdentifierForIndex:section].integerValue);
 
-  if (sectionIdentifier == SectionIdentifier::kRecentFillsSection) {
-    TableViewTextHeaderFooterView* header =
-        DequeueTableViewHeaderFooter<TableViewTextHeaderFooterView>(tableView);
-    [header setTitle:l10n_util::GetNSString(
-                         IDS_AUTOFILL_AT_MEMORY_PREVIOUSLY_FILLED)];
-    return header;
+  switch (sectionIdentifier) {
+    case SectionIdentifier::kRecentFillsSection: {
+      TableViewLinkHeaderFooterView* header =
+          DequeueTableViewHeaderFooter<TableViewLinkHeaderFooterView>(
+              tableView);
+      [header setText:l10n_util::GetNSString(
+                          IDS_AUTOFILL_AT_MEMORY_PREVIOUSLY_FILLED)
+            withColor:[UIColor colorNamed:kTextSecondaryColor]];
+      return header;
+    }
+    case SectionIdentifier::kAutofillSearchResultsSection: {
+      TableViewLinkHeaderFooterView* header =
+          DequeueTableViewHeaderFooter<TableViewLinkHeaderFooterView>(
+              tableView);
+      [header setText:l10n_util::GetNSString(
+                          IDS_AUTOFILL_AT_MEMORY_YOUR_SAVED_INFO)
+            withColor:[UIColor colorNamed:kTextSecondaryColor]];
+      return header;
+    }
+    case SectionIdentifier::kPersonalContextSearchResultsSection: {
+      TableViewLinkHeaderFooterView* header =
+          DequeueTableViewHeaderFooter<TableViewLinkHeaderFooterView>(
+              tableView);
+      [header
+            setText:
+                l10n_util::GetNSString(
+                    IDS_AUTOFILL_AT_MEMORY_SOURCE_ATTRIBUTION_PERSONAL_INTELLIGENCE)
+          withColor:[UIColor colorNamed:kTextSecondaryColor]];
+      return header;
+    }
+    case SectionIdentifier::kSearchSection:
+    case SectionIdentifier::kSearchFooterSection:
+    case SectionIdentifier::kFetchingSection:
+    case SectionIdentifier::kNoDataSection:
+    case SectionIdentifier::kNoConnectionSection:
+    case SectionIdentifier::kUnsupportedQuerySection:
+    case SectionIdentifier::kNoticeSection:
+      return nil;
   }
-
-  return nil;
 }
 
 - (CGFloat)tableView:(UITableView*)tableView
@@ -257,8 +344,15 @@ enum class ItemIdentifier {
   SectionIdentifier sectionIdentifier = static_cast<SectionIdentifier>(
       [_dataSource sectionIdentifierForIndex:section].integerValue);
 
-  if (sectionIdentifier == SectionIdentifier::kRecentFillsSection) {
+  if (sectionIdentifier == SectionIdentifier::kRecentFillsSection ||
+      sectionIdentifier == SectionIdentifier::kAutofillSearchResultsSection ||
+      sectionIdentifier ==
+          SectionIdentifier::kPersonalContextSearchResultsSection) {
     return UITableViewAutomaticDimension;
+  }
+
+  if (sectionIdentifier == SectionIdentifier::kNoticeSection && section > 0) {
+    return kNoticeSectionSpacing;
   }
 
   return 0;
@@ -293,6 +387,15 @@ enum class ItemIdentifier {
 
   if (sectionIdentifier == SectionIdentifier::kNoticeSection) {
     return kNoticeSectionSpacing;
+  }
+
+  if (sectionIdentifier == SectionIdentifier::kAutofillSearchResultsSection) {
+    BOOL hasPersonalContextSection = [[_dataSource snapshot].sectionIdentifiers
+        containsObject:
+            @(static_cast<int>(
+                SectionIdentifier::kPersonalContextSearchResultsSection))];
+    return hasPersonalContextSection ? kAutofillSearchResultsSectionFooterHeight
+                                     : 0;
   }
 
   return 0;
@@ -368,8 +471,23 @@ enum class ItemIdentifier {
 }
 
 - (void)setFetchingSubtitle:(NSString*)subtitle {
+  if ([_fetchingSubtitle isEqualToString:subtitle]) {
+    return;
+  }
   _fetchingSubtitle = [subtitle copy];
-  [self updateSnapshotForItemIdentifier:ItemIdentifier::kFetchingItem];
+
+  NSIndexPath* indexPath = [_dataSource
+      indexPathForItemIdentifier:@(static_cast<int>(
+                                     ItemIdentifier::kFetchingItem))];
+  UITableViewCell* cell =
+      indexPath ? [self.tableView cellForRowAtIndexPath:indexPath] : nil;
+  __weak __typeof(self) weakSelf = self;
+  PerformCrossfadeTransition(cell.contentView, ^{
+    [weakSelf updateSnapshotForItemIdentifier:ItemIdentifier::kFetchingItem];
+  });
+  if (indexPath) {
+    [self postAccessibilityAnnouncement:_fetchingSubtitle];
+  }
 }
 
 - (void)setRecentFills:(NSArray<AtMemorySearchItem*>*)recentFills {
@@ -386,22 +504,45 @@ enum class ItemIdentifier {
   [self createSnapshotForSearchResultsState];
 }
 
+- (void)setZeroStateSubtitles:(NSArray<NSString*>*)subtitles {
+  _zeroStateSubtitles = [subtitles copy];
+  _shuffledSubtitleIndices.resize(_zeroStateSubtitles.count);
+  std::iota(_shuffledSubtitleIndices.begin(), _shuffledSubtitleIndices.end(),
+            0);
+  _zeroStateSubtitleIndex = 0;
+  if ([self isInZeroState]) {
+    [self startZeroStateSubtitleRotation];
+  }
+}
+
 #pragma mark - Private
 
-// Posts a VoiceOver announcement with the number of available search results.
-- (void)announceSearchResultsForAccessibility {
-  if (!UIAccessibilityIsVoiceOverRunning() || !self.view.window) {
+// Returns YES if the table view has been set up and has no sections to show.
+- (BOOL)isInZeroState {
+  return _dataSource && _dataSource.snapshot.sectionIdentifiers.count == 0;
+}
+
+// Posts a queued VoiceOver announcement with `message`.
+- (void)postAccessibilityAnnouncement:(NSString*)message {
+  if (!UIAccessibilityIsVoiceOverRunning() || !self.view.window ||
+      message.length == 0) {
     return;
   }
 
   NSAttributedString* announcement = [[NSAttributedString alloc]
-      initWithString:
-          l10n_util::GetPluralNSStringF(
-              IDS_IOS_AUTOFILL_AT_MEMORY_SEARCH_RESULTS_AVAILABLE_ACCESSIBILITY_ANNOUNCEMENT,
-              static_cast<int>(_searchResults.count))
+      initWithString:message
           attributes:@{UIAccessibilitySpeechAttributeQueueAnnouncement : @YES}];
   UIAccessibilityPostNotification(UIAccessibilityAnnouncementNotification,
                                   announcement);
+}
+
+// Posts a VoiceOver announcement with the number of available search results.
+- (void)announceSearchResultsForAccessibility {
+  [self
+      postAccessibilityAnnouncement:
+          l10n_util::GetPluralNSStringF(
+              IDS_IOS_AUTOFILL_AT_MEMORY_SEARCH_RESULTS_AVAILABLE_ACCESSIBILITY_ANNOUNCEMENT,
+              static_cast<int>(_searchResults.count))];
 }
 
 // Initiates the Gemini entry flow for an unsupported query and dismisses the
@@ -514,6 +655,7 @@ enum class ItemIdentifier {
 
   [self appendNoticeSectionToSnapshot:snapshot];
   [_dataSource applySnapshot:snapshot animatingDifferences:YES];
+  [self postAccessibilityAnnouncement:_fetchingSubtitle];
   [self updateTableViewBackgroundStyle];
 }
 
@@ -523,12 +665,40 @@ enum class ItemIdentifier {
       [[NSDiffableDataSourceSnapshot alloc] init];
 
   [self appendNoticeSectionToSnapshot:snapshot];
-  [snapshot appendSectionsWithIdentifiers:@[
-    @(static_cast<int>(SectionIdentifier::kSearchResultsSection))
-  ]];
-  [snapshot appendItemsWithIdentifiers:_searchResults
-             intoSectionWithIdentifier:
-                 @(static_cast<int>(SectionIdentifier::kSearchResultsSection))];
+
+  NSMutableArray<AtMemorySearchItem*>* autofillResults =
+      [[NSMutableArray alloc] init];
+  NSMutableArray<AtMemorySearchItem*>* personalContextResults =
+      [[NSMutableArray alloc] init];
+  for (AtMemorySearchItem* item in _searchResults) {
+    if (item.isPersonalContextSourced) {
+      [personalContextResults addObject:item];
+    } else {
+      [autofillResults addObject:item];
+    }
+  }
+
+  if (autofillResults.count > 0) {
+    [snapshot appendSectionsWithIdentifiers:@[
+      @(static_cast<int>(SectionIdentifier::kAutofillSearchResultsSection))
+    ]];
+    [snapshot appendItemsWithIdentifiers:autofillResults
+               intoSectionWithIdentifier:
+                   @(static_cast<int>(
+                       SectionIdentifier::kAutofillSearchResultsSection))];
+  }
+
+  if (personalContextResults.count > 0) {
+    [snapshot appendSectionsWithIdentifiers:@[
+      @(static_cast<int>(
+          SectionIdentifier::kPersonalContextSearchResultsSection))
+    ]];
+    [snapshot
+        appendItemsWithIdentifiers:personalContextResults
+         intoSectionWithIdentifier:
+             @(static_cast<int>(
+                 SectionIdentifier::kPersonalContextSearchResultsSection))];
+  }
 
   [_dataSource applySnapshot:snapshot animatingDifferences:YES];
   [self announceSearchResultsForAccessibility];
@@ -557,18 +727,80 @@ enum class ItemIdentifier {
   }
 
   if (_dataSource.snapshot.sectionIdentifiers.count == 0) {
-    [self setEmptyTableViewBackground];
+    if (!self.tableView.backgroundView) {
+      [self startZeroStateSubtitleRotation];
+    }
     return;
   }
+  _zeroStateSubtitleTimer.Stop();
+  _zeroStateEmptyView = nil;
   self.tableView.backgroundView = nil;
 }
 
-// Sets the table view background to the empty state.
-- (void)setEmptyTableViewBackground {
-  UIImage* image = [UIImage imageNamed:@"at_memory_empty"];
-  [self addEmptyTableViewWithMessage:
-            l10n_util::GetNSString(IDS_AUTOFILL_AT_MEMORY_ZERO_STATE_SUBTITLE)
-                               image:image];
+// Shows the initial zero-state subtitle and, when the view is on screen,
+// schedules rotation through `_zeroStateSubtitles`.
+- (void)startZeroStateSubtitleRotation {
+  _zeroStateSubtitleTimer.Stop();
+  [self setEmptyTableViewBackgroundWithMessage:
+            l10n_util::GetNSString(IDS_AUTOFILL_AT_MEMORY_ZERO_STATE_SUBTITLE)];
+
+  if (_shuffledSubtitleIndices.empty()) {
+    return;
+  }
+
+  base::RandomShuffle(_shuffledSubtitleIndices.begin(),
+                      _shuffledSubtitleIndices.end());
+  _zeroStateSubtitleIndex = 0;
+
+  // Never rotate off screen; `-viewWillAppear:` restarts the rotation once the
+  // view becomes visible again.
+  if (!_viewIsVisible) {
+    return;
+  }
+
+  __weak __typeof(self) weakSelf = self;
+  _zeroStateSubtitleTimer.Start(FROM_HERE, kZeroStateSubtitleRotationInterval,
+                                base::BindRepeating(^{
+                                  [weakSelf advanceZeroStateSubtitle];
+                                }));
+}
+
+// Advances to the next zero-state subtitle in `_shuffledSubtitleIndices`,
+// re-shuffling when the end of the list is reached.
+- (void)advanceZeroStateSubtitle {
+  if (_shuffledSubtitleIndices.empty()) {
+    return;
+  }
+  if (_zeroStateSubtitleIndex >= _shuffledSubtitleIndices.size()) {
+    size_t lastSubtitleIndex = _shuffledSubtitleIndices.back();
+    base::RandomShuffle(_shuffledSubtitleIndices.begin(),
+                        _shuffledSubtitleIndices.end());
+    if (_shuffledSubtitleIndices.size() > 1 &&
+        _shuffledSubtitleIndices.front() == lastSubtitleIndex) {
+      std::swap(_shuffledSubtitleIndices.front(),
+                _shuffledSubtitleIndices.back());
+    }
+    _zeroStateSubtitleIndex = 0;
+  }
+  size_t subtitleIndex = _shuffledSubtitleIndices[_zeroStateSubtitleIndex];
+  [self setEmptyTableViewBackgroundWithMessage:_zeroStateSubtitles
+                                                   [subtitleIndex]];
+  ++_zeroStateSubtitleIndex;
+}
+
+// Sets the table view background to the empty state with `message`.
+- (void)setEmptyTableViewBackgroundWithMessage:(NSString*)message {
+  if (_zeroStateEmptyView &&
+      self.tableView.backgroundView == _zeroStateEmptyView) {
+    [_zeroStateEmptyView updateMessage:message];
+    return;
+  }
+  UIImage* image = [UIImage imageNamed:kAtMemoryEmptyStateImage];
+  _zeroStateEmptyView =
+      [[AtMemoryEmptyView alloc] initWithFrame:self.tableView.bounds
+                                         image:image
+                                       message:message];
+  self.tableView.backgroundView = _zeroStateEmptyView;
 }
 
 // Reloads the snapshot for the cell with the given `itemIdentifier`.
@@ -630,14 +862,11 @@ enum class ItemIdentifier {
   configuration.subtitleNumberOfLines = 1;
   configuration.subtitleLineBreakMode = NSLineBreakByTruncatingTail;
 
-  if (itemIdentifier.icon) {
-    ColorfulSymbolContentConfiguration* symbolConfiguration =
-        [[ColorfulSymbolContentConfiguration alloc] init];
-    symbolConfiguration.symbolImage = itemIdentifier.icon;
-    symbolConfiguration.symbolTintColor =
-        [UIColor colorNamed:kTextSecondaryColor];
-    configuration.leadingConfiguration = symbolConfiguration;
-  }
+  ColorfulSymbolContentConfiguration* symbolConfiguration =
+      [[ColorfulSymbolContentConfiguration alloc] init];
+  symbolConfiguration.symbolImage = itemIdentifier.icon;
+  symbolConfiguration.symbolTintColor = [UIColor colorNamed:kTextPrimaryColor];
+  configuration.leadingConfiguration = symbolConfiguration;
 
   UITableViewCell* cell =
       [TableViewCellContentConfiguration dequeueTableViewCell:tableView];

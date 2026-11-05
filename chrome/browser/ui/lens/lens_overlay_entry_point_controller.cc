@@ -10,6 +10,7 @@
 #include "base/system/sys_info.h"
 #include "chrome/browser/autocomplete/aim_eligibility_service_factory.h"
 #include "chrome/browser/command_updater.h"
+#include "chrome/browser/contextual_tasks/contextual_tasks_utils.h"
 #include "chrome/browser/lens/region_search/lens_region_search_controller.h"
 #include "chrome/browser/optimization_guide/optimization_guide_keyed_service.h"
 #include "chrome/browser/optimization_guide/optimization_guide_keyed_service_factory.h"
@@ -31,7 +32,6 @@
 #include "chrome/browser/ui/page_action/page_action_controller.h"
 #include "chrome/browser/ui/page_action/page_action_icon_type.h"
 #include "chrome/browser/ui/page_action/page_action_triggers.h"
-#include "chrome/browser/ui/tabs/public/tab_features.h"
 #include "chrome/browser/ui/ui_features.h"
 #include "chrome/browser/ui/user_education/browser_user_education_interface.h"
 #include "chrome/browser/ui/views/location_bar/lens_overlay_homework_page_action_controller.h"
@@ -215,6 +215,8 @@ void LensOverlayEntryPointController::UpdateEntryPointsState(
   // Update the 3 dot menu entry point.
   command_updater_->UpdateCommandEnabled(IDC_CONTENT_CONTEXT_LENS_OVERLAY,
                                          visible);
+  command_updater_->UpdateCommandEnabled(IDC_ASK_GOOGLE_ABOUT_THIS_PAGE,
+                                         visible);
 
   // Update the pinnable toolbar entry point. Toolbar entry point is always
   // present, therefore, ignore the visibility check.
@@ -306,7 +308,10 @@ void LensOverlayEntryPointController::InvokeAction(
         lens::LensOverlayDismissalSource::kToolbar);
   } else {
     search_controller->OpenLensOverlay(
-        lens::LensOverlayInvocationSource::kToolbar);
+        lens::LensOverlayInvocationSource::kToolbar,
+        /*should_show_csb=*/!contextual_tasks::
+            AreContextualTasksUpdatedEntryPointsEnabled(
+                active_tab->GetBrowserWindowInterface()->GetProfile()));
   }
 }
 
@@ -372,7 +377,7 @@ void LensOverlayEntryPointController::UpdatePageActionState() {
   }
 
   page_actions::PageActionController* page_action_controller =
-      active_tab->GetTabFeatures()->page_action_controller();
+      page_actions::PageActionController::From(active_tab);
   CHECK(page_action_controller);
 
   const actions::ActionId page_action_id =

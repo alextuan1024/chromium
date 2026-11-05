@@ -17,6 +17,15 @@ GlicCueActionData::GlicCueActionData(GlicCueActionData&&) = default;
 GlicCueActionData& GlicCueActionData::operator=(const GlicCueActionData&) =
     default;
 
+ContextualSearchCueActionData::ContextualSearchCueActionData() = default;
+ContextualSearchCueActionData::~ContextualSearchCueActionData() = default;
+ContextualSearchCueActionData::ContextualSearchCueActionData(
+    const ContextualSearchCueActionData&) = default;
+ContextualSearchCueActionData::ContextualSearchCueActionData(
+    ContextualSearchCueActionData&&) = default;
+ContextualSearchCueActionData& ContextualSearchCueActionData::operator=(
+    const ContextualSearchCueActionData&) = default;
+
 bool CueTarget::SupportsEditPrompt() const {
   return false;
 }
@@ -37,6 +46,10 @@ const char* GetName(CueTargetType type) {
       return "TestSource";
     case CueTargetType::kIndigo:
       return "Indigo";
+    case CueTargetType::kContextualSearch:
+      return "ContextualSearch";
+    case CueTargetType::kAbaSearchJourney:
+      return "AbaSearchJourney";
   }
 }
 
@@ -47,6 +60,10 @@ const char* GetName(CueIntrusiveness intrusiveness) {
     case CueIntrusiveness::kQuiet:
       return "Quiet";
   }
+}
+
+bool CueTarget::IsPersistent() const {
+  return false;
 }
 
 bool CueTarget::SupportsIntrusiveness(CueIntrusiveness intrusiveness) const {

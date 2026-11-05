@@ -10,8 +10,12 @@
 #include <string_view>
 #include <utility>
 
+#include "base/command_line.h"
 #include "base/compiler_specific.h"
 #include "base/containers/span.h"
+#include "base/debug/crash_logging.h"
+#include "base/debug/dump_without_crashing.h"
+#include "base/feature_list.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
 #include "base/functional/callback_helpers.h"
@@ -19,6 +23,7 @@
 #include "base/notimplemented.h"
 #include "base/strings/string_split.h"
 #include "base/strings/string_view_util.h"
+#include "base/task/single_thread_task_runner.h"
 #include "base/trace_event/trace_event.h"
 #include "build/build_config.h"
 #include "gpu/command_buffer/service/command_buffer_service.h"
@@ -26,6 +31,7 @@
 #include "gpu/command_buffer/service/feature_info.h"
 #include "gpu/command_buffer/service/gl_utils.h"
 #include "gpu/command_buffer/service/gpu_fence_manager.h"
+#include "gpu/command_buffer/service/gpu_switches.h"
 #include "gpu/command_buffer/service/gpu_tracer.h"
 #include "gpu/command_buffer/service/multi_draw_manager.h"
 #include "gpu/command_buffer/service/passthrough_program_cache.h"
@@ -33,6 +39,7 @@
 #include "gpu/command_buffer/service/service_utils.h"
 #include "gpu/command_buffer/service/shared_image/shared_image_manager.h"
 #include "gpu/command_buffer/service/shared_image/shared_image_representation.h"
+#include "gpu/config/gpu_crash_keys.h"
 #include "gpu/config/gpu_finch_features.h"
 #include "gpu/config/gpu_switches.h"
 #include "third_party/perfetto/include/perfetto/tracing/track.h"
@@ -51,6 +58,11 @@ namespace gpu {
 namespace gles2 {
 
 namespace {
+
+// TODO(https://crbug.com/574216445): Remove post safe roll out of M160.
+BASE_FEATURE(kDisallowSharedImageRedifinition,
+             base::FEATURE_ENABLED_BY_DEFAULT);
+
 GLenum GetterForTextureTarget(GLenum target) {
   switch (target) {
     case GL_TEXTURE_2D:
@@ -240,6 +252,7 @@ constexpr const char* kRequiredFunctionalityExtensions[] = {
 #endif
     "GL_ANGLE_texture_storage_external",
     "GL_ANGLE_texture_usage",
+    "GL_ANGLE_trim_memory",
     "GL_CHROMIUM_bind_uniform_location",
     "GL_CHROMIUM_sync_query",
     "GL_EXT_debug_marker",
@@ -249,6 +262,7 @@ constexpr const char* kRequiredFunctionalityExtensions[] = {
     "GL_EXT_semaphore_fd",
     "GL_KHR_debug",
     "GL_NV_fence",
+    "GL_EXT_EGL_image_array",
     "GL_EXT_EGL_image_storage",
     "GL_OES_EGL_image",
     "GL_OES_EGL_image_external",
@@ -310,6 +324,8 @@ constexpr const char* kValidRequestableExtensions[] = {
     "GL_ANGLE_multi_draw",
     "GL_ANGLE_polygon_mode",
     "GL_ANGLE_provoking_vertex",
+    "GL_ANGLE_shader_pixel_local_storage",
+    "GL_ANGLE_shader_pixel_local_storage_coherent",
     "GL_ANGLE_stencil_texturing",
     "GL_ANGLE_texture_compression_dxt1",
     "GL_ANGLE_texture_compression_dxt3",
@@ -372,7 +388,6 @@ constexpr const char* kValidRequestableExtensions[] = {
 // WebGL extensions.
 constexpr const char* kValidRequestableWebGLDraftExtensions[] = {
     "GL_ANGLE_base_vertex_base_instance",
-    "GL_ANGLE_shader_pixel_local_storage",
 };
 
 void RequestExtensions(gl::GLApi* api,
@@ -399,6 +414,28 @@ void GL_APIENTRY PassthroughGLDebugMessageCallback(GLenum source,
   command_decoder->OnDebugMessage(source, type, id, severity, length, message);
   LogGLDebugMessage(source, type, id, severity, length, message,
                     command_decoder->GetLogger());
+
+  if (source == GL_DEBUG_SOURCE_OTHER && type == GL_DEBUG_TYPE_PORTABILITY &&
+      (id == 0xBADDEF || id == 0xBADBA5E)) {
+    // Note: log_message cannot contain any user data. The error strings
+    // generated from ANGLE are all static strings and do not contain user
+    // information such as shader source code. Be careful if updating the
+    // contents of this string.
+    std::string log_message = base::NumberToString(id);
+    if (message && length > 0) {
+      log_message += ": " + std::string(message, length);
+    }
+    LOG(ERROR) << log_message;
+    crash_keys::gpu_gl_error_message.Set(log_message);
+    // Limit to 1 report per GPU process
+    static uint32_t reports_left = 1;
+    static bool no_dump = base::CommandLine::ForCurrentProcess()->HasSwitch(
+        switches::kDisableDumpWithoutCrashingOnAnglePortabilityMessages);
+    if (reports_left > 0 && !no_dump) {
+      base::debug::DumpWithoutCrashing();
+      --reports_left;
+    }
+  }
 }
 
 GLsizeiptr GL_APIENTRY
@@ -493,6 +530,53 @@ GLES2DecoderPassthroughImpl::ScopedPixelLocalStorageInterrupt::
   if (impl_->has_activated_pixel_local_storage_) {
     impl_->api()->glFramebufferPixelLocalStorageRestoreANGLEFn();
   }
+}
+
+GLES2DecoderPassthroughImpl::ScopedSharedContextCurrent::
+    ScopedSharedContextCurrent(GLES2DecoderPassthroughImpl* impl,
+                               gl::GLContext* context,
+                               gl::GLSurface* surface)
+    : impl_(impl),
+      decoder_context_was_current_(impl_->IsDecoderContextCurrent()) {
+  // Only interrupt pixel local storage on the decoder's own context.
+  if (decoder_context_was_current_ &&
+      impl_->has_activated_pixel_local_storage_) {
+    impl_->api()->glFramebufferPixelLocalStorageInterruptANGLEFn();
+    pixel_local_storage_interrupted_ = true;
+  }
+  scoped_make_current_.emplace(context, surface);
+}
+
+GLES2DecoderPassthroughImpl::ScopedSharedContextCurrent::
+    ~ScopedSharedContextCurrent() {
+  // Restore the previously current context.
+  scoped_make_current_.reset();
+
+  if (!impl_->IsDecoderContextCurrent()) {
+    if (decoder_context_was_current_) {
+      LOG(ERROR) << "GLES2DecoderPassthroughImpl: failed to restore context "
+                    "after using the shared context.";
+      impl_->MarkContextLost(error::kMakeCurrentFailed);
+    }
+    // Don't make further GL calls; they would run on the wrong context.
+    return;
+  }
+
+  if (pixel_local_storage_interrupted_) {
+    impl_->api()->glFramebufferPixelLocalStorageRestoreANGLEFn();
+  }
+}
+
+bool GLES2DecoderPassthroughImpl::ScopedSharedContextCurrent::
+    IsContextCurrent() {
+  return scoped_make_current_->IsContextCurrent();
+}
+
+bool GLES2DecoderPassthroughImpl::IsDecoderContextCurrent() const {
+  // Check Chromium's notion of the current context first; IsCurrent() DCHECKs
+  // that it matches when the native context is current.
+  return context_ && gl::GLContext::GetCurrent() == context_.get() &&
+         context_->IsCurrent(nullptr);
 }
 
 PassthroughResources::PassthroughResources() : texture_object_map(nullptr) {}
@@ -591,7 +675,7 @@ void PassthroughResources::Destroy(gl::GLApi* api,
 
 PassthroughResources::SharedImageData::SharedImageData() = default;
 PassthroughResources::SharedImageData::SharedImageData(
-    const GLES2DecoderPassthroughImpl* impl,
+    GLES2DecoderPassthroughImpl* impl,
     std::unique_ptr<GLTexturePassthroughImageRepresentation> representation)
     : representation_(std::move(representation)) {
   DCHECK(representation_);
@@ -614,18 +698,27 @@ PassthroughResources::SharedImageData::operator=(SharedImageData&& other) {
 }
 
 void PassthroughResources::SharedImageData::EnsureClear(
-    const GLES2DecoderPassthroughImpl* impl) {
+    GLES2DecoderPassthroughImpl* impl) {
   // To avoid unnessary overhead we don't enable robust initialization on shared
   // gl context where all shared images are created, so we clear image here if
   // necessary.
   if (!representation_->IsCleared()) {
+    // Move any pending errors into the decoder's error state so that only
+    // errors raised while clearing are checked below.
+    impl->FlushErrors();
+    if (impl->WasContextLost()) {
+      return;
+    }
+
     // Allow uncleared access as we're going to clear the image.
     auto scoped_access = representation_->BeginScopedAccess(
         GL_SHARED_IMAGE_ACCESS_MODE_READWRITE_CHROMIUM,
         SharedImageRepresentation::AllowUnclearedAccess::kYes);
 
-    if (!scoped_access)
+    if (!scoped_access) {
+      impl->FlushErrors();
       return;
+    }
 
     auto texture = representation_->GetTexturePassthrough();
     const bool use_oes_draw_buffers_indexed =
@@ -690,6 +783,12 @@ void PassthroughResources::SharedImageData::EnsureClear(
       }
       api->glFramebufferTexture2DEXTFn(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
                                        texture->target(), 0, 0);
+    }
+
+    // Don't mark the image cleared if the driver reported an error. Errors
+    // remain in the decoder's error state for the client.
+    if (impl->FlushErrors() || impl->WasContextLost()) {
+      all_layers_cleared = false;
     }
 
     if (all_layers_cleared) {
@@ -936,8 +1035,8 @@ GLES2Decoder::Error GLES2DecoderPassthroughImpl::DoCommandsImpl(
 
     const unsigned int arg_count = size - 1;
     unsigned int command_index = command - kFirstGLES2Command;
-    if (command_index < std::size(command_info)) {
-      const CommandInfo& info = UNSAFE_TODO(command_info[command_index]);
+    if (command_index < command_info.size()) {
+      const CommandInfo& info = command_info[command_index];
       unsigned int info_arg_count = static_cast<unsigned int>(info.arg_count);
       if ((info.arg_flags == cmd::kFixed && arg_count == info_arg_count) ||
           (info.arg_flags == cmd::kAtLeastN && arg_count >= info_arg_count)) {
@@ -972,6 +1071,19 @@ GLES2Decoder::Error GLES2DecoderPassthroughImpl::DoCommandsImpl(
       result = DoCommonCommand(command, arg_count, cmd_data);
     }
 
+    // A command must not leave a different GL context or surface current. If
+    // one did, subsequent commands would operate on the wrong context or
+    // surface, so treat it as a lost context. This only checks Chromium's
+    // bookkeeping, which is cheap enough to do per command.
+    if (result == error::kNoError && !context_lost_ &&
+        (gl::GLContext::GetCurrent() != context_.get() ||
+         gl::GLSurface::GetCurrent() != surface_.get())) {
+      LOG(ERROR) << "GLES2DecoderPassthroughImpl: context or surface is no "
+                    "longer current after command "
+                 << GetCommandName(command);
+      MarkContextLost(error::kMakeCurrentFailed);
+    }
+
     if (result == error::kNoError && context_lost_) {
       result = error::kLostContext;
     }
@@ -993,6 +1105,10 @@ GLES2Decoder::Error GLES2DecoderPassthroughImpl::DoCommandsImpl(
   if (!feature_info_->IsWebGLContext())
     context_->FlushForDriverCrashWorkaround();
 #endif
+
+  if (process_pos > 0 && feature_info_->IsWebGLContext()) {
+    ScheduleIdleMemoryTrim();
+  }
 
   return result;
 }
@@ -1234,6 +1350,8 @@ gpu::ContextResult GLES2DecoderPassthroughImpl::Initialize(
 }
 
 void GLES2DecoderPassthroughImpl::Destroy(bool have_context) {
+  idle_trim_cb_.Cancel();
+
   if (have_context && feature_info_->feature_flags().angle_blob_cache) {
     api()->glBlobCacheCallbacksANGLEFn(nullptr, nullptr, nullptr);
   }
@@ -1693,6 +1811,8 @@ bool GLES2DecoderPassthroughImpl::WasContextLostByRobustnessExtension() const {
 
 void GLES2DecoderPassthroughImpl::MarkContextLost(
     error::ContextLostReason reason) {
+  idle_trim_cb_.Cancel();
+
   // Only lose the context once.
   if (WasContextLost()) {
     return;
@@ -2093,9 +2213,9 @@ GLES2DecoderPassthroughImpl::LazySharedContextState::LazySharedContextState(
 
 GLES2DecoderPassthroughImpl::LazySharedContextState::~LazySharedContextState() {
   if (shared_context_state_) {
-    ScopedPixelLocalStorageInterrupt scoped_pls_interrupt(impl_);
-    ui::ScopedMakeCurrent smc(shared_context_state_->context(),
-                              shared_context_state_->surface());
+    ScopedSharedContextCurrent scoped_current(impl_,
+                                              shared_context_state_->context(),
+                                              shared_context_state_->surface());
     shared_context_state_.reset();
   }
 }
@@ -2129,8 +2249,15 @@ bool GLES2DecoderPassthroughImpl::LazySharedContextState::Initialize() {
   }
 
   // Make current context using `gl_context` and `gl_surface`
-  ScopedPixelLocalStorageInterrupt scoped_pls_interrupt(impl_);
-  ui::ScopedMakeCurrent smc(gl_context.get(), gl_surface.get());
+  ScopedSharedContextCurrent scoped_current(impl_, gl_context.get(),
+                                            gl_surface.get());
+  if (!scoped_current.IsContextCurrent()) {
+    impl_->InsertError(
+        GL_INVALID_OPERATION,
+        "ContextResult::kFatalFailure: Failed to make SharedContextState "
+        "context current");
+    return false;
+  }
 
   ContextGroup* group = impl_->GetContextGroup();
   const GpuPreferences& gpu_preferences = group->gpu_preferences();
@@ -2533,6 +2660,13 @@ void GLES2DecoderPassthroughImpl::ReadBackBuffersIntoShadowCopies(
       group_->LoseContexts(error::kUnknown);
       return;
     }
+    if (feature_info_->workarounds()
+            .check_graphics_reset_status_after_readback &&
+        CheckResetStatus()) {
+      // Refuse shadow-copy delivery across a device reset.
+      group_->LoseContexts(error::kUnknown);
+      return;
+    }
     UNSAFE_TODO(memcpy(shadow, mapped, update.size));
     bool unmap_ok = api()->glUnmapBufferFn(GL_ARRAY_BUFFER);
     if (unmap_ok == GL_FALSE) {
@@ -2573,6 +2707,18 @@ error::Error GLES2DecoderPassthroughImpl::ProcessReadPixels(bool did_finish) {
         api()->glDeleteBuffersARBFn(1, &pending_read_pixels.buffer_service_id);
         pending_read_pixels_.pop_front();
         break;
+      }
+
+      // If the context was reset while this readback was queued, the pack
+      // buffer's backing store was never written; mapping it may deliver
+      // uninitialized driver memory on certain GPUs. The sync readback lane is
+      // covered inside ANGLE (checkGraphicsResetStatusAfterReadback).
+      if (feature_info_->workarounds()
+              .check_graphics_reset_status_after_readback &&
+          !WasContextLost() && CheckResetStatus()) {
+        pending_read_pixels_.pop_front();
+        group_->LoseContexts(error::kUnknown);
+        return error::kLostContext;
       }
 
       api()->glBindBufferFn(GL_PIXEL_PACK_BUFFER,
@@ -2848,6 +2994,66 @@ bool GLES2DecoderPassthroughImpl::CheckErrorCallbackState() {
   return had_error_;
 }
 
+void GLES2DecoderPassthroughImpl::ScheduleIdleMemoryTrim() {
+  if (WasContextLost()) {
+    return;
+  }
+  if (!feature_info_->feature_flags().angle_trim_memory ||
+      !base::FeatureList::IsEnabled(features::kANGLETrimMemoryOnIdle)) {
+    return;
+  }
+
+  last_active_time_ = base::TimeTicks::Now();
+  if (idle_trim_cb_.IsCancelled()) {
+    PostIdleMemoryTrimTask();
+  }
+}
+
+void GLES2DecoderPassthroughImpl::PostIdleMemoryTrimTask() {
+  if (!base::SingleThreadTaskRunner::HasCurrentDefault()) {
+    return;
+  }
+  idle_trim_cb_.Reset(
+      base::BindOnce(&GLES2DecoderPassthroughImpl::PerformIdleMemoryTrim,
+                     weak_ptr_factory_.GetWeakPtr()));
+  base::SingleThreadTaskRunner::GetCurrentDefault()->PostDelayedTask(
+      FROM_HERE, idle_trim_cb_.callback(), kIdleTrimDelay);
+}
+
+void GLES2DecoderPassthroughImpl::PerformIdleMemoryTrim() {
+  TRACE_EVENT("gpu", __PRETTY_FUNCTION__);
+  idle_trim_cb_.Cancel();
+
+  if (base::TimeTicks::Now() - last_active_time_ < kIdleTrimDelay) {
+    PostIdleMemoryTrimTask();
+    return;
+  }
+
+  if (WasContextLost() || !MakeCurrent()) {
+    return;
+  }
+  api()->glTrimMemoryANGLEFn(GL_MEMORY_TRIM_HIGH_ANGLE);
+}
+
+bool GLES2DecoderPassthroughImpl::CanRedefineBoundTexture(GLenum target) {
+  if (!base::FeatureList::IsEnabled(kDisallowSharedImageRedifinition)) {
+    return true;
+  }
+
+  TextureTarget internal_texture_target =
+      GLenumToTextureTarget(TextureTargetToTextureType(target));
+
+  // Invalid texture targets will be discarded by angle.
+  if (internal_texture_target == TextureTarget::kUnkown) {
+    return true;
+  }
+
+  auto client_id = bound_textures_[static_cast<size_t>(internal_texture_target)]
+                                  [active_texture_unit_]
+                                      .client_id;
+  return !resources_->texture_shared_image_map.contains(client_id);
+}
+
 #define GLES2_CMD_OP(name)                                 \
   {                                                        \
       &GLES2DecoderPassthroughImpl::Handle##name,          \
@@ -2856,9 +3062,10 @@ bool GLES2DecoderPassthroughImpl::CheckErrorCallbackState() {
       sizeof(cmds::name) / sizeof(CommandBufferEntry) - 1, \
   }, /* NOLINT */
 
-constexpr GLES2DecoderPassthroughImpl::CommandInfo
-    GLES2DecoderPassthroughImpl::command_info[] = {
-        GLES2_COMMAND_LIST(GLES2_CMD_OP)};
+constexpr std::array<GLES2DecoderPassthroughImpl::CommandInfo,
+                     kNumCommands - kFirstGLES2Command>
+    GLES2DecoderPassthroughImpl::command_info = {
+        {GLES2_COMMAND_LIST(GLES2_CMD_OP)}};
 
 #undef GLES2_CMD_OP
 

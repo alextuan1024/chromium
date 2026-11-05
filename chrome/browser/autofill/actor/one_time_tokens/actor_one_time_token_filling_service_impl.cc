@@ -27,7 +27,8 @@
 #include "base/types/expected.h"
 #include "chrome/browser/affiliations/affiliation_service_factory.h"
 #include "chrome/browser/autofill/actor/one_time_tokens/actor_one_time_token_filling_service_metrics.h"
-#include "chrome/browser/autofill/one_time_token_service_factory.h"
+#include "chrome/browser/autofill/gmail_otp_backend_factory.h"
+#include "chrome/browser/autofill/gmail_otp_service_factory.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ssl/chrome_security_state_util.h"
 #include "chrome/browser/ui/autofill/autofill_client_provider.h"
@@ -46,9 +47,11 @@
 #include "components/autofill/core/browser/foundations/browser_autofill_manager.h"
 #include "components/autofill/core/browser/integrators/actor/actor_form_filling_types.h"
 #include "components/autofill/core/browser/integrators/one_time_tokens/otp_suggestion.h"
+#include "components/one_time_tokens/core/browser/gmail_otp_backend.h"
+#include "components/one_time_tokens/core/browser/gmail_otp_retriever.h"
+#include "components/one_time_tokens/core/browser/gmail_otp_service.h"
 #include "components/one_time_tokens/core/browser/one_time_token.h"
 #include "components/one_time_tokens/core/browser/one_time_token_log_sink.h"
-#include "components/one_time_tokens/core/browser/one_time_token_service.h"
 #include "components/one_time_tokens/core/common/one_time_token_features.h"
 #include "components/one_time_tokens/core/common/one_time_token_switches.h"
 #include "components/password_manager/core/browser/actor_login/actor_login_frame_util.h"
@@ -153,8 +156,13 @@ ActorOneTimeTokenFillingServiceRetrieveOtp MapError(
       return kGmailOtpBackendOtpAttributeNotFound;
     case OneTimeTokenRetrievalError::kGmailOtpBackendServerError:
       return kGmailOtpBackendServerError;
+    case OneTimeTokenRetrievalError::
+        kGmailOtpBackendMessageAuthenticationFailed:
+      return kGmailOtpBackendMessageAuthenticationFailed;
     case OneTimeTokenRetrievalError::kSubscriptionExpired:
       return kRetrievalTimeout;
+    case OneTimeTokenRetrievalError::kGmailOtpSenderDomainMismatch:
+      return kGmailOtpSenderDomainMismatch;
   }
 }
 
@@ -203,17 +211,31 @@ ActorOneTimeTokenFillingServiceImpl::ActorOneTimeTokenFillingServiceImpl(
     base::SafeRef<::actor::AggregatedJournal> journal,
     ::actor::TaskId task_id)
     : profile_(profile), journal_(journal), task_id_(task_id) {
-  if (one_time_tokens::OneTimeTokenService* service =
-          OneTimeTokenServiceFactory::GetForProfile(profile);
-      service && service->log_sink()) {
-    log_subscription_ = service->log_sink()->AddLogHandler(base::BindRepeating(
-        &ActorOneTimeTokenFillingServiceImpl::OnBackendLogMessage,
-        base::Unretained(this)));
+  if (one_time_tokens::GmailOtpService* service =
+          GmailOtpServiceFactory::GetForProfile(profile_);
+      service && service->GetLogSink()) {
+    log_subscription_ =
+        service->GetLogSink()->AddLogHandler(base::BindRepeating(
+            &ActorOneTimeTokenFillingServiceImpl::OnBackendLogMessage,
+            base::Unretained(this)));
   }
 }
 
-ActorOneTimeTokenFillingServiceImpl::~ActorOneTimeTokenFillingServiceImpl() =
-    default;
+ActorOneTimeTokenFillingServiceImpl::~ActorOneTimeTokenFillingServiceImpl() {
+  // `ExecutionEngine` destroys this service before its `ToolController`, so a
+  // pending operation here means the actor task ended mid-flight.
+  if (retrieve_otp_callback_) {
+    RecordActorOneTimeTokenFillingServiceRetrieveOtpOutcome(
+        kCancelled, retrieve_otp_predicted_type_);
+  }
+  // Any observer callback, pending or already posted, later runs with a null
+  // service and records nothing, so there is no double count. A fill whose
+  // result was posted but not yet delivered is also counted as cancelled.
+  if (filling_observer_) {
+    RecordActorOneTimeTokenFillingServiceFillOtp(
+        ActorOneTimeTokenFillingServiceFillOtp::kCancelled);
+  }
+}
 
 void ActorOneTimeTokenFillingServiceImpl::OnPasswordFillingStarted(
     tabs::TabHandle tab_handle,
@@ -281,14 +303,14 @@ void ActorOneTimeTokenFillingServiceImpl::RetrieveOtp(
     const url::Origin& otp_frame_origin,
     const std::vector<FieldGlobalId>& trigger_field_ids,
     bool is_login_flow,
+    PredictedOtpType predicted_otp_type,
     base::OnceCallback<void(
         base::expected<std::string, OneTimeTokenRetrievalError>)> callback) {
-  RecordActorOneTimeTokenFillingServiceRetrieveOtp(kStart);
-
   tabs::TabInterface* tab = tab_handle.Get();
 
   if (!tab || !tab->GetContents()) {
-    RecordActorOneTimeTokenFillingServiceRetrieveOtp(kNullTab);
+    RecordActorOneTimeTokenFillingServiceRetrieveOtpOutcome(kNullTab,
+                                                            predicted_otp_type);
     journal_->Log(GURL(), task_id_,
                   "ActorOneTimeTokenFillingServiceImpl::RetrieveOtp",
                   ::actor::JournalDetailsBuilder()
@@ -315,7 +337,8 @@ void ActorOneTimeTokenFillingServiceImpl::RetrieveOtp(
       base::CommandLine::ForCurrentProcess()->GetSwitchValueASCII(
           one_time_tokens::switches::kMockOtpValue);
   if (!mock_otp.empty()) {
-    RecordActorOneTimeTokenFillingServiceRetrieveOtp(kMockOtp);
+    RecordActorOneTimeTokenFillingServiceRetrieveOtpOutcome(kMockOtp,
+                                                            predicted_otp_type);
     journal_->Log(url, task_id_,
                   "ActorOneTimeTokenFillingServiceImpl::RetrieveOtp",
                   ::actor::JournalDetailsBuilder()
@@ -329,14 +352,15 @@ void ActorOneTimeTokenFillingServiceImpl::RetrieveOtp(
   // TODO(b/502907994): Do we want to check for incognito profiles here?
   // Gemini should not be available in incognito, but should we check just to
   // be sure (and future-proof)?
-  one_time_tokens::OneTimeTokenService* const service =
-      OneTimeTokenServiceFactory::GetForProfile(profile_);
-  if (!service) {
-    RecordActorOneTimeTokenFillingServiceRetrieveOtp(kNoService);
+  one_time_tokens::GmailOtpService* const service =
+      GmailOtpServiceFactory::GetForProfile(profile_);
+  if (!service || !service->GetBackend()) {
+    RecordActorOneTimeTokenFillingServiceRetrieveOtpOutcome(kNoService,
+                                                            predicted_otp_type);
     journal_->Log(url, task_id_,
                   "ActorOneTimeTokenFillingServiceImpl::RetrieveOtp",
                   ::actor::JournalDetailsBuilder()
-                      .AddError("OneTimeTokenService not available.")
+                      .AddError("GmailOtpService not available.")
                       .Build());
     base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
         FROM_HERE,
@@ -369,10 +393,12 @@ void ActorOneTimeTokenFillingServiceImpl::RetrieveOtp(
   }
 
   retrieve_otp_callback_ = std::move(callback);
+  retrieve_otp_predicted_type_ = predicted_otp_type;
   auto checker = std::make_unique<affiliations::DomainRelationChecker>(
       CHECK_DEREF(AffiliationServiceFactory::GetForProfile(profile_)));
   gmail_otp_retriever_ = one_time_tokens::GmailOtpRetriever::CreateAndStart(
-      *service, std::move(checker), otp_frame_origin, is_login_flow,
+      *service->GetBackend(), std::move(checker), otp_frame_origin,
+      is_login_flow,
       base::BindOnce(&ActorOneTimeTokenFillingServiceImpl::OnOtpRetrieved,
                      weak_ptr_factory_.GetWeakPtr(), url));
 }
@@ -391,7 +417,8 @@ void ActorOneTimeTokenFillingServiceImpl::OnOtpRetrieved(
                       .AddError("Failed to retrieve OTP from backend.")
                       .Add("error_code", result.error())
                       .Build());
-    RecordActorOneTimeTokenFillingServiceRetrieveOtp(MapError(result.error()));
+    RecordActorOneTimeTokenFillingServiceRetrieveOtpOutcome(
+        MapError(result.error()), retrieve_otp_predicted_type_);
     std::move(retrieve_otp_callback_).Run(base::unexpected(result.error()));
     return;
   }
@@ -399,13 +426,12 @@ void ActorOneTimeTokenFillingServiceImpl::OnOtpRetrieved(
   journal_->Log(
       url, task_id_, "ActorOneTimeTokenFillingServiceImpl::OnOtpRetrieved",
       ::actor::JournalDetailsBuilder().Add("source", result->source).Build());
-  if (result->source == one_time_tokens::GmailOtpRetriever::Source::kCache) {
-    RecordActorOneTimeTokenFillingServiceRetrieveOtp(kSuccessCacheMatchFound);
-  } else {
-    RecordActorOneTimeTokenFillingServiceRetrieveOtp(
-        kSuccessReceivedMatchFound);
-  }
-  std::move(retrieve_otp_callback_).Run(std::move(result->otp));
+  RecordActorOneTimeTokenFillingServiceRetrieveOtpOutcome(
+      result->source == one_time_tokens::GmailOtpRetriever::Source::kCache
+          ? kSuccessCacheMatchFound
+          : kSuccessReceivedMatchFound,
+      retrieve_otp_predicted_type_);
+  std::move(retrieve_otp_callback_).Run(std::move(result->token.value()));
 }
 
 void ActorOneTimeTokenFillingServiceImpl::FillOtp(
@@ -414,7 +440,6 @@ void ActorOneTimeTokenFillingServiceImpl::FillOtp(
     const std::string& otp,
     base::OnceCallback<void(bool)> callback) {
   using enum ActorOneTimeTokenFillingServiceFillOtp;
-  RecordActorOneTimeTokenFillingServiceFillOtp(kStart);
   tabs::TabInterface* tab = tab_handle.Get();
 
   if (!tab || !tab->GetContents()) {
@@ -545,9 +570,12 @@ void ActorOneTimeTokenFillingServiceImpl::FillOtp(
   filling_observer_->ObserveNewFilling(filled_field_ids);
 
   // Trigger the filling operation through the Autofill manager.
+  // TODO(crbug.com/561395976): Figure out if additional authentication can be
+  // required here.
   autofill_manager.FillOrPreviewForm(
       mojom::ActionPersistence::kFill, form_structure->global_id(),
       trigger_field_id, &otp_fill_data, AutofillTriggerSource::kGlic,
+      /*require_user_confirmation=*/false,
       /*blocked_fields=*/{});
 
   // Activate the observer and wait for completion.
@@ -684,14 +712,14 @@ void ActorOneTimeTokenFillingServiceImpl::OnBackendLogMessage(
 
 void ActorOneTimeTokenFillingServiceImpl::FetchUserDataProcessingConsent(
     FetchUserDataProcessingConsentCallback callback) {
-  one_time_tokens::OneTimeTokenService* service =
-      OneTimeTokenServiceFactory::GetForProfile(profile_);
-  if (!service) {
+  one_time_tokens::GmailOtpBackend* backend =
+      GmailOtpBackendFactory::GetForProfile(profile_);
+  if (!backend) {
     base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
         FROM_HERE, base::BindOnce(std::move(callback), std::nullopt));
     return;
   }
-  service->FetchUserDataProcessingConsent(std::move(callback));
+  backend->FetchUserDataProcessingConsent(std::move(callback));
 }
 
 base::WeakPtr<ActorOneTimeTokenFillingService>

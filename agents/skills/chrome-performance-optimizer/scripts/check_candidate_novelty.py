@@ -36,7 +36,7 @@ if _GIT_CL_PATH:
     if str(_DEPOT_TOOLS_DIR) not in sys.path:
         sys.path.insert(0, str(_DEPOT_TOOLS_DIR))
 
-import gerrit_util  # pylint: disable=import-error
+import gerrit_util  # noqa: E402
 
 GERRIT_HOST = 'chromium-review.googlesource.com'
 CACHE_DIR = Path(__file__).resolve().parent / '.patch_cache'
@@ -45,7 +45,7 @@ CACHE_DIR = Path(__file__).resolve().parent / '.patch_cache'
 def run_cmd(cmd: List[str], cwd: Optional[Path] = None) -> Tuple[int, str, str]:
     proc = subprocess.run(
         cmd,
-        cwd=cwd or _SRC_ROOT,
+        cwd=cwd or Path.cwd(),
         capture_output=True,
         text=True,
         check=False,

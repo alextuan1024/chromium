@@ -2,7 +2,7 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-import {html} from '//resources/lit/v3_0/lit.rollup.js';
+import {html} from 'chrome://resources/lit/v3_0/lit.rollup.js';
 
 import type {NtpComposeboxElement} from './ntp_composebox.js';
 
@@ -51,7 +51,6 @@ export function getHtml(this: NtpComposeboxElement) {
       .glifAnimationState="${this.glifAnimationState}"
       .energyEffectAnimationEnabled="${this.energyEffectAnimationEnabled}"
       .disableFallbackGlifAnimation="${true}"
-      ?upload-button-disabled="${this.uploadButtonDisabled}"
       ?show-context-menu-description="${this.showContextMenuDescription}">
   </cr-composebox-contextual-entrypoint-and-menu>
 </div>

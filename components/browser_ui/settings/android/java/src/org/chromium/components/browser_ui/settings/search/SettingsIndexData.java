@@ -283,21 +283,18 @@ public class SettingsIndexData {
                 String key = keys.next();
                 try {
                     Object value = json.get(key);
-                    if (value instanceof Integer) {
-                        bundle.putInt(key, (Integer) value);
-                    } else if (value instanceof Long) {
-                        bundle.putLong(key, (Long) value);
-                    } else if (value instanceof Double) {
-                        bundle.putDouble(key, (Double) value);
-                    } else if (value instanceof Boolean) {
-                        bundle.putBoolean(key, (Boolean) value);
-                    } else if (value instanceof String) {
-                        bundle.putString(key, (String) value);
-                    } else {
-                        // Complex types are not expected in the Bundle object used for extras.
-                        // Report the exception if it actually occurs.
-                        throw new IllegalArgumentException(
-                                "Unsupported complex type in extras: " + key);
+                    switch (value) {
+                        case Integer intVal -> bundle.putInt(key, intVal);
+                        case Long longVal -> bundle.putLong(key, longVal);
+                        case Double doubleVal -> bundle.putDouble(key, doubleVal);
+                        case Boolean boolVal -> bundle.putBoolean(key, boolVal);
+                        case String strVal -> bundle.putString(key, strVal);
+                        default -> {
+                            // Complex types are not expected in the Bundle object used for extras.
+                            // Report the exception if it actually occurs.
+                            throw new IllegalArgumentException(
+                                    "Unsupported complex type in extras: " + key);
+                        }
                     }
                 } catch (JSONException e) {
                     // Skip restoring the element that causes an exception.

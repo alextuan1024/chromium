@@ -7,8 +7,10 @@
 #include "base/check_deref.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/metrics/user_action_tester.h"
+#include "base/test/run_until.h"
 #include "base/test/test_future.h"
 #include "chrome/browser/autocomplete/aim_eligibility_service_factory.h"
+#include "chrome/browser/companion/text_finder/text_highlighter_manager.h"
 #include "chrome/browser/contextual_search/contextual_search_service_factory.h"
 #include "chrome/browser/contextual_search/contextual_search_web_contents_helper.h"
 #include "chrome/browser/contextual_tasks/contextual_tasks_composebox_handler.h"
@@ -16,6 +18,7 @@
 #include "chrome/browser/contextual_tasks/contextual_tasks_service_factory.h"
 #include "chrome/browser/contextual_tasks/contextual_tasks_ui.h"
 #include "chrome/browser/contextual_tasks/contextual_tasks_ui_service_factory.h"
+#include "chrome/browser/contextual_tasks/contextual_tasks_web_view.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/tab_list/tab_list_interface.h"
 #include "chrome/browser/tab_list/tab_list_interface_observer.h"
@@ -50,8 +53,13 @@ class ContextualTasksUiServiceInteractiveUiTest
     : public InteractiveBrowserTest {
  public:
   ContextualTasksUiServiceInteractiveUiTest() {
+    // Side panel tab state is tested by
+    // `ContextualTasksUiServiceSidePanelTabStateInteractiveUiTest`.
     scoped_feature_list_.InitWithFeatures(
-        {kContextualTasks, kContextualTasksForceEntryPointEligibility}, {});
+        {kContextualTasks, kContextualTasksForceEntryPointEligibility},
+        {kContextualTasksRearchitecture,
+         kContextualTasksSidePanelRearchitecture,
+         kContextualTasksSidePanelTabState});
   }
 
  protected:
@@ -148,6 +156,277 @@ IN_PROC_BROWSER_TEST_F(ContextualTasksUiServiceInteractiveUiTest,
   histogram_tester.ExpectUniqueSample("ContextualTasks.ActiveTasksCount", 1, 1);
   histogram_tester.ExpectUniqueSample("ContextualTasks.Session.Completed", true,
                                       1);
+}
+
+namespace {
+DEFINE_LOCAL_ELEMENT_IDENTIFIER_VALUE(kBackgroundTabId);
+}  // namespace
+
+class ContextualTasksUiServiceSidePanelNavigationInteractiveUiTest
+    : public InteractiveBrowserTest,
+      public testing::WithParamInterface<bool> {
+ public:
+  ContextualTasksUiServiceSidePanelNavigationInteractiveUiTest() {
+    std::vector<base::test::FeatureRef> enabled_features = {
+        kContextualTasks, kContextualTasksForceEntryPointEligibility,
+        kContextualTasksSidePanelTabState};
+    std::vector<base::test::FeatureRef> disabled_features;
+    if (GetParam()) {
+      enabled_features.push_back(kContextualTasksRearchitecture);
+    } else {
+      disabled_features.push_back(kContextualTasksRearchitecture);
+    }
+    scoped_feature_list_.InitWithFeatures(enabled_features, disabled_features);
+  }
+
+  bool IsRearchitectureEnabled() const { return GetParam(); }
+
+ protected:
+  base::test::ScopedFeatureList scoped_feature_list_;
+};
+
+INSTANTIATE_TEST_SUITE_P(
+    All,
+    ContextualTasksUiServiceSidePanelNavigationInteractiveUiTest,
+    testing::Bool(),
+    [](const testing::TestParamInfo<bool>& info) {
+      return info.param ? "RearchitectureEnabled" : "RearchitectureDisabled";
+    });
+
+// This tests the following CUJ:
+//  (1) User opens the Contextual Tasks side panel for an active task.
+//  (2) Navigation to a non-HTTP/HTTPS URL (e.g. file://) is not handled or
+//  routed to the tab strip.
+//  (3) Side panel WebContents initiates a navigation to an external HTTP/HTTPS
+//  URL.
+//  (4) Navigation is intercepted and handled by ContextualTasksUiService.
+//  (5) A new tab is created in the browser tab strip for the external URL.
+IN_PROC_BROWSER_TEST_P(
+    ContextualTasksUiServiceSidePanelNavigationInteractiveUiTest,
+    SidePanelNavigation_ExternalLink_RoutesToTabStrip) {
+  // Disable side panel animations to make test deterministic.
+  SidePanelUI::From(browser())->DisableAnimationsForTesting();
+
+  ContextualTasksService* contextual_tasks_service =
+      ContextualTasksServiceFactory::GetForProfile(browser()->GetProfile());
+  ContextualTasksUiService* service =
+      ContextualTasksUiServiceFactory::GetForBrowserContext(
+          browser()->GetProfile());
+  ASSERT_TRUE(service);
+  ASSERT_TRUE(contextual_tasks_service);
+
+  const GURL initial_search_url("https://www.google.com/search?q=test");
+  int initial_tab_count = TabListInterface::From(browser())->GetTabCount();
+  const GURL external_url("https://example.com/article");
+
+  ContextualTasksPanelController* coordinator =
+      ContextualTasksPanelController::From(browser());
+
+  RunTestSequence(
+      Do([&]() {
+        service->StartTaskUiInSidePanel(browser(),
+                                        browser()->GetActiveTabInterface(),
+                                        initial_search_url, nullptr);
+      }),
+      WaitForShow(kContextualTasksSidePanelWebViewElementId), Do([&]() {
+        EXPECT_TRUE(coordinator->IsPanelOpenForContextualTask());
+        content::WebContents* panel_contents =
+            coordinator->GetActiveWebContents();
+        ASSERT_TRUE(panel_contents);
+
+        // Verify that navigating to a non-HTTP(S) URL (e.g. file://) does not
+        // open a tab in the browser tab strip.
+        const GURL file_url("file:///path/to/test.pdf");
+        EXPECT_TRUE(content::ExecJs(
+            panel_contents,
+            content::JsReplace("window.open($1, '_blank');", file_url)));
+        EXPECT_EQ(TabListInterface::From(browser())->GetTabCount(),
+                  initial_tab_count);
+
+        // Emulate clicking a link in the side panel via window.open.
+        EXPECT_TRUE(content::ExecJs(
+            panel_contents,
+            content::JsReplace("window.open($1, '_blank');", external_url)));
+      }),
+      // Verify tab strip behavior based on whether rearchitecture is enabled.
+      Check([&]() {
+        if (IsRearchitectureEnabled()) {
+          return base::test::RunUntil([&]() {
+            return TabListInterface::From(browser())->GetTabCount() ==
+                   initial_tab_count + 1;
+          });
+        }
+        return TabListInterface::From(browser())->GetTabCount() ==
+               initial_tab_count;
+      }),
+      Check([&]() {
+        if (IsRearchitectureEnabled()) {
+          return TabListInterface::From(browser())
+                     ->GetActiveTab()
+                     ->GetContents()
+                     ->GetVisibleURL() == external_url;
+        }
+        return true;
+      }));
+}
+
+IN_PROC_BROWSER_TEST_P(
+    ContextualTasksUiServiceSidePanelNavigationInteractiveUiTest,
+    SidePanelNavigation_ExternalLink_AlreadyOpenInTab_OpensNewTab) {
+  // Disable side panel animations to make test deterministic.
+  SidePanelUI::From(browser())->DisableAnimationsForTesting();
+  ASSERT_TRUE(embedded_test_server()->Start());
+
+  ContextualTasksService* contextual_tasks_service =
+      ContextualTasksServiceFactory::GetForProfile(browser()->GetProfile());
+  ContextualTasksUiService* service =
+      ContextualTasksUiServiceFactory::GetForBrowserContext(
+          browser()->GetProfile());
+  ASSERT_TRUE(service);
+  ASSERT_TRUE(contextual_tasks_service);
+
+  const GURL external_url = embedded_test_server()->GetURL("/title1.html");
+  ContextualTask task1 = contextual_tasks_service->CreateTask();
+
+  ContextualTasksPanelController* coordinator =
+      ContextualTasksPanelController::From(browser());
+
+  RunTestSequence(
+      // User interaction: Open external_url in a new tab, then select tab 0.
+      AddInstrumentedTab(kBackgroundTabId, external_url),
+      SelectTab(kTabStripElementId, 0),
+
+      // Associate both tabs with the task and open the side panel.
+      Do([&]() {
+        contextual_tasks_service->AssociateTabWithTask(
+            task1.GetTaskId(),
+            sessions::SessionTabHelper::IdForTab(
+                TabListInterface::From(browser())->GetTab(0)->GetContents()));
+        contextual_tasks_service->AssociateTabWithTask(
+            task1.GetTaskId(),
+            sessions::SessionTabHelper::IdForTab(
+                TabListInterface::From(browser())->GetTab(1)->GetContents()));
+        coordinator->Show();
+      }),
+      WaitForShow(kContextualTasksSidePanelWebViewElementId), Do([&]() {
+        EXPECT_TRUE(coordinator->IsPanelOpenForContextualTask());
+        content::WebContents* panel_contents =
+            coordinator->GetActiveWebContents();
+        ASSERT_TRUE(panel_contents);
+
+        // Emulate clicking a link in the side panel via window.open.
+        EXPECT_TRUE(content::ExecJs(
+            panel_contents,
+            content::JsReplace("window.open($1, '_blank');", external_url)));
+      }),
+      // Verify tab strip behavior based on whether rearchitecture is enabled.
+      Check([&]() {
+        if (IsRearchitectureEnabled()) {
+          return base::test::RunUntil([&]() {
+            return TabListInterface::From(browser())->GetTabCount() == 3;
+          });
+        }
+        return TabListInterface::From(browser())->GetTabCount() == 2;
+      }),
+      Check([&]() {
+        if (IsRearchitectureEnabled()) {
+          return base::test::RunUntil([&]() {
+            return TabListInterface::From(browser())
+                       ->GetActiveTab()
+                       ->GetContents()
+                       ->GetVisibleURL() == external_url;
+          });
+        }
+        return true;
+      }));
+}
+
+// TODO(crbug.com/565530878): Flaky on Mac.
+#if BUILDFLAG(IS_MAC)
+#define MAYBE_SidePanelNavigation_TextFragmentCitation_HighlightsActiveTab \
+  DISABLED_SidePanelNavigation_TextFragmentCitation_HighlightsActiveTab
+#else
+#define MAYBE_SidePanelNavigation_TextFragmentCitation_HighlightsActiveTab \
+  SidePanelNavigation_TextFragmentCitation_HighlightsActiveTab
+#endif
+IN_PROC_BROWSER_TEST_P(
+    ContextualTasksUiServiceSidePanelNavigationInteractiveUiTest,
+    MAYBE_SidePanelNavigation_TextFragmentCitation_HighlightsActiveTab) {
+  base::HistogramTester histogram_tester;
+  // Disable side panel animations to make test deterministic.
+  SidePanelUI::From(browser())->DisableAnimationsForTesting();
+  ASSERT_TRUE(embedded_test_server()->Start());
+
+  ContextualTasksService* contextual_tasks_service =
+      ContextualTasksServiceFactory::GetForProfile(browser()->GetProfile());
+  ContextualTasksUiService* service =
+      ContextualTasksUiServiceFactory::GetForBrowserContext(
+          browser()->GetProfile());
+  ASSERT_TRUE(service);
+  ASSERT_TRUE(contextual_tasks_service);
+
+  const GURL external_url = embedded_test_server()->GetURL("/title2.html");
+  const GURL citation_url(external_url.spec() + "#:~:text=title");
+  ContextualTask task1 = contextual_tasks_service->CreateTask();
+
+  ContextualTasksPanelController* coordinator =
+      ContextualTasksPanelController::From(browser());
+
+  RunTestSequence(
+      // User interaction: Open external_url in a new active tab.
+      AddInstrumentedTab(kBackgroundTabId, external_url),
+
+      // Associate the active tab with the task and open the side panel.
+      Do([&]() {
+        contextual_tasks_service->AssociateTabWithTask(
+            task1.GetTaskId(), sessions::SessionTabHelper::IdForTab(
+                                   TabListInterface::From(browser())
+                                       ->GetActiveTab()
+                                       ->GetContents()));
+        coordinator->Show();
+      }),
+      WaitForShow(kContextualTasksSidePanelWebViewElementId), Do([&]() {
+        EXPECT_TRUE(coordinator->IsPanelOpenForContextualTask());
+        content::WebContents* panel_contents =
+            coordinator->GetActiveWebContents();
+        ASSERT_TRUE(panel_contents);
+
+        // Emulate clicking a citation link in the side panel via window.open.
+        EXPECT_TRUE(content::ExecJs(
+            panel_contents,
+            content::JsReplace("window.open($1, '_blank');", citation_url)));
+      }),
+      If([&]() { return IsRearchitectureEnabled(); },
+         Then(PollUntil(
+                  [&]() {
+                    tabs::TabInterface* active_tab =
+                        TabListInterface::From(browser())->GetActiveTab();
+                    if (!active_tab || !active_tab->GetContents()) {
+                      return false;
+                    }
+                    auto* highlighter_manager =
+                        companion::TextHighlighterManager::GetForPage(
+                            active_tab->GetContents()->GetPrimaryPage());
+                    return highlighter_manager &&
+                           !highlighter_manager
+                                ->get_text_highlighters_for_testing()
+                                .empty();
+                  },
+                  "Wait for text highlighters"),
+              Check([&]() {
+                return TabListInterface::From(browser())->GetTabCount() == 2 &&
+                       histogram_tester.GetBucketCount(
+                           "ContextualTasks.AiResponse.UserAction.LinkClicked."
+                           "Panel",
+                           true) == 1;
+              })),
+         Else(Check([&]() {
+           content::WebContents* active_contents =
+               TabListInterface::From(browser())->GetActiveTab()->GetContents();
+           return companion::TextHighlighterManager::GetForPage(
+                      active_contents->GetPrimaryPage()) == nullptr &&
+                  TabListInterface::From(browser())->GetTabCount() == 2;
+         }))));
 }
 
 IN_PROC_BROWSER_TEST_F(ContextualTasksUiServiceInteractiveUiTest,
@@ -318,6 +597,86 @@ IN_PROC_BROWSER_TEST_F(ContextualTasksUiServiceInteractiveUiTest,
       }));
 }
 
+class ContextualTasksUiServiceSidePanelTabStateInteractiveUiTest
+    : public ContextualTasksUiServiceInteractiveUiTest {
+ public:
+  ContextualTasksUiServiceSidePanelTabStateInteractiveUiTest() {
+    tab_state_feature_list_.InitAndEnableFeature(
+        kContextualTasksSidePanelTabState);
+  }
+
+ private:
+  base::test::ScopedFeatureList tab_state_feature_list_;
+};
+
+IN_PROC_BROWSER_TEST_F(
+    ContextualTasksUiServiceSidePanelTabStateInteractiveUiTest,
+    OnThreadLinkClicked_DoesNotActivateExistingTab) {
+  TabListInterface* tab_list = TabListInterface::From(browser());
+
+  // Add two more tabs so there are three total.
+  const GURL version_url(chrome::kChromeUIVersionURL);
+  chrome::AddTabAt(browser(), version_url, -1, false);
+  content::WaitForLoadStop(tab_list->GetTab(1)->GetContents());
+
+  const GURL settings_url(chrome::kChromeUISettingsURL);
+  chrome::AddTabAt(browser(), settings_url, -1, true);
+  content::WaitForLoadStop(tab_list->GetTab(2)->GetContents());
+
+  ContextualTasksService* contextual_tasks_service =
+      ContextualTasksServiceFactory::GetForProfile(browser()->GetProfile());
+  ContextualTasksUiService* service =
+      ContextualTasksUiServiceFactory::GetForBrowserContext(
+          browser()->GetProfile());
+  ASSERT_TRUE(service);
+
+  // Associate the tabs with the task.
+  ContextualTask task1 = contextual_tasks_service->CreateTask();
+  contextual_tasks_service->AssociateTabWithTask(
+      task1.GetTaskId(),
+      sessions::SessionTabHelper::IdForTab(tab_list->GetTab(0)->GetContents()));
+  contextual_tasks_service->AssociateTabWithTask(
+      task1.GetTaskId(),
+      sessions::SessionTabHelper::IdForTab(tab_list->GetTab(1)->GetContents()));
+  contextual_tasks_service->AssociateTabWithTask(
+      task1.GetTaskId(),
+      sessions::SessionTabHelper::IdForTab(tab_list->GetTab(2)->GetContents()));
+
+  ContextualTasksPanelController* coordinator =
+      ContextualTasksPanelController::From(browser());
+  RunTestSequence(
+      Do([&]() {
+        // Open side panel.
+        coordinator->Show();
+      }),
+      WaitForShow(kContextualTasksSidePanelWebViewElementId), Do([&]() {
+        // There should only be three tabs.
+        ASSERT_EQ(3, tab_list->GetTabCount());
+
+        // The selected tab should be settings.
+        ASSERT_EQ(
+            settings_url,
+            tab_list->GetActiveTab()->GetContents()->GetLastCommittedURL());
+
+        // Simulate a link click to a URL that's already open in a
+        // background tab. It should open a new tab rather than focusing the
+        // existing background tab.
+        service->OnThreadLinkClicked(version_url, task1.GetTaskId(), nullptr,
+                                     browser()->GetWeakPtr(), url::Origin());
+
+        // Another tab should have been added.
+        ASSERT_EQ(4, tab_list->GetTabCount());
+
+        // Wait for the new tab to finish loading.
+        content::WaitForLoadStop(tab_list->GetTab(3)->GetContents());
+
+        // The selected tab should now be the new version page.
+        ASSERT_EQ(
+            version_url,
+            tab_list->GetActiveTab()->GetContents()->GetLastCommittedURL());
+      }));
+}
+
 // Ensure that an existing tab is not focused if it isn't affiliated with the
 // task.
 IN_PROC_BROWSER_TEST_F(ContextualTasksUiServiceInteractiveUiTest,
@@ -427,6 +786,47 @@ IN_PROC_BROWSER_TEST_F(
       contextual_tasks_service->GetContextualTaskForTab(tab1_id)->GetTaskId());
   EXPECT_EQ(
       task2.GetTaskId(),
+      contextual_tasks_service->GetContextualTaskForTab(tab2_id)->GetTaskId());
+}
+
+IN_PROC_BROWSER_TEST_F(
+    ContextualTasksUiServiceSidePanelTabStateInteractiveUiTest,
+    OnTaskChanged_ScopedToTab_OnlySwitchesActiveTab) {
+  // Add two new tabs.
+  chrome::AddTabAt(browser(), GURL(chrome::kChromeUISettingsURL), -1, true);
+  chrome::AddTabAt(browser(), GURL(chrome::kChromeUIHistoryURL), -1, true);
+
+  ContextualTasksService* contextual_tasks_service =
+      ContextualTasksServiceFactory::GetForProfile(browser()->GetProfile());
+  ContextualTasksUiService* service =
+      ContextualTasksUiServiceFactory::GetForBrowserContext(
+          browser()->GetProfile());
+  ASSERT_TRUE(service);
+
+  // Create two tasks and associate the two new tabs with the first task.
+  ContextualTask task1 = contextual_tasks_service->CreateTask();
+  ContextualTask task2 = contextual_tasks_service->CreateTask();
+  TabListInterface* tab_list = TabListInterface::From(browser());
+  SessionID tab1_id =
+      sessions::SessionTabHelper::IdForTab(tab_list->GetTab(1)->GetContents());
+  SessionID tab2_id =
+      sessions::SessionTabHelper::IdForTab(tab_list->GetTab(2)->GetContents());
+  contextual_tasks_service->AssociateTabWithTask(task1.GetTaskId(), tab1_id);
+  contextual_tasks_service->AssociateTabWithTask(task1.GetTaskId(), tab2_id);
+
+  // Activate the first tab and change its thread.
+  tab_list->ActivateTab(tab_list->GetTab(1)->GetHandle());
+  auto dummy_web_contents = content::WebContents::Create(
+      content::WebContents::CreateParams(browser()->GetProfile()));
+  service->OnTaskChanged(browser(), dummy_web_contents.get(), task1.GetTaskId(),
+                         task2.GetTaskId(), /*is_shown_in_tab=*/false);
+
+  // Only the active tab moves to the new task. The other tab keeps its thread.
+  EXPECT_EQ(
+      task2.GetTaskId(),
+      contextual_tasks_service->GetContextualTaskForTab(tab1_id)->GetTaskId());
+  EXPECT_EQ(
+      task1.GetTaskId(),
       contextual_tasks_service->GetContextualTaskForTab(tab2_id)->GetTaskId());
 }
 
@@ -722,8 +1122,8 @@ IN_PROC_BROWSER_TEST_F(
   session_handle->StartTabContextUploadFlow(token1, std::move(data1),
                                             std::nullopt);
 
-  session_handle->set_submitted_context_tokens({token0, token1});
-  session_handle->set_persisted_tabs({
+  session_handle->SetSubmittedContextTokens({token0, token1});
+  session_handle->SetPersistedTabs({
       {tab0_id, {token0, lens::LensOverlayRequestId()}},
       {tab1_id, {token1, lens::LensOverlayRequestId()}},
   });
@@ -851,8 +1251,10 @@ class DisabledContextualTasksUiServiceInteractiveUiTest
     : public InteractiveBrowserTest {
  public:
   DisabledContextualTasksUiServiceInteractiveUiTest() {
-    scoped_feature_list_.InitWithFeatures({kContextualTasksUrlRedirectToAimUrl},
-                                          {kContextualTasks});
+    scoped_feature_list_.InitWithFeatures(
+        {kContextualTasksUrlRedirectToAimUrl},
+        {kContextualTasks, kContextualTasksRearchitecture,
+         kContextualTasksSidePanelRearchitecture});
   }
 
  protected:
@@ -893,7 +1295,9 @@ class MockEligibilityServiceContextualTasksUiServiceInteractiveUiTest
  public:
   MockEligibilityServiceContextualTasksUiServiceInteractiveUiTest() {
     scoped_feature_list_.InitWithFeatures(
-        {kContextualTasksUrlRedirectToAimUrl, kContextualTasks}, {});
+        {kContextualTasksUrlRedirectToAimUrl, kContextualTasks},
+        {kContextualTasksRearchitecture,
+         kContextualTasksSidePanelRearchitecture});
   }
 
  protected:

@@ -19,7 +19,6 @@
 #include "base/strings/string_util.h"
 #include "base/task/thread_pool.h"
 #include "chrome/browser/ash/login/session/user_session_manager.h"
-#include "chrome/browser/profiles/profile.h"
 #include "components/application_locale_storage/application_locale_storage.h"
 #include "components/language/core/browser/pref_names.h"
 #include "components/language/core/common/locale_util.h"
@@ -95,7 +94,7 @@ void FinishSwitchLanguage(ApplicationLocaleStorage* application_locale_storage,
         // first hardware keyboard layout since the input method currently in
         // use may not be supported by the new locale.
         ime_state->EnableLoginLayouts(
-            data->result.loaded_locale,
+            application_locale_storage->GetTag(),
             manager->GetInputMethodUtil()->GetHardwareLoginInputMethodIds());
       } else {
         // Enable all hardware keyboard layouts. This will also switch to the

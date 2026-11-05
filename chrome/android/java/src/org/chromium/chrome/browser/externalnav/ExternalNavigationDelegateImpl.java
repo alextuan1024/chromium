@@ -11,8 +11,12 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.content.pm.ResolveInfo;
+import android.content.pm.verify.domain.DomainVerificationManager;
+import android.content.pm.verify.domain.DomainVerificationUserState;
 import android.net.Uri;
 import android.os.Build;
+
+import androidx.annotation.RequiresApi;
 
 import org.chromium.base.ApkInfo;
 import org.chromium.base.ApplicationState;
@@ -28,6 +32,7 @@ import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.ChromeTabbedActivity2;
 import org.chromium.chrome.browser.IntentHandler;
 import org.chromium.chrome.browser.actor.ActorKeyedServiceFactory;
+import org.chromium.chrome.browser.browserservices.TwaValidator;
 import org.chromium.chrome.browser.browserservices.intents.WebappConstants;
 import org.chromium.chrome.browser.document.ChromeLauncherActivity;
 import org.chromium.chrome.browser.glic.GlicEnabling;
@@ -37,10 +42,12 @@ import org.chromium.chrome.browser.password_manager.CctPasswordSavingMetricsReco
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.tab.TabLaunchType;
+import org.chromium.chrome.browser.tab.TabLaunchTypeUtils;
 import org.chromium.chrome.browser.tab.TabObserver;
 import org.chromium.chrome.browser.tabmodel.TabClosureParams;
 import org.chromium.chrome.browser.tabmodel.TabModelSelector;
 import org.chromium.chrome.browser.tabmodel.TabModelSelectorSupplier;
+import org.chromium.chrome.browser.webapps.WebappRegistry;
 import org.chromium.components.embedder_support.util.UrlConstants;
 import org.chromium.components.embedder_support.util.UrlUtilities;
 import org.chromium.components.external_intents.ExternalNavigationDelegate;
@@ -66,6 +73,7 @@ public class ExternalNavigationDelegateImpl implements ExternalNavigationDelegat
     private @TabLaunchType int mTabLaunchType;
 
     private static @Nullable Predicate<Intent> sWillChromeHandleIntentHookForTesting;
+    private static @Nullable Boolean sIsWebApkLinkHandlingAllowedForTesting;
 
     public ExternalNavigationDelegateImpl(Tab tab) {
         mTab = tab;
@@ -107,6 +115,11 @@ public class ExternalNavigationDelegateImpl implements ExternalNavigationDelegat
     public static void setWillChromeHandleIntentHookForTesting(Predicate<Intent> hook) {
         sWillChromeHandleIntentHookForTesting = hook;
         ResettersForTesting.register(() -> sWillChromeHandleIntentHookForTesting = null);
+    }
+
+    public static void setIsWebApkLinkHandlingAllowedForTesting(boolean allowed) {
+        sIsWebApkLinkHandlingAllowedForTesting = allowed;
+        ResettersForTesting.register(() -> sIsWebApkLinkHandlingAllowedForTesting = null);
     }
 
     /**
@@ -165,8 +178,8 @@ public class ExternalNavigationDelegateImpl implements ExternalNavigationDelegat
         if (mTabModelSelectorSupplier == null) return;
         TabModelSelector tabModelSelector = mTabModelSelectorSupplier.get();
         if (tabModelSelector == null) return;
-        tabModelSelector.tryCloseTab(
-                TabClosureParams.closeTab(mTab).allowUndo(false).build(), /* allowDialog= */ false);
+        tabModelSelector.closeTab(
+                TabClosureParams.closeTab(mTab).allowUndo(/* allowUndo= */ false).build());
     }
 
     @Override
@@ -246,6 +259,43 @@ public class ExternalNavigationDelegateImpl implements ExternalNavigationDelegat
     }
 
     @Override
+    public boolean isWebApkLinkHandlingAllowed(@Nullable String packageName) {
+        if (sIsWebApkLinkHandlingAllowedForTesting != null) {
+            return sIsWebApkLinkHandlingAllowedForTesting;
+        }
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) return true;
+        if (packageName == null) return false;
+        return isWebApkLinkHandlingAllowedOnS(packageName);
+    }
+
+    @RequiresApi(Build.VERSION_CODES.S)
+    private boolean isWebApkLinkHandlingAllowedOnS(String packageName) {
+        try {
+            DomainVerificationManager manager =
+                    ContextUtils.getApplicationContext()
+                            .getSystemService(DomainVerificationManager.class);
+            if (manager == null) return false;
+            DomainVerificationUserState userState =
+                    manager.getDomainVerificationUserState(packageName);
+            if (userState == null) return false;
+            return userState.isLinkHandlingAllowed();
+        } catch (PackageManager.NameNotFoundException e) {
+            return false;
+        } catch (Exception e) {
+            // DomainVerificationManager talks to OS APIs. Treat failures while recovering the
+            // WebAPK link-handling state as "link handling not allowed" so the link simply loads
+            // in the browser tab instead of crashing during navigation interception.
+            return false;
+        }
+    }
+
+    @Override
+    public boolean maybeHasWebApkForUrl(GURL url) {
+        return WebappRegistry.getInstance()
+                .hasAtLeastOneWebApkForOriginWithoutPackageCheck(url.getSpec());
+    }
+
+    @Override
     public void setPackageForTrustedCallingApp(Intent intent) {
         assert false;
     }
@@ -312,8 +362,7 @@ public class ExternalNavigationDelegateImpl implements ExternalNavigationDelegat
 
     @Override
     public boolean wasTabLaunchedFromLinkCreatingNewForegroundTab() {
-        return mTabLaunchType == TabLaunchType.FROM_LONGPRESS_FOREGROUND
-                || mTabLaunchType == TabLaunchType.FROM_LONGPRESS_FOREGROUND_IN_GROUP;
+        return TabLaunchTypeUtils.isLongpressForegroundLaunch(mTabLaunchType);
     }
 
     @Override
@@ -342,8 +391,11 @@ public class ExternalNavigationDelegateImpl implements ExternalNavigationDelegat
     }
 
     @Override
-    public boolean allowExternalNavigationForHttpProtocols(GURL url) {
-        return !OpenInAppUtils.isOpenInAppAvailable() || !UrlUtilities.isHttpOrHttps(url);
+    public boolean allowExternalNavigationForHttpProtocols(
+            GURL url, Supplier<List<ResolveInfo>> resolveInfoSupplier) {
+        return !OpenInAppUtils.isOpenInAppAvailable()
+                || !UrlUtilities.isHttpOrHttps(url)
+                || TwaValidator.isTwaInstalledForUrl(url, resolveInfoSupplier);
     }
 
     /**

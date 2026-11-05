@@ -25,31 +25,21 @@ import static org.chromium.chrome.browser.ui.autofill.AtMemoryBottomSheetPropert
 import static org.chromium.chrome.browser.ui.autofill.AtMemoryBottomSheetProperties.TextWithClickableLinkProperties.TEXT;
 import static org.chromium.chrome.browser.ui.autofill.AtMemoryBottomSheetProperties.VISIBLE;
 
-import android.os.Bundle;
-
 import androidx.test.core.app.ApplicationProvider;
 
 import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
-import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
 
 import org.chromium.base.test.BaseRobolectricTestRunner;
-import org.chromium.base.test.util.Features.DisableFeatures;
-import org.chromium.base.test.util.Features.EnableFeatures;
 import org.chromium.base.test.util.HistogramWatcher;
 import org.chromium.base.test.util.UserActionTester;
 import org.chromium.build.annotations.NullMarked;
-import org.chromium.chrome.browser.autofill.settings.options.AutofillOptionsFragment;
-import org.chromium.chrome.browser.autofill.settings.options.AutofillOptionsReferrer;
 import org.chromium.chrome.browser.autofill.settings.personal_context.AutofillPersonalContextFragment;
-import org.chromium.chrome.browser.flags.ChromeFeatureList;
-import org.chromium.chrome.browser.personal_context.first_run.PersonalContextFirstRunService;
-import org.chromium.chrome.browser.personal_context.first_run.PersonalContextFirstRunServiceJni;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.settings.SettingsNavigationFactory;
 import org.chromium.chrome.browser.ui.autofill.AtMemoryBottomSheetProperties.FlyoutProperties;
@@ -80,7 +70,6 @@ public class AtMemoryBottomSheetMediatorTest {
 
     @Mock private AtMemoryBottomSheetCoordinator.Delegate mDelegate;
     @Mock private HomeProperties.SearchDelegate mSearchDelegate;
-    @Mock private PersonalContextFirstRunService.Natives mFirstRunServiceJniMock;
     @Mock private SettingsNavigation mSettingsNavigation;
     @Mock private UserPrefs.Natives mUserPrefsJniMock;
     @Mock private PrefService mPrefService;
@@ -93,7 +82,6 @@ public class AtMemoryBottomSheetMediatorTest {
 
     @Before
     public void setUp() {
-        PersonalContextFirstRunServiceJni.setInstanceForTesting(mFirstRunServiceJniMock);
         SettingsNavigationFactory.setInstanceForTesting(mSettingsNavigation);
         UserPrefsJni.setInstanceForTesting(mUserPrefsJniMock);
         when(mUserPrefsJniMock.get(mProfile)).thenReturn(mPrefService);
@@ -126,7 +114,7 @@ public class AtMemoryBottomSheetMediatorTest {
                                 .setAcceptability(Acceptability.SELECTABLE_AND_ACCEPTABLE)
                                 .build());
 
-        mMediator.show(suggestions);
+        mMediator.show(suggestions, /* searchBarInitialValue= */ null);
 
         assertEquals(2, mModelList.size());
 
@@ -158,7 +146,7 @@ public class AtMemoryBottomSheetMediatorTest {
                                 .setAcceptability(Acceptability.UNSELECTABLE_AND_UNACCEPTABLE)
                                 .build());
 
-        mMediator.show(suggestions);
+        mMediator.show(suggestions, /* searchBarInitialValue= */ null);
 
         PropertyModel itemModel1 = mModelList.get(0).model;
         itemModel1.get(ON_SUGGESTION_CLICKED).run();
@@ -188,7 +176,7 @@ public class AtMemoryBottomSheetMediatorTest {
                                 .setChildren(List.of(childSuggestion))
                                 .build());
 
-        mMediator.show(suggestions);
+        mMediator.show(suggestions, /* searchBarInitialValue= */ null);
         assertEquals(ScreenId.HOME_SCREEN, mModel.get(CURRENT_SCREEN));
 
         PropertyModel itemModel2 = mModelList.get(1).model;
@@ -200,7 +188,7 @@ public class AtMemoryBottomSheetMediatorTest {
         assertEquals(List.of(childSuggestion), flyoutModel.get(FlyoutProperties.SUGGESTIONS));
 
         // Showing the suggestions again should switch the screen to the home screen.
-        mMediator.show(suggestions);
+        mMediator.show(suggestions, /* searchBarInitialValue= */ null);
         assertEquals(ScreenId.HOME_SCREEN, mModel.get(CURRENT_SCREEN));
     }
 
@@ -220,7 +208,7 @@ public class AtMemoryBottomSheetMediatorTest {
                         .setChildren(List.of(childSuggestion))
                         .build();
         List<AutofillSuggestion> suggestions = List.of(suggestion);
-        mMediator.show(suggestions);
+        mMediator.show(suggestions, /* searchBarInitialValue= */ null);
         assertTrue(mModelList.get(0).model.get(IS_FLYOUT_VISIBLE));
     }
 
@@ -235,7 +223,7 @@ public class AtMemoryBottomSheetMediatorTest {
                         .setAcceptability(Acceptability.UNSELECTABLE_AND_UNACCEPTABLE)
                         .build();
         List<AutofillSuggestion> suggestions = List.of(suggestion);
-        mMediator.show(suggestions);
+        mMediator.show(suggestions, /* searchBarInitialValue= */ null);
         assertFalse(mModelList.get(0).model.get(IS_FLYOUT_VISIBLE));
         assertEquals(R.drawable.ic_north_west_24dp, mModelList.get(0).model.get(TRAILING_ICON_ID));
     }
@@ -250,7 +238,7 @@ public class AtMemoryBottomSheetMediatorTest {
                         .setSuggestionType(SuggestionType.AT_MEMORY_OPEN_GEMINI)
                         .build();
         List<AutofillSuggestion> suggestions = List.of(suggestion);
-        mMediator.show(suggestions);
+        mMediator.show(suggestions, /* searchBarInitialValue= */ null);
         assertFalse(mModelList.get(0).model.get(IS_FLYOUT_VISIBLE));
         assertEquals(R.drawable.open_in_new, mModelList.get(0).model.get(TRAILING_ICON_ID));
     }
@@ -271,7 +259,7 @@ public class AtMemoryBottomSheetMediatorTest {
                                 .setChildren(List.of(childSuggestion))
                                 .build());
 
-        mMediator.show(suggestions);
+        mMediator.show(suggestions, /* searchBarInitialValue= */ null);
 
         PropertyModel itemModel = mModelList.get(0).model;
         itemModel.get(ON_FLYOUT_CLICKED).run();
@@ -305,7 +293,7 @@ public class AtMemoryBottomSheetMediatorTest {
                                 .setChildren(List.of(childSuggestion0, childSuggestion1))
                                 .build());
 
-        mMediator.show(suggestions);
+        mMediator.show(suggestions, /* searchBarInitialValue= */ null);
 
         PropertyModel itemModel = mModelList.get(1).model;
         itemModel.get(ON_FLYOUT_CLICKED).run();
@@ -313,7 +301,7 @@ public class AtMemoryBottomSheetMediatorTest {
         PropertyModel flyoutModel = mMediator.getFlyoutModel();
         flyoutModel.get(FlyoutProperties.ON_SUGGESTION_CLICKED).onResult(1);
 
-        verify(mDelegate).onChildSuggestionClicked(1, 1);
+        verify(mDelegate).onChildSuggestionAccepted(1, 1);
     }
 
     @Test
@@ -345,13 +333,13 @@ public class AtMemoryBottomSheetMediatorTest {
 
         AutofillSuggestion suggestion =
                 new AutofillSuggestion.Builder().setLabel("Flight").setSubLabel("KLM").build();
-        mMediator.show(List.of(suggestion));
+        mMediator.show(List.of(suggestion), /* searchBarInitialValue= */ null);
         assertTrue(mHomeModel.get(HomeProperties.IS_LOADING));
         assertEquals(1, mModelList.size());
         assertEquals(HomeProperties.ItemType.SUGGESTION, mModelList.get(0).type);
 
         when(mDelegate.isSearching()).thenReturn(false);
-        mMediator.show(List.of(suggestion));
+        mMediator.show(List.of(suggestion), /* searchBarInitialValue= */ null);
         assertFalse(mHomeModel.get(HomeProperties.IS_LOADING));
         assertEquals(1, mModelList.size());
         assertEquals(HomeProperties.ItemType.SUGGESTION, mModelList.get(0).type);
@@ -362,7 +350,8 @@ public class AtMemoryBottomSheetMediatorTest {
         mHomeModel.get(HomeProperties.SEARCH_BAR_DELEGATE).onQueryTextChanged("flight");
         verify(mDelegate).onQueryTextChanged("flight");
 
-        mMediator.show(List.of(createSearchAffordance("flight")));
+        mMediator.show(
+                List.of(createSearchAffordance("flight")), /* searchBarInitialValue= */ null);
         assertEquals(1, mModelList.size());
         assertEquals(HomeProperties.ItemType.SUGGESTION_WITH_NO_BACKGROUND, mModelList.get(0).type);
         assertEquals("flight", mModelList.get(0).model.get(TITLE));
@@ -374,36 +363,36 @@ public class AtMemoryBottomSheetMediatorTest {
 
     @Test
     public void testOnQueryTextChanged_subsequentKeystrokes() {
-        mMediator.show(List.of(createSearchAffordance("f")));
+        mMediator.show(List.of(createSearchAffordance("f")), /* searchBarInitialValue= */ null);
         assertEquals(1, mModelList.size());
         assertEquals("f", mModelList.get(0).model.get(TITLE));
 
-        mMediator.show(List.of(createSearchAffordance("fl")));
+        mMediator.show(List.of(createSearchAffordance("fl")), /* searchBarInitialValue= */ null);
         assertEquals(1, mModelList.size());
         assertEquals("fl", mModelList.get(0).model.get(TITLE));
     }
 
     @Test
     public void testOnQueryTextChanged_emptyQueryShowsZeroState() {
-        mMediator.show(List.of(createSearchAffordance("f")));
+        mMediator.show(List.of(createSearchAffordance("f")), /* searchBarInitialValue= */ null);
         assertEquals(1, mModelList.size());
 
-        mMediator.show(List.of());
+        mMediator.show(List.of(), /* searchBarInitialValue= */ null);
         assertEquals(1, mModelList.size());
         assertEquals(HomeProperties.ItemType.ILLUSTRATION_CARD, mModelList.get(0).type);
     }
 
     @Test
     public void testOnQueryTextChanged_resumeTypingAfterEmptyQuery() {
-        mMediator.show(List.of(createSearchAffordance("f")));
+        mMediator.show(List.of(createSearchAffordance("f")), /* searchBarInitialValue= */ null);
         assertEquals(1, mModelList.size());
         assertEquals(HomeProperties.ItemType.SUGGESTION_WITH_NO_BACKGROUND, mModelList.get(0).type);
 
-        mMediator.show(List.of());
+        mMediator.show(List.of(), /* searchBarInitialValue= */ null);
         assertEquals(1, mModelList.size());
         assertEquals(HomeProperties.ItemType.ILLUSTRATION_CARD, mModelList.get(0).type);
 
-        mMediator.show(List.of(createSearchAffordance("a")));
+        mMediator.show(List.of(createSearchAffordance("a")), /* searchBarInitialValue= */ null);
         assertEquals(1, mModelList.size());
         assertEquals(HomeProperties.ItemType.SUGGESTION_WITH_NO_BACKGROUND, mModelList.get(0).type);
         assertEquals("a", mModelList.get(0).model.get(TITLE));
@@ -430,7 +419,8 @@ public class AtMemoryBottomSheetMediatorTest {
                                 .setIsLoading(false)
                                 .setApplyDeactivatedStyle(true)
                                 .setAcceptability(Acceptability.UNSELECTABLE_AND_UNACCEPTABLE)
-                                .build()));
+                                .build()),
+                /* searchBarInitialValue= */ null);
 
         assertEquals(1, mModelList.size());
         assertEquals(HomeProperties.ItemType.SUGGESTION, mModelList.get(0).type);
@@ -449,7 +439,8 @@ public class AtMemoryBottomSheetMediatorTest {
                                 .setIsLoading(true)
                                 .setApplyDeactivatedStyle(false)
                                 .setAcceptability(Acceptability.UNSELECTABLE_AND_UNACCEPTABLE)
-                                .build()));
+                                .build()),
+                /* searchBarInitialValue= */ null);
 
         assertEquals(1, mModelList.size());
         assertEquals(HomeProperties.ItemType.SUGGESTION, mModelList.get(0).type);
@@ -460,10 +451,31 @@ public class AtMemoryBottomSheetMediatorTest {
 
     @Test
     public void testShow_emptySuggestionsShowsZeroState() {
-        mMediator.show(List.of());
+        mMediator.show(List.of(), /* searchBarInitialValue= */ null);
 
         assertEquals(1, mModelList.size());
         assertEquals(HomeProperties.ItemType.ILLUSTRATION_CARD, mModelList.get(0).type);
+        PropertyModel model = mModelList.get(0).model;
+        var context = ApplicationProvider.getApplicationContext();
+        assertEquals(
+                context.getString(R.string.autofill_at_memory_zero_state_title),
+                model.get(IllustrationCardItemProperties.TITLE));
+        assertEquals(
+                context.getString(R.string.autofill_at_memory_zero_state_subtitle),
+                model.get(IllustrationCardItemProperties.SUBTITLE));
+        String flightConfirmationCode =
+                context.getString(
+                        R.string.autofill_at_memory_zero_state_subtitle_flight_confirmation_code);
+        assertEquals(
+                List.of(
+                        context.getString(
+                                R.string.autofill_at_memory_zero_state_subtitle_order_number),
+                        flightConfirmationCode,
+                        context.getString(
+                                R.string.autofill_at_memory_zero_state_subtitle_tracking_number),
+                        context.getString(
+                                R.string.autofill_at_memory_zero_state_subtitle_hotel_address)),
+                model.get(IllustrationCardItemProperties.ROTATING_PLACEHOLDERS));
     }
 
     @Test
@@ -476,7 +488,7 @@ public class AtMemoryBottomSheetMediatorTest {
                         .setAcceptability(Acceptability.UNSELECTABLE_AND_UNACCEPTABLE)
                         .build();
 
-        mMediator.show(List.of(fetchingSuggestion));
+        mMediator.show(List.of(fetchingSuggestion), /* searchBarInitialValue= */ null);
 
         assertEquals(1, mModelList.size());
         assertEquals(HomeProperties.ItemType.ILLUSTRATION_CARD, mModelList.get(0).type);
@@ -484,6 +496,9 @@ public class AtMemoryBottomSheetMediatorTest {
                 "Find and fill with Gemini",
                 mModelList.get(0).model.get(IllustrationCardItemProperties.TITLE));
         assertEquals("", mModelList.get(0).model.get(IllustrationCardItemProperties.SUBTITLE));
+        assertEquals(
+                List.of(),
+                mModelList.get(0).model.get(IllustrationCardItemProperties.ROTATING_PLACEHOLDERS));
     }
 
     @Test
@@ -501,7 +516,8 @@ public class AtMemoryBottomSheetMediatorTest {
                         .setAcceptability(Acceptability.UNSELECTABLE_AND_UNACCEPTABLE)
                         .build();
 
-        mMediator.show(List.of(noticeSuggestion, fetchingSuggestion));
+        mMediator.show(
+                List.of(noticeSuggestion, fetchingSuggestion), /* searchBarInitialValue= */ null);
 
         assertEquals(1, mModelList.size());
         assertEquals(HomeProperties.ItemType.NOTICE, mModelList.get(0).type);
@@ -520,7 +536,7 @@ public class AtMemoryBottomSheetMediatorTest {
                         AtMemoryBottomSheetMediator.NOTICE_INTERACTIONS_HISTOGRAM,
                         PopupNoticeInteractions.SHOWN);
 
-        mMediator.show(List.of(noticeSuggestion));
+        mMediator.show(List.of(noticeSuggestion), /* searchBarInitialValue= */ null);
         assertEquals(1, mModelList.size());
         assertEquals(HomeProperties.ItemType.NOTICE, mModelList.get(0).type);
         shownWatcher.assertExpected();
@@ -543,15 +559,14 @@ public class AtMemoryBottomSheetMediatorTest {
     }
 
     @Test
-    @EnableFeatures(ChromeFeatureList.YOUR_SAVED_INFO_SETTINGS_PAGE_ANDROID)
-    public void testNoticeSettingsClicked_withYourSavedInfoEnabled() {
+    public void testNoticeSettingsClicked() {
         UserActionTester userActionTester = new UserActionTester();
         AutofillSuggestion noticeSuggestion =
                 new AutofillSuggestion.Builder()
                         .setSuggestionType(SuggestionType.PERSONAL_CONTEXT_NOTICE)
                         .setSubLabel("")
                         .build();
-        mMediator.show(List.of(noticeSuggestion));
+        mMediator.show(List.of(noticeSuggestion), /* searchBarInitialValue= */ null);
 
         Runnable settingsClickListener =
                 mModelList
@@ -576,46 +591,8 @@ public class AtMemoryBottomSheetMediatorTest {
     }
 
     @Test
-    @DisableFeatures(ChromeFeatureList.YOUR_SAVED_INFO_SETTINGS_PAGE_ANDROID)
-    public void testNoticeSettingsClicked_withYourSavedInfoDisabled() {
-        UserActionTester userActionTester = new UserActionTester();
-        AutofillSuggestion noticeSuggestion =
-                new AutofillSuggestion.Builder()
-                        .setSuggestionType(SuggestionType.PERSONAL_CONTEXT_NOTICE)
-                        .setSubLabel("")
-                        .build();
-        mMediator.show(List.of(noticeSuggestion));
-
-        Runnable settingsClickListener =
-                mModelList
-                        .get(0)
-                        .model
-                        .get(
-                                AtMemoryBottomSheetProperties.NoticeItemProperties
-                                        .ON_SETTINGS_CLICKED);
-        assertNotNull(settingsClickListener);
-        settingsClickListener.run();
-
-        assertTrue(
-                userActionTester
-                        .getActions()
-                        .contains("PersonalContext.AtMemory.Notice.SettingsLinkClick"));
-
-        ArgumentCaptor<Bundle> bundleCaptor = ArgumentCaptor.forClass(Bundle.class);
-        verify(mSettingsNavigation)
-                .startSettings(
-                        eq(ApplicationProvider.getApplicationContext()),
-                        eq(AutofillOptionsFragment.class),
-                        bundleCaptor.capture(),
-                        eq(true));
-        assertEquals(
-                AutofillOptionsReferrer.PERSONAL_CONTEXT_ATMEMORY_NOTICE,
-                bundleCaptor.getValue().getInt(AutofillOptionsFragment.AUTOFILL_OPTIONS_REFERRER));
-    }
-
-    @Test
     public void testNoticeNotShown() {
-        mMediator.show(List.of());
+        mMediator.show(List.of(), /* searchBarInitialValue= */ null);
 
         assertEquals(1, mModelList.size());
         assertEquals(HomeProperties.ItemType.ILLUSTRATION_CARD, mModelList.get(0).type);
@@ -636,8 +613,10 @@ public class AtMemoryBottomSheetMediatorTest {
                                 PopupNoticeInteractions.SHOWN)
                         .build();
 
-        mMediator.show(List.of(noticeSuggestion));
-        mMediator.show(List.of(noticeSuggestion)); // Second call should not log again.
+        mMediator.show(List.of(noticeSuggestion), /* searchBarInitialValue= */ null);
+        mMediator.show(
+                List.of(noticeSuggestion),
+                /* searchBarInitialValue= */ null); // Second call should not log again.
 
         shownWatcher.assertExpected();
     }
@@ -662,7 +641,9 @@ public class AtMemoryBottomSheetMediatorTest {
                         .setSubLabel("")
                         .build();
 
-        mMediator.show(List.of(searchAffordance, separator, noticeSuggestion));
+        mMediator.show(
+                List.of(searchAffordance, separator, noticeSuggestion),
+                /* searchBarInitialValue= */ null);
 
         assertEquals(2, mModelList.size());
         assertEquals(HomeProperties.ItemType.SUGGESTION_WITH_NO_BACKGROUND, mModelList.get(0).type);
@@ -679,7 +660,6 @@ public class AtMemoryBottomSheetMediatorTest {
     }
 
     @Test
-    @EnableFeatures(ChromeFeatureList.YOUR_SAVED_INFO_SETTINGS_PAGE_ANDROID)
     public void testAiDisclosureSuggestion() {
         AutofillSuggestion disclosure =
                 new AutofillSuggestion.Builder()
@@ -688,7 +668,7 @@ public class AtMemoryBottomSheetMediatorTest {
                         .setSuggestionType(SuggestionType.AT_MEMORY_AI_DISCLOSURE)
                         .build();
 
-        mMediator.show(List.of(disclosure));
+        mMediator.show(List.of(disclosure), /* searchBarInitialValue= */ null);
 
         assertEquals(1, mModelList.size());
         assertEquals(HomeProperties.ItemType.TEXT_WITH_CLICKABLE_LINK, mModelList.get(0).type);
@@ -724,7 +704,7 @@ public class AtMemoryBottomSheetMediatorTest {
                         .setSubLabel("")
                         .build();
 
-        mMediator.show(List.of(noticeSuggestion));
+        mMediator.show(List.of(noticeSuggestion), /* searchBarInitialValue= */ null);
 
         assertEquals(1, mModelList.size());
         assertEquals(HomeProperties.ItemType.NOTICE, mModelList.get(0).type);
@@ -749,7 +729,7 @@ public class AtMemoryBottomSheetMediatorTest {
                         .setSubLabel("")
                         .build();
 
-        mMediator.show(List.of(noticeSuggestion));
+        mMediator.show(List.of(noticeSuggestion), /* searchBarInitialValue= */ null);
 
         assertEquals(1, mModelList.size());
         assertEquals(HomeProperties.ItemType.NOTICE, mModelList.get(0).type);
@@ -771,10 +751,55 @@ public class AtMemoryBottomSheetMediatorTest {
                         .setSubLabel("")
                         .build();
 
-        mMediator.show(List.of(suggestion));
+        mMediator.show(List.of(suggestion), /* searchBarInitialValue= */ null);
 
         assertEquals(1, mModelList.size());
         assertEquals(HomeProperties.ItemType.TITLE, mModelList.get(0).type);
         assertEquals("Previously filled", mModelList.get(0).model.get(TitleItemProperties.TITLE));
+    }
+
+    @Test
+    public void testShow_SetsSearchBarInitialValue() {
+        mMediator.show(List.of(), /* searchBarInitialValue= */ "city");
+
+        assertEquals("city", mHomeModel.get(HomeProperties.SEARCH_BAR_INITIAL_VALUE));
+    }
+
+    @Test
+    public void testShow_NullSearchBarInitialValueDoesNotOverwrite() {
+        mHomeModel.set(HomeProperties.SEARCH_BAR_INITIAL_VALUE, "city");
+
+        mMediator.show(List.of(), /* searchBarInitialValue= */ null);
+
+        assertEquals("city", mHomeModel.get(HomeProperties.SEARCH_BAR_INITIAL_VALUE));
+    }
+
+    @Test
+    public void testFlyoutContentDescription() {
+        AutofillSuggestion childSuggestion =
+                new AutofillSuggestion.Builder()
+                        .setLabel("Hilton Check-in")
+                        .setSubLabel("May 16")
+                        .build();
+        AutofillSuggestion suggestion =
+                new AutofillSuggestion.Builder()
+                        .setIconId(R.drawable.flight)
+                        .setLabel("KLM204")
+                        .setPayload(new AtMemoryPayload("Flight"))
+                        .setSubLabel("Flight ⋅ 15 May ⋅ SEA - MUC")
+                        .setSuggestionType(SuggestionType.AT_MEMORY_SEARCH_RESULT)
+                        .setChildren(List.of(childSuggestion))
+                        .build();
+
+        mMediator.show(List.of(suggestion), /* searchBarInitialValue= */ null);
+
+        assertEquals(
+                "Show more for Flight KLM204",
+                mModelList
+                        .get(0)
+                        .model
+                        .get(
+                                AtMemoryBottomSheetProperties.SuggestionItemProperties
+                                        .FLYOUT_CONTENT_DESCRIPTION));
     }
 }

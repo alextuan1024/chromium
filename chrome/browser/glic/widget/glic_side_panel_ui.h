@@ -76,6 +76,7 @@ class GlicSidePanelUi
 
   // Host::Observer:
   void ActiveWebContentsChanged(content::WebContents* new_contents) override;
+  void NativeLoadingStateChanged(bool is_showing) override;
 
   void SidePanelStateChanged(GlicSidePanelCoordinator::State state);
 
@@ -96,14 +97,11 @@ class GlicSidePanelUi
  private:
   void OnBrowserWindowActivated(BrowserWindowInterface* bwi);
   void OnBrowserWindowDeactivated(BrowserWindowInterface* bwi);
-  // Focuses on embedder's webcontens.
   void SetFocusDelayed();
-
-  ScopedModalDialogManagerDelegate scoped_modal_dialog_delegate_{this};
-
   GlicSidePanelCoordinator* GetGlicSidePanelCoordinator() const;
-  base::CallbackListSubscription panel_visibility_subscription_;
   std::unique_ptr<views::View> CreateView(Profile* profile);
+
+  base::CallbackListSubscription panel_visibility_subscription_;
   mojom::PanelState panel_state_;
   raw_ptr<Profile> profile_;
   base::WeakPtr<tabs::TabInterface> tab_;
@@ -118,6 +116,7 @@ class GlicSidePanelUi
   base::CallbackListSubscription deactivation_subscription_;
 
   base::ScopedObservation<Host, Host::Observer> host_observation_{this};
+  ScopedModalDialogManagerDelegate scoped_modal_dialog_delegate_{this};
 
   base::WeakPtrFactory<GlicSidePanelUi> weak_ptr_factory_{this};
 };

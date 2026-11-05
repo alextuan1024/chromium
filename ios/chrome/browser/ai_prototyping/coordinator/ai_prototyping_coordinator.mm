@@ -10,13 +10,14 @@
 #import "ios/chrome/browser/intelligence/persist_tab_context/model/persist_tab_context_browser_agent.h"
 #import "ios/chrome/browser/shared/model/browser/browser.h"
 #import "ios/chrome/browser/shared/model/web_state_list/web_state_list.h"
+#import "ios/chrome/browser/shared/public/features/features.h"
 #import "ios/web/public/web_state.h"
 
 @interface AIPrototypingCoordinator () {
   // The mediator for handling AI prototyping models.
   AIPrototypingMediator* _mediator;
 
-  // The coordinator for TalkToChrome.
+  // The coordinator for TTC.
   TTCCoordinator* _TTCCoordinator;
 
   // The view controller presented as the AI prototyping menu.
@@ -30,10 +31,12 @@
 #pragma mark - ChromeCoordinator
 
 - (void)start {
-  _TTCCoordinator =
-      [[TTCCoordinator alloc] initWithBaseViewController:self.baseViewController
-                                                 browser:self.browser];
-  [_TTCCoordinator start];
+  if (IsTTCEnabled()) {
+    _TTCCoordinator = [[TTCCoordinator alloc]
+        initWithBaseViewController:self.baseViewController
+                           browser:self.browser];
+    [_TTCCoordinator start];
+  }
 
   _viewController = [[AIPrototypingViewController alloc]
       initWithTTCViewController:_TTCCoordinator.viewController];

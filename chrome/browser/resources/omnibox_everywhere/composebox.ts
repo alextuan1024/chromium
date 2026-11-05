@@ -13,19 +13,19 @@ import '//resources/cr_components/composebox/file_carousel.js';
 import '//resources/cr_components/search/animated_glow.js';
 
 import type {ComposeboxFile} from '//resources/cr_components/composebox/common.js';
-import {getLoadTimeBoolean} from '//resources/cr_components/composebox/common.js';
+import {getLoadTimeBoolean, SubmitButtonIconType} from '//resources/cr_components/composebox/common.js';
 import type {PageHandlerRemote} from '//resources/cr_components/composebox/composebox.mojom-webui.js';
 import type {ComposeboxDropdownElement} from '//resources/cr_components/composebox/composebox_dropdown.js';
 import type {ComposeboxFileInputsElement} from '//resources/cr_components/composebox/composebox_file_inputs.js';
 import type {ComposeboxInputElement} from '//resources/cr_components/composebox/composebox_input.js';
-import {ComposeboxEmbedderMixin, SubmitButtonIconType} from '//resources/cr_components/composebox/composebox_mixin.js';
+import {ComposeboxEmbedderMixin} from '//resources/cr_components/composebox/composebox_mixin.js';
 import {ComposeboxProxyImpl} from '//resources/cr_components/composebox/composebox_proxy.js';
 import type {ContextualEntrypointButtonElement} from '//resources/cr_components/composebox/contextual_entrypoint_button.js';
 import {HelpBubbleMixinLit} from '//resources/cr_components/help_bubble/help_bubble_mixin_lit.js';
 import {GlowAnimationState} from '//resources/cr_components/search/constants.js';
 import {CrLitElement} from '//resources/lit/v3_0/lit.rollup.js';
 import type {PropertyValues} from '//resources/lit/v3_0/lit.rollup.js';
-import type {PageCallbackRouter as SearchboxPageCallbackRouter, PageHandlerRemote as SearchboxPageHandlerRemote} from '//resources/mojo/components/omnibox/browser/searchbox.mojom-webui.js';
+import type {AutocompleteResult, PageCallbackRouter as SearchboxPageCallbackRouter, PageHandlerRemote as SearchboxPageHandlerRemote, SelectedFileInfo} from '//resources/mojo/components/omnibox/browser/searchbox.mojom-webui.js';
 import type {ContextUploadErrorType} from '//resources/mojo/components/omnibox/composebox/composebox_query.mojom-webui.js';
 import {ContextUploadStatus, ToolMode} from '//resources/mojo/components/omnibox/composebox/composebox_query.mojom-webui.js';
 import type {UnguessableToken} from '//resources/mojo/mojo/public/mojom/base/unguessable_token.mojom-webui.js';
@@ -79,15 +79,21 @@ export class OmniboxEverywhereComposeboxElement extends
         type: Boolean,
         reflect: true,
       },
+      isPendingScreenshot: {
+        type: Boolean,
+      },
       isActive: {
         type: Boolean,
         reflect: true,
         attribute: 'is-active',
       },
+      isLensHelpBubbleShowing: {type: Boolean},
     };
   }
 
   accessor isActive: boolean = true;
+  accessor isPendingScreenshot: boolean = false;
+  accessor isLensHelpBubbleShowing: boolean = false;
 
   /**
    * Entrypoint name used by SearchAnimatedGlowElement and
@@ -134,6 +140,7 @@ export class OmniboxEverywhereComposeboxElement extends
     }
     this.notifyHelpBubbleAnchorActivated(
         'kOmniboxEverywhereLensButtonElementId');
+    this.hideHelpBubble('kOmniboxEverywhereLensButtonElementId');
     this.isScreenshotMenuOpen = true;
     const anchor = e.currentTarget as HTMLElement;
     const rect = anchor.getBoundingClientRect();
@@ -179,8 +186,15 @@ export class OmniboxEverywhereComposeboxElement extends
 
   override connectedCallback() {
     super.connectedCallback();
-    this.playGlowAnimation();
-    this.refreshTabSuggestions(/*forceRefresh=*/ true);
+    if (!this.isPendingScreenshot) {
+      this.playGlowAnimation();
+      this.refreshTabSuggestions(/*forceRefresh=*/ true);
+      // Because Omnibox Everywhere sets `searchbox-next-enabled`, the mixin's
+      // default `queryZpsOnLoad` in connectedCallback is bypassed. Explicitly
+      // query autocomplete here to populate zero-prefix suggestions when
+      // opening or re-opening Composebox with an empty query.
+      this.queryAutocomplete(/* clearMatches= */ true);
+    }
     this.searchboxListenerIds.push(
         this.getSearchboxCallbackRouter().onScreenshotMenuClosed.addListener(
             () => {
@@ -208,6 +222,15 @@ export class OmniboxEverywhereComposeboxElement extends
       this.applyContextButtonBackground =
           this.webuiOmniboxSimplificationEnabled_ && !inToolMode;
     }
+
+    if (changedProperties.has('isPendingScreenshot')) {
+      if (this.isPendingScreenshot) {
+        this.showDropdown = false;
+        this.result = null;
+      } else {
+        this.showDropdown = this.computeShowDropdown();
+      }
+    }
   }
 
   override firstUpdated(changedProperties: PropertyValues<this>) {
@@ -217,7 +240,14 @@ export class OmniboxEverywhereComposeboxElement extends
         this.shadowRoot?.querySelector<HTMLElement>('#lensSearchButton');
     if (lensButton) {
       this.registerHelpBubble(
-          'kOmniboxEverywhereLensButtonElementId', lensButton);
+          'kOmniboxEverywhereLensButtonElementId', lensButton, {
+            onHelpBubbleShown: () => {
+              this.isLensHelpBubbleShowing = true;
+            },
+            onHelpBubbleHidden: () => {
+              this.isLensHelpBubbleShowing = false;
+            },
+          });
     }
   }
 
@@ -255,8 +285,48 @@ export class OmniboxEverywhereComposeboxElement extends
   override getFileInputsElement(): ComposeboxFileInputsElement|null {
     return this.shouldDisableFileInputs() ? null : this.$.fileInputs;
   }
+
+  override shouldHideDropdown(): boolean {
+    if (this.isPendingScreenshot) {
+      return true;
+    }
+    return super.shouldHideDropdown();
+  }
+
   override computeShowDropdown(): boolean {
     return this.isContextMenuOpen || super.computeShowDropdown();
+  }
+
+  override onAutocompleteResultChanged(result: AutocompleteResult) {
+    if (this.isPendingScreenshot) {
+      // Suppress stale / premature autocomplete results from the previous
+      // omnibox session while screenshot capture is pending.
+      return;
+    }
+    super.onAutocompleteResultChanged(result);
+  }
+
+  override addFileContextFromBrowser(
+      uuid: UnguessableToken, fileInfo: SelectedFileInfo) {
+    const wasPendingScreenshot = this.isPendingScreenshot;
+    this.isPendingScreenshot = false;
+    super.addFileContextFromBrowser(uuid, fileInfo);
+    if (wasPendingScreenshot) {
+      this.playGlowAnimation();
+      this.refreshTabSuggestions(/*forceRefresh=*/ true);
+      this.queryAutocomplete(/* clearMatches= */ true);
+    }
+  }
+
+  override onInputInput(e: CustomEvent<Event>) {
+    this.isPendingScreenshot = false;
+    super.onInputInput(e);
+  }
+
+  onScreenshotCaptureCancelled() {
+    this.isPendingScreenshot = false;
+    this.refreshTabSuggestions(/*forceRefresh=*/ true);
+    this.queryAutocomplete(/* clearMatches= */ true);
   }
 
   override onContextMenuOpened() {

@@ -65,12 +65,6 @@ bool ContainerTiming::ContributesToContainerTiming(Element* element) {
   return tracker->GetContainerRootFor(element) != nullptr;
 }
 
-bool ContainerTiming::CanReportToContainerTiming() const {
-  DCHECK(performance_);
-  return performance_->HasObserverFor(PerformanceEntry::kContainer) ||
-         !performance_->IsContainerTimingBufferFull();
-}
-
 ContainerTiming::Record::Record(const DOMPaintTimingInfo& paint_timing_info,
                                 const AtomicString& identifier)
     : first_paint_timing_info_(paint_timing_info), identifier_(identifier) {}
@@ -178,10 +172,14 @@ void ContainerTiming::OnElementPainted(
   Element* container_root =
       paint_attribution_tracker_->GetContainerRootFor(element);
   if (!container_root) {
-    // The element may also have been detached since paint, leaving no reachable
-    // container root. Don't report it.
-    // TODO(crbug.com/535107494): attributing at paint time would let this
-    // become a CHECK.
+    // ElementTiming sends elements that contribute to either element timing or
+    // container timing, so `container_root` will be null if the `element`
+    // doesn't contribute to container timing. The element may have also been
+    // detached since paint, leaving no reachable container root.
+    //
+    // TODO(crbug.com/535107494, crbug.com/559075199): decoupling
+    // ContainerTiming from ElementTiming and attributing at paint time would
+    // let this become a CHECK.
     return;
   }
 
@@ -197,23 +195,48 @@ void ContainerTiming::OnElementPainted(
                                           enclosing_rect);
     // A container root with containertimingignore does not propagate to
     // ancestor roots.
-    if (container_root->HasContainerTimingIgnoreAttribute()) {
+    if (container_root->FastHasAttribute(
+            html_names::kContainertimingignoreAttr)) {
       break;
     }
     container_root =
         paint_attribution_tracker_->GetParentContainerRootFor(container_root);
   }
-  performance_->SetHasContainerTimingChanges();
+}
+
+void ContainerTiming::MaybeQueuePaint(Element& element,
+                                      const gfx::RectF& intersection_rect) {
+  if (paint_attribution_tracker_->GetContainerRootFor(&element)) {
+    pending_paints_.push_back(
+        MakeGarbageCollected<PendingPaint>(intersection_rect, &element));
+  }
+}
+
+OptionalPaintTimingCallback ContainerTiming::TakePaintTimingCallback() {
+  if (pending_paints_.empty()) {
+    return std::nullopt;
+  }
+  auto* paints = MakeGarbageCollected<GCedHeapVector<Member<PendingPaint>>>(
+      std::move(pending_paints_));
+  return blink::BindOnce(&ContainerTiming::FlushTimingsOnFramePresented,
+                         WrapWeakPersistent(this), WrapPersistent(paints));
+}
+
+void ContainerTiming::FlushTimingsOnFramePresented(
+    GCedHeapVector<Member<PendingPaint>>* paints,
+    const base::TimeTicks&,
+    const DOMPaintTimingInfo& paint_timing_info,
+    uint64_t) {
+  for (const PendingPaint* paint : *paints) {
+    OnElementPainted(paint_timing_info, paint->element,
+                     paint->intersection_rect);
+  }
+  EmitPerformanceEntries();
 }
 
 void ContainerTiming::EmitPerformanceEntries() {
-  const bool can_report = CanReportToContainerTiming();
   for (const auto& pair : container_root_records_) {
-    Record* record = pair.value;
-
-    if (can_report) {
-      record->MaybeEmitPerformanceEntry(performance_.Get(), pair.key.Get());
-    }
+    pair.value->MaybeEmitPerformanceEntry(performance_.Get(), pair.key.Get());
   }
 }
 
@@ -221,6 +244,7 @@ void ContainerTiming::Trace(Visitor* visitor) const {
   Supplement<LocalDOMWindow>::Trace(visitor);
   visitor->Trace(performance_);
   visitor->Trace(container_root_records_);
+  visitor->Trace(pending_paints_);
   visitor->Trace(paint_attribution_tracker_);
 }
 

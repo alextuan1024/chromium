@@ -14,6 +14,7 @@
 #include "components/tracing/common/background_tracing_state_manager.h"
 #include "content/browser/tracing/traces_internals/traces_internals.mojom.h"
 #include "content/common/content_export.h"
+#include "content/public/common/child_process_id.h"
 #include "mojo/public/cpp/bindings/remote.h"
 #include "services/tracing/public/cpp/background_tracing/background_tracing_manager.h"
 #include "services/tracing/public/cpp/background_tracing/tracing_agent_observer_manager.h"
@@ -34,14 +35,6 @@ class BackgroundTracingManagerImpl
     : public tracing::BackgroundTracingManager,
       public tracing::TracingAgentObserverManager {
  public:
-  // Delegate to store and read application preferences for startup tracing, to
-  // isolate the feature for testing.
-  class PreferenceManager {
-   public:
-    virtual bool GetBackgroundStartupTracingEnabled() const = 0;
-    virtual ~PreferenceManager() = default;
-  };
-
   CONTENT_EXPORT static BackgroundTracingManagerImpl& GetInstance();
 
   CONTENT_EXPORT explicit BackgroundTracingManagerImpl(
@@ -53,7 +46,7 @@ class BackgroundTracingManagerImpl
       delete;
 
   // Callable from any thread.
-  static void ActivateForProcess(int child_process_id,
+  static void ActivateForProcess(content::ChildProcessId child_process_id,
                                  mojom::ChildProcess* child_process);
 
   // tracing::BackgroundTracingManager implementation:
@@ -82,25 +75,20 @@ class BackgroundTracingManagerImpl
 
   TracingDelegate* delegate() const { return delegate_.get(); }
 
-  // For tests
-  CONTENT_EXPORT void SetPreferenceManagerForTesting(
-      std::unique_ptr<PreferenceManager> preferences);
-
   void GenerateMetadataProto(
       perfetto::protos::pbzero::ChromeMetadataPacket* metadata,
       bool privacy_filtering_enabled);
 
  private:
   static void AddPendingAgent(
-      int child_process_id,
+      content::ChildProcessId child_process_id,
       mojo::PendingRemote<tracing::mojom::BackgroundTracingAgentProvider>
           provider);
-  static void ClearPendingAgent(int child_process_id);
+  static void ClearPendingAgent(content::ChildProcessId child_process_id);
   void MaybeConstructPendingAgents() override;
 
   std::unique_ptr<TracingDelegate> delegate_;
   std::unique_ptr<tracing::BackgroundTracingStateManager> state_manager_;
-  std::unique_ptr<PreferenceManager> preferences_;
 
   std::set<raw_ptr<tracing::mojom::BackgroundTracingAgent, SetExperimental>>
       agents_;
@@ -108,7 +96,8 @@ class BackgroundTracingManagerImpl
                    SetExperimental>>
       agent_observers_;
 
-  std::map<int, mojo::Remote<tracing::mojom::BackgroundTracingAgentProvider>>
+  std::map<content::ChildProcessId,
+           mojo::Remote<tracing::mojom::BackgroundTracingAgentProvider>>
       pending_agents_;
 
   base::WeakPtrFactory<BackgroundTracingManagerImpl> weak_factory_{this};

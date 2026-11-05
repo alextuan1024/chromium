@@ -4,15 +4,19 @@
 
 #import "ios/chrome/browser/intelligence/bwg/coordinator/gemini_entry_flow_coordinator.h"
 
+#import <utility>
+
 #import "base/notreached.h"
 #import "base/task/sequenced_task_runner.h"
 #import "base/time/time.h"
+#import "components/prefs/pref_service.h"
 #import "components/signin/public/base/signin_metrics.h"
 #import "components/signin/public/identity_manager/identity_manager.h"
 #import "ios/chrome/browser/authentication/account_menu/coordinator/account_menu_coordinator.h"
 #import "ios/chrome/browser/authentication/account_menu/public/account_menu_constants.h"
 #import "ios/chrome/browser/authentication/ui_bundled/continuation.h"
 #import "ios/chrome/browser/authentication/ui_bundled/signin/signin_coordinator.h"
+#import "ios/chrome/browser/intelligence/bwg/first_run/coordinator/gemini_first_run_coordinator.h"
 #import "ios/chrome/browser/intelligence/bwg/metrics/gemini_metrics.h"
 #import "ios/chrome/browser/intelligence/bwg/model/gemini_service.h"
 #import "ios/chrome/browser/intelligence/bwg/model/gemini_service_factory.h"
@@ -20,6 +24,8 @@
 #import "ios/chrome/browser/intelligence/bwg/model/gemini_tab_helper.h"
 #import "ios/chrome/browser/intelligence/bwg/utils/gemini_availability.h"
 #import "ios/chrome/browser/intelligence/bwg/utils/gemini_constants.h"
+#import "ios/chrome/browser/intelligence/bwg/utils/gemini_prefs.h"
+#import "ios/chrome/browser/intelligence/features/features.h"
 #import "ios/chrome/browser/shared/model/browser/browser.h"
 #import "ios/chrome/browser/shared/model/profile/profile_ios.h"
 #import "ios/chrome/browser/shared/model/web_state_list/web_state_list.h"
@@ -54,10 +60,13 @@ signin_metrics::AccessPoint AccessPointFromGeminiEntryPoint(
     case gemini::EntryPoint::AIHubSignInSheet:
     case gemini::EntryPoint::OmniboxChip:
     case gemini::EntryPoint::DirectOmniboxBadge:
+    case gemini::EntryPoint::ContextualCueChip:
+    case gemini::EntryPoint::ContextualCueInfobar:
       return signin_metrics::AccessPoint::kIosPageActionMenu;
     case gemini::EntryPoint::ExternalAppStoreEvent:
+      return signin_metrics::AccessPoint::kGeminiExternalAppStoreEvent;
     case gemini::EntryPoint::AppSwitcherAISummarization:
-      return signin_metrics::AccessPoint::kDeepLinkDefault;
+      return signin_metrics::AccessPoint::kAppSwitcherAISummarization;
     default:
       NOTREACHED();
   }
@@ -84,6 +93,9 @@ signin_metrics::AccessPoint AccessPointFromGeminiEntryPoint(
   std::unique_ptr<GeminiServiceObserverBridge> _geminiServiceObserverBridge;
   // Whether the pending policy check timed out.
   BOOL _policyCheckTimedOut;
+  // The First Run Experience coordinator presented when the user hasn't
+  // consented.
+  GeminiFirstRunCoordinator* _firstRunCoordinator;
 }
 
 #pragma mark - ChromeCoordinator
@@ -156,6 +168,7 @@ signin_metrics::AccessPoint AccessPointFromGeminiEntryPoint(
   [_signinCoordinator stop];
   _signinCoordinator = nil;
   [self stopAccountMenu];
+  [self stopFirstRunWithCompletion:nil];
   [super stop];
 }
 
@@ -171,7 +184,7 @@ signin_metrics::AccessPoint AccessPointFromGeminiEntryPoint(
   gemini::GeminiAvailabilityResult availability = gemini::IsGeminiAvailable(
       _startupState.entryPoint, self.browser->GetProfile(), activeWebState);
   if (!availability.ineligibility_reasons.has_value()) {
-    [self startGeminiIfPageEligible];
+    [self startGeminiFREIfPageEligible];
     return;
   }
 
@@ -181,6 +194,11 @@ signin_metrics::AccessPoint AccessPointFromGeminiEntryPoint(
 #pragma mark - GeminiServiceObserving
 
 - (void)geminiEligibilityDidChange {
+  GeminiService* geminiService =
+      GeminiServiceFactory::GetForProfile(self.browser->GetProfile());
+  if (!geminiService || geminiService->IsWorkspacePolicyCheckPending()) {
+    return;
+  }
   _geminiServiceObserverBridge.reset();
   [self evaluateEligibilityAndRoute];
 }
@@ -235,19 +253,19 @@ signin_metrics::AccessPoint AccessPointFromGeminiEntryPoint(
   }
   __weak __typeof(self) weakSelf = self;
   _signinCoordinator.signinCompletion =
-      ^(SigninCoordinator* coordinator, SigninCoordinatorResult result,
-        id<SystemIdentity> identity) {
-        [weakSelf signinDidFinishWithResult:result];
+      ^(SigninCoordinator* coordinator,
+        SigninCoordinatorResultOrIdentity result) {
+        [weakSelf signinDidFinishWithResult:std::move(result)];
       };
   [_signinCoordinator start];
 }
 
 // Called when sign-in completes or is cancelled.
-- (void)signinDidFinishWithResult:(SigninCoordinatorResult)result {
+- (void)signinDidFinishWithResult:(SigninCoordinatorResultOrIdentity)result {
   [_signinCoordinator stop];
   _signinCoordinator = nil;
 
-  if (result != SigninCoordinatorResultSuccess) {
+  if (!result.has_value()) {
     [self finishWithResult:kGeminiEntryFlowResultCancelled];
     return;
   }
@@ -259,7 +277,9 @@ signin_metrics::AccessPoint AccessPointFromGeminiEntryPoint(
 // Completes the flow and calls the completion block.
 - (void)finishWithResult:(GeminiEntryFlowResult)result {
   if (_completion) {
-    _completion(result);
+    GeminiEntryFlowCompletion completion = _completion;
+    _completion = nil;
+    completion(result);
   }
 }
 
@@ -305,7 +325,7 @@ signin_metrics::AccessPoint AccessPointFromGeminiEntryPoint(
 
   // Eligible — check page availability.
   if (!availability.ineligibility_reasons.has_value()) {
-    [self startGeminiIfPageEligible];
+    [self startGeminiFREIfPageEligible];
     return;
   }
 
@@ -321,15 +341,25 @@ signin_metrics::AccessPoint AccessPointFromGeminiEntryPoint(
   // Gemini policy restriction (workspace) — present account menu
   // for switching accounts.
   if (availability.ineligibility_reasons->workspace) {
-    [self presentAccountMenu];
-    return;
+    // Policy checks are performed asynchronously, so sign-in state could have
+    // changed since the flow was triggered.
+    AuthenticationService* authService =
+        AuthenticationServiceFactory::GetForProfile(self.browser->GetProfile());
+    if (authService && authService->SigninEnabled() &&
+        authService->HasPrimaryIdentity()) {
+      [self presentAccountMenu];
+      return;
+    } else {
+      [self finishWithResult:kGeminiEntryFlowResultCancelled];
+    }
   }
 
   // Remaining ineligibility (account capability or other).
   [self finishWithResult:kGeminiEntryFlowResultUnknown];
 }
 
-// Presents the account menu for switching to a different account.
+// Presents the account menu for switching to a different account. Assumes
+// sign-in is enabled and there is a primary account.
 - (void)presentAccountMenu {
   _accountMenuCoordinator = [[AccountMenuCoordinator alloc]
       initWithBaseViewController:self.baseViewController
@@ -347,8 +377,8 @@ signin_metrics::AccessPoint AccessPointFromGeminiEntryPoint(
   _accountMenuCoordinator = nil;
 }
 
-// Starts the Gemini session if the current page is eligible.
-- (void)startGeminiIfPageEligible {
+// Evaluates page eligibility and proceeds to the consent check if eligible.
+- (void)startGeminiFREIfPageEligible {
   web::WebState* activeWebState =
       self.browser->GetWebStateList()->GetActiveWebState();
 
@@ -368,8 +398,91 @@ signin_metrics::AccessPoint AccessPointFromGeminiEntryPoint(
     return;
   }
 
-  // All checks passed.
-  [self finishWithResult:kGeminiEntryFlowResultSuccess];
+  [self startGeminiIfHasConsent];
+}
+
+// Starts Gemini if the user has consented, or presents the First Run Experience
+// if needed.
+- (void)startGeminiIfHasConsent {
+  bool shouldShowFirstRun = ![self hasCompletedFirstRun];
+  RecordGeminiEntryPointClick(_startupState.entryPoint, shouldShowFirstRun);
+  [self recordInvocationPageType];
+
+  bool skipConsent = BWGPromoConsentVariationsParam() ==
+                     BWGPromoConsentVariations::kSkipConsent;
+  _startupState.isFirstSession = shouldShowFirstRun && !skipConsent;
+
+  if (!_startupState.isFirstSession) {
+    [self finishWithResult:kGeminiEntryFlowResultSuccess];
+    return;
+  }
+
+  [self startGeminiFirstRun];
+}
+
+// Records the current page type when Gemini is invoked.
+- (void)recordInvocationPageType {
+  web::WebState* activeWebState =
+      self.browser->GetWebStateList()->GetActiveWebState();
+  IOSGeminiInvocationPageType pageType =
+      IOSGeminiInvocationPageType::kNoWebState;
+  GeminiTabHelper* tabHelper =
+      activeWebState ? GeminiTabHelper::FromWebState(activeWebState) : nullptr;
+  if (tabHelper) {
+    pageType = tabHelper->GetCurrentPageType();
+  }
+  // TODO(crbug.com/565740993): Make sure the enum types are complete and
+  // uptodate.
+  RecordGeminiInvocationPageType(pageType);
+}
+
+// Returns whether the user has completed the First Run Experience.
+- (BOOL)hasCompletedFirstRun {
+  PrefService* prefService = self.browser->GetProfile()->GetPrefs();
+
+  // If we are forcing the FRE, reset the consent pref and return false.
+  // TODO(crbug.com/563445673): Don't clear the pref.
+  if (BWGPromoConsentVariationsParam() ==
+      BWGPromoConsentVariations::kForceFRE) {
+    gemini::ResetGeminiConsent(prefService);
+    return NO;
+  }
+
+  return gemini::DidUserConsentToGemini(prefService);
+}
+
+// Starts the First Run Experience coordinator.
+- (void)startGeminiFirstRun {
+  __weak __typeof(self) weakSelf = self;
+  _firstRunCoordinator = [[GeminiFirstRunCoordinator alloc]
+      initWithBaseViewController:self.baseViewController
+                         browser:self.browser
+                  fromEntryPoint:_startupState.entryPoint
+                    firstRunType:GeminiFirstRunType::kNewUser
+               completionHandler:^(BOOL success) {
+                 [weakSelf handleFirstRunCompletion:success];
+               }];
+  [_firstRunCoordinator start];
+}
+
+// Handles completion of the First Run Experience.
+- (void)handleFirstRunCompletion:(BOOL)success {
+  if (!_firstRunCoordinator) {
+    return;
+  }
+  __weak __typeof(self) weakSelf = self;
+  GeminiEntryFlowResult result =
+      success ? kGeminiEntryFlowResultSuccess : kGeminiEntryFlowResultNoConsent;
+  [self stopFirstRunWithCompletion:^{
+    [weakSelf finishWithResult:result];
+  }];
+}
+
+// Stops and releases the First Run coordinator.
+- (void)stopFirstRunWithCompletion:(ProceduralBlock)completion {
+  GeminiFirstRunCoordinator* firstRunCoordinator = _firstRunCoordinator;
+  _firstRunCoordinator = nil;
+  [firstRunCoordinator stopWithCompletion:completion];
 }
 
 // Shows an ineligibility snackbar if showSnackbarOnCompletion is set.

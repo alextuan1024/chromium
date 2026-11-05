@@ -11,6 +11,7 @@
 
 #import "base/functional/callback.h"
 #import "base/functional/callback_helpers.h"
+#import "base/ios/block_types.h"
 #import "base/memory/raw_ptr.h"
 #import "base/memory/weak_ptr.h"
 #import "base/run_loop.h"
@@ -26,6 +27,7 @@
 #import "components/password_manager/ios/actor_login/actor_login_tool_delegate.h"
 #import "components/password_manager/ios/shared_password_controller.h"
 #import "ios/chrome/browser/intelligence/actor/public/actor_task_intervention_delegate.h"
+#import "ios/chrome/browser/intelligence/actor/test/fake_actor_task_intervention_delegate.h"
 #import "ios/chrome/browser/intelligence/actor/tools/model/actor_form_suggestion.h"
 #import "ios/chrome/browser/intelligence/actor/tools/model/actor_task_form_filling_handler.h"
 #import "ios/chrome/browser/intelligence/actor/tools/model/actor_tool.h"
@@ -47,37 +49,6 @@
 #import "testing/gtest/include/gtest/gtest.h"
 #import "testing/platform_test.h"
 #import "third_party/ocmock/OCMock/OCMock.h"
-
-// A fake implementation of ActorTaskInterventionDelegate.
-@interface FakeActorTaskInterventionDelegate
-    : NSObject <ActorTaskInterventionDelegate>
-@property(nonatomic, assign) BOOL selectFromSuggestionsCalled;
-@property(nonatomic, strong) NSArray<ActorFormSuggestion*>* promptedSuggestions;
-@end
-
-@implementation FakeActorTaskInterventionDelegate {
-  void (^_completionHandler)(ActorFormSuggestion*, BOOL);
-}
-
-- (void)actorTask:(actor::ActorTaskId)taskID
-    selectFromSuggestions:(NSArray<ActorFormSuggestion*>*)suggestions
-        completionHandler:
-            (void (^)(ActorFormSuggestion* selectedSuggestion,
-                      BOOL shouldStorePermission))completionHandler {
-  _selectFromSuggestionsCalled = YES;
-  _promptedSuggestions = suggestions;
-  _completionHandler = [completionHandler copy];
-}
-
-- (void)runCompletionWithSuggestion:(ActorFormSuggestion*)selectedSuggestion
-              shouldStorePermission:(BOOL)shouldStorePermission {
-  if (_completionHandler) {
-    void (^_completion)(ActorFormSuggestion*, BOOL) = _completionHandler;
-    _completionHandler = nil;
-    _completion(selectedSuggestion, shouldStorePermission);
-  }
-}
-@end
 
 namespace actor {
 
@@ -242,7 +213,7 @@ class AttemptLoginToolTest : public PlatformTest {
   void TearDown() override {
     [mock_password_controller_ stopMocking];
     mock_password_controller_ = nil;
-    captured_reparse_completion_ = nil;
+    captured_no_forms_found_handler_ = nil;
     PlatformTest::TearDown();
   }
 
@@ -266,7 +237,7 @@ class AttemptLoginToolTest : public PlatformTest {
   }
 
   // Stubs SharedPasswordController on `web_state` to intercept page reparse
-  // requests and capture the completion handler.
+  // requests and capture the no-forms-found handler.
   void MockReparseForms(web::WebState* web_state) {
     SharedPasswordController* controller =
         PasswordTabHelper::FromWebState(web_state)
@@ -274,36 +245,49 @@ class AttemptLoginToolTest : public PlatformTest {
     mock_password_controller_ = OCMPartialMock(controller);
 
     OCMStub([mock_password_controller_
-                actorLoginToolFindsFormsInWebState:(web::WebState*)
-                                                       [OCMArg anyPointer]
-                                 completionHandler:[OCMArg any]])
+                actorLoginToolRescansFormsInWebState:(web::WebState*)
+                                                         [OCMArg anyPointer]
+                                 noFormsFoundHandler:[OCMArg any]])
         .andDo(^(NSInvocation* invocation) {
           reparse_call_count_++;
-          __unsafe_unretained void (^handler)(BOOL) = nil;
+          __unsafe_unretained ProceduralBlock handler = nil;
           [invocation getArgument:&handler atIndex:3];
-          captured_reparse_completion_ = [handler copy];
+          captured_no_forms_found_handler_ = [handler copy];
         });
   }
 
-  // Completes the pending reparse request with `forms_found`. If `forms_found`
-  // is true and `tool` is provided, also notifies `tool` that a password form
-  // was parsed.
+  // Completes the pending reparse request. When `forms_found` is true the
+  // production delegate deliberately stays silent and the result is delivered
+  // through the `PasswordFormCache` observer, so only `tool` is notified.
+  // Otherwise the captured no-forms-found handler is invoked.
   [[nodiscard]] testing::AssertionResult CompleteReparse(
       BOOL forms_found,
       AttemptLoginTool* tool = nullptr) {
-    if (!captured_reparse_completion_) {
+    if (!captured_no_forms_found_handler_) {
       return testing::AssertionFailure()
-             << "captured_reparse_completion_ is nil (no pending reparse "
+             << "captured_no_forms_found_handler_ is nil (no pending reparse "
                 "request).";
     }
-    std::exchange(captured_reparse_completion_, nil)(forms_found);
-    if (forms_found && tool) {
-      tool->OnPasswordFormParsed(nullptr);
+    if (forms_found) {
+      captured_no_forms_found_handler_ = nil;
+      if (tool) {
+        tool->OnPasswordFormParsed(nullptr);
+      }
+    } else {
+      std::exchange(captured_no_forms_found_handler_, nil)();
     }
     return testing::AssertionSuccess();
   }
 
   int reparse_call_count() const { return reparse_call_count_; }
+
+  // Returns whether `tool` is registered with the `PasswordFormCache` or any of
+  // its `PasswordFormManager`s. The cast disambiguates `IsInObserverList()`,
+  // which is also inherited through `WebStateObserver`.
+  static bool IsObservingFormCache(AttemptLoginTool* tool) {
+    return static_cast<password_manager::PasswordFormManagerObserver*>(tool)
+        ->IsInObserverList();
+  }
 
  private:
   base::test::TaskEnvironment task_environment_;
@@ -315,7 +299,7 @@ class AttemptLoginToolTest : public PlatformTest {
   raw_ptr<ActorTaskFormFillingHandler> form_filling_handler_ptr_ = nullptr;
   FakeActorTaskInterventionDelegate* intervention_delegate_;
   id mock_password_controller_ = nil;
-  void (^captured_reparse_completion_)(BOOL) = nil;
+  ProceduralBlock captured_no_forms_found_handler_ = nil;
   int reparse_call_count_ = 0;
 };
 
@@ -647,6 +631,8 @@ TEST_F(AttemptLoginToolTest, Execute_NoSigninForm_ReparseSuccess_RetriesLogin) {
   tool->Execute(future.GetCallback());
 
   EXPECT_FALSE(future.IsReady());
+  // The tool observes the `PasswordFormCache` for the rescan result.
+  EXPECT_TRUE(IsObservingFormCache(tool.get()));
 
   // Verifies that WasShown called during an active reparse is ignored and does
   // not trigger a premature login attempt.
@@ -660,6 +646,7 @@ TEST_F(AttemptLoginToolTest, Execute_NoSigninForm_ReparseSuccess_RetriesLogin) {
   EXPECT_EQ(future.Get().code(), mojom::ActionResultCode::kOk);
   EXPECT_EQ(fake_actor_login_service()->attempted_credentials_.size(), 2u);
   EXPECT_EQ(reparse_call_count(), 1);
+  EXPECT_FALSE(IsObservingFormCache(tool.get()));
 }
 
 // Tests that when a reparse returns NO (no forms found), the tool exits with
@@ -694,6 +681,7 @@ TEST_F(AttemptLoginToolTest, Execute_NoSigninForm_ReparseNoFormsFound) {
   EXPECT_EQ(future.Get().code(), mojom::ActionResultCode::kLoginNotLoginPage);
   EXPECT_EQ(fake_actor_login_service()->attempted_credentials_.size(), 1u);
   EXPECT_EQ(reparse_call_count(), 1);
+  EXPECT_FALSE(IsObservingFormCache(tool.get()));
 }
 
 // Tests that when form reparse does not complete within the timeout, the timer
@@ -836,8 +824,10 @@ TEST_F(AttemptLoginToolTest, Execute_NoSigninForm_CancelDuringReparse) {
   tool->Execute(future.GetCallback());
 
   EXPECT_FALSE(future.IsReady());
+  EXPECT_TRUE(IsObservingFormCache(tool.get()));
 
   tool->Cancel();
+  EXPECT_FALSE(IsObservingFormCache(tool.get()));
 
   // Invoke completion after cancellation.
   ASSERT_TRUE(CompleteReparse(YES, tool.get()));
@@ -848,6 +838,37 @@ TEST_F(AttemptLoginToolTest, Execute_NoSigninForm_CancelDuringReparse) {
   // Verify only the 1 initial attempt happened and no crash occurred.
   EXPECT_EQ(fake_actor_login_service()->attempted_credentials_.size(), 1u);
   EXPECT_EQ(reparse_call_count(), 1);
+}
+
+// Tests that destroying the tool while waiting for reparse, without calling
+// `Cancel()`, unregisters it from the `PasswordFormCache`.
+TEST_F(AttemptLoginToolTest, Execute_NoSigninForm_DestroyedDuringReparse) {
+  optimization_guide::proto::AttemptLoginAction action;
+  web::FakeWebState* web_state = CreateAndInsertWebState();
+  action.set_tab_id(web_state->GetUniqueIdentifier().identifier());
+
+  auto result = CreateToolAndValidate(action, web_state);
+  ASSERT_TRUE(result.has_value());
+  std::unique_ptr<AttemptLoginTool> tool = std::move(result.value());
+
+  actor_login::Credential cred;
+  cred.id = actor_login::Credential::Id(123);
+  cred.has_persistent_permission = true;
+  fake_actor_login_service()->credentials_ = {cred};
+
+  fake_actor_login_service()->SetSequentialResults(
+      {actor_login::LoginStatusResult::kErrorNoSigninForm});
+
+  MockReparseForms(web_state);
+
+  base::test::TestFuture<ToolExecutionResult> future;
+  tool->Execute(future.GetCallback());
+
+  EXPECT_FALSE(future.IsReady());
+  ASSERT_TRUE(IsObservingFormCache(tool.get()));
+
+  // `~AttemptLoginTool()` DCHECKs that the tool left every observer list.
+  tool.reset();
 }
 
 // Tests that if the WebState is destroyed while waiting for reparse, execution
@@ -882,6 +903,18 @@ TEST_F(AttemptLoginToolTest,
 
   EXPECT_EQ(future.Get().code(), mojom::ActionResultCode::kTabWentAway);
   EXPECT_EQ(reparse_call_count(), 1);
+}
+
+// Tests that DebugString returns the expected string.
+TEST_F(AttemptLoginToolTest, DebugString) {
+  optimization_guide::proto::AttemptLoginAction action;
+  web::FakeWebState* web_state = CreateAndInsertWebState();
+  action.set_tab_id(web_state->GetUniqueIdentifier().identifier());
+
+  auto result = CreateToolAndValidate(action, web_state);
+  ASSERT_TRUE(result.has_value());
+  std::unique_ptr<AttemptLoginTool> tool = std::move(result.value());
+  EXPECT_EQ(tool->DebugString(), "AttemptLoginTool");
 }
 
 }  // namespace actor

@@ -22,6 +22,8 @@
 
 #include "base/command_line.h"
 #include "base/compiler_specific.h"
+#include "base/containers/span.h"
+#include "base/containers/to_vector.h"
 #include "base/functional/callback.h"
 #include "base/functional/callback_helpers.h"
 #include "base/location.h"
@@ -71,11 +73,6 @@
 using base::Time;
 
 namespace history {
-
-void EmitVisitedLinksAdditionCausedBy404Uma(bool was_addition_caused_by_404) {
-  UMA_HISTOGRAM_BOOLEAN("History.VisitedLinks.AdditionCausedBy404",
-                        was_addition_caused_by_404);
-}
 
 // These values are logged to UMA. Entries should not be renumbered and
 // numeric values should never be reused. Please keep in sync with
@@ -381,7 +378,7 @@ base::CancelableTaskTracker::TaskId HistoryService::AddVisitsToCluster(
 }
 
 base::CancelableTaskTracker::TaskId HistoryService::UpdateClusterTriggerability(
-    const std::vector<history::Cluster>& clusters,
+    const std::vector<Cluster>& clusters,
     base::OnceClosure callback,
     base::CancelableTaskTracker* tracker) {
   DCHECK(backend_runner_) << "History service being called after cleanup";
@@ -406,7 +403,7 @@ base::CancelableTaskTracker::TaskId HistoryService::HideVisits(
 }
 
 base::CancelableTaskTracker::TaskId HistoryService::UpdateClusterVisit(
-    history::ClusterVisit cluster_visit,
+    ClusterVisit cluster_visit,
     base::OnceClosure callback,
     base::CancelableTaskTracker* tracker) {
   DCHECK(backend_runner_) << "History service being called after cleanup";
@@ -436,6 +433,20 @@ base::CancelableTaskTracker::TaskId HistoryService::GetMostRecentClusters(
       std::move(callback));
 }
 
+base::CancelableTaskTracker::TaskId HistoryService::GetJourney(
+    const std::string& journey_id,
+    GetJourneyCallback callback,
+    base::CancelableTaskTracker* tracker) {
+  TRACE_EVENT0("browser", "HistoryService::GetJourney");
+  CHECK(backend_runner_) << "History service being called after cleanup";
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  return tracker->PostTaskAndReplyWithResult(
+      GetBackendTaskRunner(), FROM_HERE,
+      base::BindOnce(&HistoryBackend::GetJourneyWithVisits, history_backend_,
+                     journey_id),
+      std::move(callback));
+}
+
 base::CancelableTaskTracker::TaskId HistoryService::GetAllJourneys(
     GetAllJourneysCallback callback,
     base::CancelableTaskTracker* tracker) {
@@ -445,6 +456,21 @@ base::CancelableTaskTracker::TaskId HistoryService::GetAllJourneys(
   return tracker->PostTaskAndReplyWithResult(
       GetBackendTaskRunner(), FROM_HERE,
       base::BindOnce(&HistoryBackend::GetAllJourneysWithVisits,
+                     history_backend_),
+      std::move(callback));
+}
+
+base::CancelableTaskTracker::TaskId
+HistoryService::GetUnresolvableJourneysCountForFishfood(
+    GetUnresolvableJourneysCountForFishfoodCallback callback,
+    base::CancelableTaskTracker* tracker) {
+  TRACE_EVENT0("browser",
+               "HistoryService::GetUnresolvableJourneysCountForFishfood");
+  CHECK(backend_runner_) << "History service being called after cleanup";
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  return tracker->PostTaskAndReplyWithResult(
+      GetBackendTaskRunner(), FROM_HERE,
+      base::BindOnce(&HistoryBackend::GetUnresolvableJourneysCountForFishfood,
                      history_backend_),
       std::move(callback));
 }
@@ -703,20 +729,11 @@ void HistoryService::AddPartitionedVisitedLinks(
       VisitedLink link = {redirect, net::SchemefulSite(*args.top_level_url),
                           url::Origin::Create(*args.frame_url)};
       visit_delegate_->AddVisitedLink(link);
-      // Redirects for chains ending in a 404 are saved to History because the
-      // final 404 visit is saved. Therefore, VisitedLink hashtable entries
-      // for redirects in chains ending in a 404 are caused by the 404 visit.
-      EmitVisitedLinksAdditionCausedBy404Uma(
-          /*was_addition_caused_by_404=*/args.response_code_category ==
-          VisitResponseCodeCategory::k404);
     }
   } else {
     VisitedLink link = {args.url, net::SchemefulSite(*args.top_level_url),
                         url::Origin::Create(*args.frame_url)};
     visit_delegate_->AddVisitedLink(link);
-    EmitVisitedLinksAdditionCausedBy404Uma(
-        /*was_addition_caused_by_404=*/args.response_code_category ==
-        VisitResponseCodeCategory::k404);
   }
 }
 
@@ -952,7 +969,7 @@ base::CancelableTaskTracker::TaskId HistoryService::GetFaviconsForURL(
 
 base::CancelableTaskTracker::TaskId HistoryService::GetLargestFaviconForURL(
     const GURL& page_url,
-    const std::vector<favicon_base::IconTypeSet>& icon_types,
+    base::span<const favicon_base::IconTypeSet> icon_types,
     int minimum_size_in_pixels,
     favicon_base::FaviconRawBitmapCallback callback,
     base::CancelableTaskTracker* tracker) {
@@ -961,7 +978,8 @@ base::CancelableTaskTracker::TaskId HistoryService::GetLargestFaviconForURL(
   return tracker->PostTaskAndReplyWithResult(
       GetBackendTaskRunner(), FROM_HERE,
       base::BindOnce(&HistoryBackend::GetLargestFaviconForURL, history_backend_,
-                     page_url, icon_types, minimum_size_in_pixels),
+                     page_url, base::ToVector(icon_types),
+                     minimum_size_in_pixels),
       std::move(callback));
 }
 
@@ -1741,7 +1759,7 @@ void HistoryService::DeleteLocalAndRemoteHistoryBetween(
     base::CancelableTaskTracker* tracker) {
   // TODO(crbug.com/41439580): This should be factored out into a separate class
   // that dispatches deletions to the proper places.
-  if (web_history) {
+  if (web_history && web_history->IsEnabled()) {
     delete_directive_handler_->CreateTimeRangeDeleteDirective(begin_time,
                                                               end_time);
 
@@ -1787,7 +1805,7 @@ void HistoryService::DeleteLocalAndRemoteUrl(WebHistoryService* web_history,
   DCHECK(url.is_valid());
   // TODO(crbug.com/41439580): This should be factored out into a separate class
   // that dispatches deletions to the proper places.
-  if (web_history) {
+  if (web_history && web_history->IsEnabled()) {
     delete_directive_handler_->CreateUrlDeleteDirective(url);
 
     // Attempt online deletion from the history server, but ignore the result.

@@ -5,6 +5,7 @@
 #import "ios/chrome/app/main_controller.h"
 
 #import <memory>
+#import <optional>
 #import <utility>
 
 #import "base/apple/bundle_locations.h"
@@ -25,6 +26,8 @@
 #import "base/strings/sys_string_conversions.h"
 #import "base/task/bind_post_task.h"
 #import "base/task/sequenced_task_runner.h"
+#import "base/time/time.h"
+#import "base/timer/elapsed_timer.h"
 #import "base/timer/timer.h"
 #import "base/values.h"
 #import "components/application_locale_storage/application_locale_storage.h"
@@ -50,13 +53,10 @@
 #import "ios/chrome/app/application_delegate/app_state.h"
 #import "ios/chrome/app/application_delegate/memory_warning_helper.h"
 #import "ios/chrome/app/application_delegate/metrics_mediator.h"
-#import "ios/chrome/app/background_mode_buildflags.h"
 #import "ios/chrome/app/background_refresh/background_refresh_app_agent.h"
 #import "ios/chrome/app/background_refresh/discover_feed_provider.h"
 #import "ios/chrome/app/background_refresh/test_refresher.h"
-#if BUILDFLAG(IOS_BACKGROUND_CONTINUED_PROCESSING_ENABLED)
 #import "ios/chrome/app/background_task/background_continued_processing_app_agent.h"
-#endif
 #import "ios/chrome/app/blocking_scene_commands.h"
 #import "ios/chrome/app/change_profile_animator.h"
 #import "ios/chrome/app/change_profile_commands.h"
@@ -100,6 +100,7 @@
 #import "ios/chrome/browser/device_orientation/ui_bundled/scoped_force_portrait_orientation.h"
 #import "ios/chrome/browser/discover_feed/model/discover_feed_app_agent.h"
 #import "ios/chrome/browser/download/model/download_directory_util.h"
+#import "ios/chrome/browser/enterprise/cloud_content_scanning/model/background_cloud_scanner_manager.h"
 #import "ios/chrome/browser/first_run/model/first_run.h"
 #import "ios/chrome/browser/first_run/public/first_run_util.h"
 #import "ios/chrome/browser/intelligence/features/features.h"
@@ -119,6 +120,7 @@
 #import "ios/chrome/browser/sessions/model/session_restoration_service_factory.h"
 #import "ios/chrome/browser/sessions/model/session_util.h"
 #import "ios/chrome/browser/share_extension/model/share_extension_controller.h"
+#import "ios/chrome/browser/shared/coordinator/scene/chrome_connection_options.h"
 #import "ios/chrome/browser/shared/coordinator/scene/scene_delegate.h"
 #import "ios/chrome/browser/shared/coordinator/scene/scene_state.h"
 #import "ios/chrome/browser/shared/model/application_context/application_context.h"
@@ -206,6 +208,9 @@ NSString* const kDeleteChooseFile = @"DeleteChooseFile";
 // Constants for deferred deletion of leftover temporary passwords files.
 NSString* const kDeleteTempPasswords = @"DeleteTempPasswords";
 
+// Constants for deferred deletion of leftover temporary enterprise scan files.
+NSString* const kDeleteTempEnterpriseScan = @"DeleteTempEnterpriseScan";
+
 // Constants for deferred UMA logging of existing Siri User shortcuts.
 NSString* const kLogSiriShortcuts = @"LogSiriShortcuts";
 
@@ -240,7 +245,10 @@ void RegisterComponentsForUpdate() {
       GetApplicationContext()->GetComponentUpdateService();
   DCHECK(cus);
   RegisterOnDeviceHeadSuggestComponent(
-      cus, GetApplicationContext()->GetApplicationLocaleStorage()->Get());
+      cus, std::string(GetApplicationContext()
+                           ->GetApplicationLocaleStorage()
+                           ->GetTag()
+                           .tag_string()));
   RegisterSafetyTipsComponent(cus);
   RegisterOptimizationHintsComponent(cus);
   if (IsActorEnabled()) {
@@ -316,7 +324,7 @@ std::string GetProfileNameFromTask(SceneState* scene_state,
 std::string GetProfileNameForChoice(ProfileChoice choice,
                                     std::string_view scene_state_id,
                                     SceneState* scene_state,
-                                    UISceneConnectionOptions* options,
+                                    ChromeConnectionOptions* options,
                                     TaskOrchestrator* orchestrator,
                                     ProfileManagerIOS* manager,
                                     ProfileAttributesStorageIOS* storage,
@@ -387,6 +395,9 @@ std::string GetProfileNameForChoice(ProfileChoice choice,
 // Schedule the deletion of the temporary passwords files that might
 // be left over from incomplete export operations.
 - (void)scheduleDeleteTempPasswordsDirectory;
+// Schedules the deletion of temporary enterprise scan files that might be
+// left over from the last time Chrome was run.
+- (void)scheduleDeleteTempEnterpriseScanDirectory;
 // Schedule the start of memory experimentation.
 - (void)scheduleMemoryExperimentation;
 // Schedules the removal of files that were scheduled for automatic deletion and
@@ -404,7 +415,6 @@ std::string GetProfileNameForChoice(ProfileChoice choice,
 // background initilisation that are required, and then transition to the
 // next stage.
 - (void)startUpBrowserBackgroundInitialization;
-
 @end
 
 @implementation MainController {
@@ -468,6 +478,14 @@ std::string GetProfileNameForChoice(ProfileChoice choice,
   // entered the background at least once since start up.
   BOOL _isColdStart;
 
+  // The initial launch reason for the application process. Unset if not yet
+  // determined.
+  std::optional<IOSLaunchReason> _launchReason;
+
+  // Duration between process creation and the call to main(), or std::nullopt
+  // if unavailable or invalid.
+  std::optional<base::TimeDelta> _preMainDuration;
+
   // True if the launch metrics have already been recorded.
   BOOL _launchMetricsRecorded;
 
@@ -499,11 +517,14 @@ std::string GetProfileNameForChoice(ProfileChoice choice,
 // Defined by public protocols.
 // - StartupInformation
 @synthesize isColdStart = _isColdStart;
-@synthesize appLaunchTime = _appLaunchTime;
+@synthesize appLaunchTimer = _appLaunchTimer;
+@synthesize preMainDuration = _preMainDuration;
 @synthesize isFirstRun = _isFirstRun;
 @synthesize isTerminating = _isTerminating;
 @synthesize didFinishLaunchingTime = _didFinishLaunchingTime;
 @synthesize firstSceneConnectionTime = _firstSceneConnectionTime;
+@synthesize coldStartFromMainDuration = _coldStartFromMainDuration;
+@synthesize startupMemoryFootprintBytes = _startupMemoryFootprintBytes;
 
 #pragma mark - Application lifecycle
 
@@ -521,7 +542,8 @@ std::string GetProfileNameForChoice(ProfileChoice choice,
 }
 
 - (void)startUpBrowserBasicInitialization {
-  _appLaunchTime = IOSChromeMain::StartTime();
+  _appLaunchTimer = IOSChromeMain::StartTimer();
+  _preMainDuration = IOSChromeMain::PreMainDuration();
   _isColdStart = YES;
   UMA_HISTOGRAM_BOOLEAN("IOS.Process.ActivePrewarm",
                         base::ios::IsApplicationPreWarmed());
@@ -540,6 +562,21 @@ std::string GetProfileNameForChoice(ProfileChoice choice,
   [self.appState.appCommandDispatcher
       startDispatchingToTarget:self
                    forProtocol:@protocol(ChangeProfileCommands)];
+}
+
+- (std::optional<IOSLaunchReason>)launchReason {
+  return _launchReason;
+}
+
+- (BOOL)isLaunchedInBackground {
+  return _launchReason.has_value() && IsBackgroundLaunchReason(*_launchReason);
+}
+
+- (void)maybeSetLaunchReason:(IOSLaunchReason)launchReason {
+  if (!_launchReason.has_value()) {
+    _launchReason = launchReason;
+    base::UmaHistogramEnumeration("Startup.IOSLaunchReason", *_launchReason);
+  }
 }
 
 - (void)startUpBrowserBackgroundInitialization {
@@ -627,7 +664,9 @@ std::string GetProfileNameForChoice(ProfileChoice choice,
   // TODO(crbug.com/462018636): Remove once the feature is fully launched.
   SaveEnableNewStartupFlowForNextStart();
 
-  [self.appState queueTransitionToNextInitStage];
+  if (!tests_hook::ShouldPauseStartupAtBackgroundStage()) {
+    [self.appState queueTransitionToNextInitStage];
+  }
 }
 
 // This initialization must happen before any windows are created.
@@ -1002,6 +1041,7 @@ std::string GetProfileNameForChoice(ProfileChoice choice,
 #if BUILDFLAG(IOS_CREDENTIAL_PROVIDER_ENABLED)
   [self.appState addAgent:[[CredentialProviderMigratorAppAgent alloc] init]];
 #endif
+  [self.appState addAgent:[[BackgroundContinuedProcessingAppAgent alloc] init]];
   [self.appState addAgent:[[DefaultBrowserBannerPromoAppAgent alloc] init]];
 }
 
@@ -1139,7 +1179,8 @@ std::string GetProfileNameForChoice(ProfileChoice choice,
   // not be possible to determine here whether they will be run (e.g. if
   // the depend on the state of a profile).
   if (_isFirstRun) {
-    _scopedForceOrientation = ForcePortraitOrientationOnIphone(_appState);
+    _scopedForceOrientation =
+        std::make_unique<ScopedForcePortraitOrientation>(_appState);
   }
 
   // Create app state agents.
@@ -1157,10 +1198,6 @@ std::string GetProfileNameForChoice(ProfileChoice choice,
 
   [refreshAgent addAppRefreshProvider:[[TestRefresher alloc]
                                           initWithAppState:self.appState]];
-
-#if BUILDFLAG(IOS_BACKGROUND_CONTINUED_PROCESSING_ENABLED)
-  [appState addAgent:[[BackgroundContinuedProcessingAppAgent alloc] init]];
-#endif
 
   // TODO(crbug.com/355142171): Remove the DiscoverFeedAppAgent.
   [appState addAgent:[[DiscoverFeedAppAgent alloc] init]];
@@ -1425,6 +1462,7 @@ std::string GetProfileNameForChoice(ProfileChoice choice,
   [self scheduleDeleteTempDownloadsDirectory];
   [self scheduleDeleteTempPasswordsDirectory];
   [self scheduleDeleteTempChooseFileDirectory];
+  [self scheduleDeleteTempEnterpriseScanDirectory];
   [self scheduleLogSiriShortcuts];
   [self scheduleStartupAttemptReset];
   [self startFreeMemoryMonitoring];
@@ -1462,6 +1500,14 @@ std::string GetProfileNameForChoice(ProfileChoice choice,
       enqueueBlockNamed:kDeleteTempPasswords
                   block:^{
                     password_manager::DeletePasswordsDirectory();
+                  }];
+}
+
+- (void)scheduleDeleteTempEnterpriseScanDirectory {
+  [_appState.deferredRunner
+      enqueueBlockNamed:kDeleteTempEnterpriseScan
+                  block:^{
+                    enterprise_connectors::DeleteTempEnterpriseScanDirectory();
                   }];
 }
 
@@ -1687,13 +1733,13 @@ std::string GetProfileNameForChoice(ProfileChoice choice,
 
     // Pretend the scene has been disconnected, then reconnect it.
     const SceneActivationLevel savedLevel = sceneState.activationLevel;
-    UISceneConnectionOptions* savedOptions = sceneState.connectionOptions;
+    ChromeConnectionOptions* savedOptions = sceneState.connectionOptions;
 
     // Destroy the old SceneState and recreate it.
     [sceneDelegate sceneDidDisconnect:scene];
     [sceneDelegate scene:scene
         willConnectToSession:scene.session
-                     options:savedOptions];
+               chromeOptions:savedOptions];
 
     sceneState = sceneDelegate.sceneState;
     DCHECK(sceneState);
@@ -1823,17 +1869,13 @@ std::string GetProfileNameForChoice(ProfileChoice choice,
   // kLastUsedProfile was sometimes not correctly updated).
   localState->SetString(prefs::kLastUsedProfile, profileName);
 
-  auto iterator = _profileControllers.find(profileName);
-  if (iterator == _profileControllers.end()) {
+  auto [iterator, inserted] = _profileControllers.try_emplace(profileName, nil);
+  if (inserted) {
     ProfileController* controller =
         [[ProfileController alloc] initWithAppState:self.appState
                                     metricsMediator:_metricsMediator];
     [controller.state addObserver:self];
-
-    auto insertion_result =
-        _profileControllers.insert(std::make_pair(profileName, controller));
-    DCHECK(insertion_result.second);
-    iterator = insertion_result.first;
+    iterator->second = controller;
 
     // Start loading the profile.
     [controller loadProfileNamed:profileName usingManager:manager];

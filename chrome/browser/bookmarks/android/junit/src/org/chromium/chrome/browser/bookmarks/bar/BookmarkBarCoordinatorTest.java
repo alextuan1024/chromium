@@ -55,7 +55,6 @@ import org.chromium.base.supplier.SettableMonotonicObservableSupplier;
 import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.base.test.util.Criteria;
 import org.chromium.base.test.util.CriteriaHelper;
-import org.chromium.base.test.util.DisabledTest;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.R;
 import org.chromium.chrome.browser.bookmarks.BookmarkManagerOpener;
@@ -81,6 +80,7 @@ import org.chromium.chrome.browser.theme.TopUiThemeColorProvider;
 import org.chromium.chrome.browser.ui.favicon.FaviconHelperJni;
 import org.chromium.chrome.browser.ui.messages.snackbar.SnackbarManager;
 import org.chromium.chrome.browser.ui.side_ui.SideUiCoordinator.SideUiSpecs;
+import org.chromium.chrome.browser.ui.side_ui.SideUiCoordinator.UiUpdateRequest;
 import org.chromium.chrome.browser.ui.side_ui.SideUiObserver;
 import org.chromium.chrome.browser.ui.side_ui.SideUiStateProvider;
 import org.chromium.chrome.browser.ui.theme.BrandedColorScheme;
@@ -273,21 +273,20 @@ public class BookmarkBarCoordinatorTest {
     }
 
     @Test
-    @DisabledTest(message = "https://crbug.com/430058443")
     public void testConstructorWhenTopControlOffsetIsNonZero() {
         testConstructor(/* topControlOffset= */ -1);
     }
 
     @Test
-    @DisabledTest(message = "https://crbug.com/430058443")
     public void testConstructorWhenTopControlOffsetIsZero() {
         testConstructor(/* topControlOffset= */ 0);
     }
 
     private void testConstructor(int topControlOffset) {
-        // Initialize browser controls manager.
+        // Initialize browser controls manager and top controls stacker.
         final int topControlsHeight = 1;
-        when(mBrowserControlsManager.getTopControlsHeight()).thenReturn(topControlsHeight);
+        when(mTopControlsStacker.getHeightFromLayerToTop(TopControlType.BOOKMARK_BAR))
+                .thenReturn(topControlsHeight);
         when(mBrowserControlsManager.getTopControlOffset()).thenReturn(topControlOffset);
 
         // Invoke constructor.
@@ -295,7 +294,7 @@ public class BookmarkBarCoordinatorTest {
 
         assertEquals(
                 "Verify view top margin.",
-                topControlsHeight - mView.getHeight(),
+                topControlsHeight,
                 ((MarginLayoutParams) mView.getLayoutParams()).topMargin);
 
         assertEquals(
@@ -684,7 +683,8 @@ public class BookmarkBarCoordinatorTest {
         SideUiObserver observer = observerCaptor.getValue();
 
         SideUiSpecs specs = new SideUiSpecs(100, 200);
-        observer.onSideUiSpecsChanged(specs);
+        observer.onSideUiSpecsChangeStarted(
+                specs, UiUpdateRequest.getRequestForTesting(/* suppressAnimations= */ true));
 
         params = (MarginLayoutParams) mView.getLayoutParams();
         assertNotEquals(initialStartMargin, params.getMarginStart());

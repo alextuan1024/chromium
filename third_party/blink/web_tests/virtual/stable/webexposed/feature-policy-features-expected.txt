@@ -4,7 +4,6 @@ All changes to this list should go through Blink's feature review process: http:
 accelerometer
 aria-notify
 autoplay
-browsing-topics
 camera
 captured-surface-control
 ch-device-memory
@@ -41,6 +40,7 @@ digital-credentials-create
 digital-credentials-get
 display-capture
 encrypted-media
+focus-without-user-activation
 fullscreen
 gamepad
 geolocation
@@ -48,7 +48,6 @@ gyroscope
 hid
 identity-credentials-get
 idle-detection
-interest-cohort
 keyboard-map
 language-detector
 language-model
@@ -77,6 +76,7 @@ sync-xhr
 translator
 unload
 usb
+web-app-installation
 window-management
 xr-spatial-tracking
 

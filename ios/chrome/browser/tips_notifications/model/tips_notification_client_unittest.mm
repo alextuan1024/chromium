@@ -12,11 +12,13 @@
 #import "base/test/scoped_mock_clock_override.h"
 #import "base/test/simple_test_clock.h"
 #import "base/threading/thread_restrictions.h"
+#import "base/values.h"
 #import "components/feature_engagement/public/event_constants.h"
 #import "components/feature_engagement/public/tracker.h"
 #import "components/prefs/scoped_user_pref_update.h"
 #import "components/safe_browsing/core/common/safe_browsing_prefs.h"
 #import "components/sync/test/test_sync_service.h"
+#import "components/sync_preferences/testing_pref_service_syncable.h"
 #import "ios/chrome/browser/content_suggestions/ui/content_suggestions_commands.h"
 #import "ios/chrome/browser/default_browser/model/promo_source.h"
 #import "ios/chrome/browser/default_browser/model/utils.h"
@@ -38,6 +40,7 @@
 #import "ios/chrome/browser/shared/public/commands/credential_provider_promo_commands.h"
 #import "ios/chrome/browser/shared/public/commands/promos_manager_commands.h"
 #import "ios/chrome/browser/shared/public/commands/scene_commands.h"
+#import "ios/chrome/browser/shared/public/commands/scene_sign_in_commands.h"
 #import "ios/chrome/browser/shared/public/commands/settings_commands.h"
 #import "ios/chrome/browser/shared/public/commands/whats_new_commands.h"
 #import "ios/chrome/browser/shared/public/features/features.h"
@@ -303,7 +306,7 @@ class TipsNotificationClientTest : public PlatformTest {
   std::unique_ptr<TipsNotificationClient> client_;
   id mock_notification_center_;
   std::unique_ptr<ScopedBlockSwizzler> notification_center_swizzler_;
-  raw_ptr<ProfileIOS> profile_;
+  raw_ptr<TestProfileIOS> profile_;
   UNNotificationResponse* mock_response_;
 };
 
@@ -344,18 +347,20 @@ TEST_F(TipsNotificationClientTest, DefaultBrowserHandle) {
 
 // Tests that the client handles a SignIn notification response.
 TEST_F(TipsNotificationClientTest, SigninHandle) {
-  id mock_handler = StubPrepareToPresentModal();
-  OCMExpect([mock_handler showSignin:[OCMArg any] baseViewController:nil]);
+  StubPrepareToPresentModal();
+  id mock_scene_sign_in_handler = MockHandler(@protocol(SceneSignInCommands));
+  OCMExpect([mock_scene_sign_in_handler showSignin:[OCMArg any]
+                                baseViewController:nil]);
 
   mock_response_ = MockRequestResponse(TipsNotificationType::kSignin);
   client_->HandleNotificationInteraction(mock_response_);
 
-  EXPECT_OCMOCK_VERIFY(mock_handler);
+  EXPECT_OCMOCK_VERIFY(mock_scene_sign_in_handler);
   histogram_tester_.ExpectUniqueSample("IOS.Notifications.Tips.Interaction",
                                        TipsNotificationType::kSignin, 1);
 
   SigninWithFakeIdentity();
-  mock_handler = MockHandler(@protocol(SettingsCommands));
+  id mock_handler = MockHandler(@protocol(SettingsCommands));
   OCMExpect([mock_handler showAccountsSettingsFromViewController:nil
                                             skipIfUINotAvailable:NO]);
   client_->HandleNotificationInteraction(mock_response_);
@@ -529,11 +534,11 @@ TEST_F(TipsNotificationClientTest, EnhancedSafeBrowsingRequest) {
 }
 
 // Tests that the client will not register an Enhanced Safe Browsing promo
-// notification if ESB is disabled by policy.
+// notification if `prefs::kSafeBrowsingEnhanced` is disabled by policy.
 TEST_F(TipsNotificationClientTest,
        EnhancedSafeBrowsingRequestWhenDisabledByPolicy) {
-  // Disable pref that stores the policy setting.
-  profile_->GetPrefs()->SetBoolean(prefs::kAdvancedProtectionAllowed, false);
+  profile_->GetTestingPrefService()->SetManagedPref(
+      prefs::kSafeBrowsingEnhanced, base::Value(false));
 
   SetFalseChromeLikelyDefaultBrowser();
   ClearDefaultBrowserPromoLastAction();

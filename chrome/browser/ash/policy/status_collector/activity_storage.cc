@@ -10,6 +10,7 @@
 
 #include "base/base64.h"
 #include "base/check.h"
+#include "base/check_op.h"
 #include "base/functional/bind.h"
 #include "base/logging.h"
 #include "base/numerics/safe_conversions.h"
@@ -31,11 +32,12 @@ ActivityStorage::ActivityStorage(PrefService* pref_service,
       pref_name_(pref_name),
       day_start_offset_(day_start_offset) {
   CHECK(pref_service_, base::NotFatalUntil::M160);
-  const PrefService::PrefInitializationStatus pref_service_status =
-      pref_service_->GetInitializationStatus();
-  CHECK(pref_service_status != PrefService::INITIALIZATION_STATUS_WAITING &&
-            pref_service_status != PrefService::INITIALIZATION_STATUS_ERROR,
-        base::NotFatalUntil::M160);
+  // `INITIALIZATION_STATUS_ERROR` is intentionally allowed because disk or
+  // JSON read errors on `Preferences` / `Local State` are tolerated at runtime
+  // on ChromeOS (`JsonPrefStore` initializes an empty in-memory dict).
+  CHECK_NE(pref_service_->GetInitializationStatus(),
+           PrefService::INITIALIZATION_STATUS_WAITING,
+           base::NotFatalUntil::M160);
 }
 
 ActivityStorage::~ActivityStorage() = default;
@@ -156,9 +158,11 @@ ActivityStorage::GetActivityPeriods(base::Time end_time) const {
 void ActivityStorage::AddActivityPeriod(base::Time start,
                                         base::Time end,
                                         const std::string& activity_id) {
-  CHECK(start <= end, base::NotFatalUntil::M160);
-  CHECK(!start.is_max(), base::NotFatalUntil::M160);
-  CHECK(!end.is_max(), base::NotFatalUntil::M160);
+  // TODO(crbug.com/570656895): CHECK-exclusion: Convert to a CHECK once we are
+  // confident it won't be triggered.
+  DCHECK(start <= end);
+  DCHECK(!start.is_max());
+  DCHECK(!end.is_max());
 
   ScopedDictPrefUpdate update(pref_service_, pref_name_);
   base::DictValue& activity_times = update.Get();

@@ -10,12 +10,13 @@ import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.spy;
 import static org.mockito.Mockito.when;
 
 import android.app.Activity;
 import android.graphics.Rect;
 import android.view.View;
+import android.view.View.MeasureSpec;
+import android.view.ViewGroup;
 
 import androidx.recyclerview.widget.RecyclerView;
 
@@ -27,7 +28,6 @@ import org.mockito.Mock;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
 import org.robolectric.Robolectric;
-import org.robolectric.annotation.Config;
 
 import org.chromium.base.Token;
 import org.chromium.base.test.BaseRobolectricTestRunner;
@@ -35,7 +35,6 @@ import org.chromium.chrome.browser.dragdrop.ChromeTabDropDataAndroid;
 import org.chromium.chrome.browser.dragdrop.ChromeTabGroupDropDataAndroid;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.tabmodel.TabGroupMetadata;
-import org.chromium.chrome.browser.tabmodel.TabList;
 import org.chromium.chrome.browser.tabmodel.TabModel;
 import org.chromium.chrome.browser.tasks.tab_management.TabDragHandlerBase;
 import org.chromium.chrome.browser.tasks.tab_management.TabListModel;
@@ -49,31 +48,79 @@ import org.chromium.ui.modelutil.PropertyModel;
 import org.chromium.ui.modelutil.SimpleRecyclerViewAdapter;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 /** Unit tests for {@link VerticalExternalViewDragDropReorderStrategy}. */
 @RunWith(BaseRobolectricTestRunner.class)
-@Config(
-        instrumentedPackages = {
-            "androidx.recyclerview.widget.RecyclerView" // required to mock final.
-        })
 public class VerticalExternalViewDragDropReorderStrategyUnitTest {
+    /** An adapter that supplies pre-built ViewHolders, one per adapter position. */
+    private static class TestAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> {
+        final List<RecyclerView.ViewHolder> mViewHolders = new ArrayList<>();
+        final List<Rect> mBounds = new ArrayList<>();
+
+        @Override
+        public int getItemViewType(int position) {
+            // Each position has its own view type so that it maps to exactly one ViewHolder.
+            return position;
+        }
+
+        @Override
+        public RecyclerView.ViewHolder onCreateViewHolder(ViewGroup parent, int viewType) {
+            return mViewHolders.get(viewType);
+        }
+
+        @Override
+        public void onBindViewHolder(RecyclerView.ViewHolder holder, int position) {}
+
+        @Override
+        public int getItemCount() {
+            return mViewHolders.size();
+        }
+    }
+
+    /** A LayoutManager that lays out each item at the bounds the test assigned to it. */
+    private static class FixedBoundsLayoutManager extends RecyclerView.LayoutManager {
+        private final TestAdapter mAdapter;
+
+        FixedBoundsLayoutManager(TestAdapter adapter) {
+            mAdapter = adapter;
+        }
+
+        @Override
+        public RecyclerView.LayoutParams generateDefaultLayoutParams() {
+            return new RecyclerView.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        }
+
+        @Override
+        public void onLayoutChildren(RecyclerView.Recycler recycler, RecyclerView.State state) {
+            detachAndScrapAttachedViews(recycler);
+            for (int i = 0; i < state.getItemCount(); i++) {
+                View child = recycler.getViewForPosition(i);
+                addView(child);
+                Rect bounds = mAdapter.mBounds.get(i);
+                layoutDecorated(child, bounds.left, bounds.top, bounds.right, bounds.bottom);
+            }
+        }
+    }
+
     @Rule public MockitoRule mMockitoRule = MockitoJUnit.rule();
 
     @Mock private TabModel mTabModel;
-    @Mock private RecyclerView mRecyclerView;
-    @Mock private RecyclerView mPinnedTabsRecyclerView;
 
+    private RecyclerView mRecyclerView;
+    private RecyclerView mPinnedTabsRecyclerView;
     private Activity mActivity;
     private TabListModel mModelList;
     private TabListModel mPinnedTabsModelList;
     private VerticalExternalViewDragDropReorderStrategy mStrategy;
 
-    private final List<View> mMainListChildren = new ArrayList<>();
-    private final List<RecyclerView.ViewHolder> mMainListViewHolders = new ArrayList<>();
-    private final List<View> mPinnedGridChildren = new ArrayList<>();
-    private final List<RecyclerView.ViewHolder> mPinnedGridViewHolders = new ArrayList<>();
+    private final TestAdapter mMainListAdapter = new TestAdapter();
+    private final TestAdapter mPinnedGridAdapter = new TestAdapter();
     private final List<Tab> mMockTabs = new ArrayList<>();
+    private final Map<View, int[]> mScreenLocations = new HashMap<>();
 
     @Before
     public void setUp() {
@@ -83,11 +130,23 @@ public class VerticalExternalViewDragDropReorderStrategyUnitTest {
         mModelList = new TabListModel();
         mPinnedTabsModelList = new TabListModel();
         mMockTabs.clear();
+        mScreenLocations.clear();
 
-        when(mRecyclerView.getWidth()).thenReturn(300);
-        when(mRecyclerView.getHeight()).thenReturn(1000);
-        when(mPinnedTabsRecyclerView.getWidth()).thenReturn(300);
-        when(mPinnedTabsRecyclerView.getHeight()).thenReturn(200);
+        VerticalTabDragUtils.setLocationProviderForTesting(
+                (view, outLoc) -> {
+                    int[] loc = mScreenLocations.get(view);
+                    if (loc != null) {
+                        outLoc[0] = loc[0];
+                        outLoc[1] = loc[1];
+                    }
+                });
+
+        mRecyclerView = createRecyclerView(mMainListAdapter, 300, 1000);
+        mPinnedTabsRecyclerView = createRecyclerView(mPinnedGridAdapter, 300, 200);
+        // Lay the two lists out as they are on screen: the pinned grid on top, the main list
+        // directly below it.
+        stubLocationOnScreen(mPinnedTabsRecyclerView, /* screenX= */ 0, /* screenY= */ 0);
+        stubLocationOnScreen(mRecyclerView, /* screenX= */ 0, /* screenY= */ 200);
         when(mTabModel.getCount()).thenAnswer(invocation -> mMockTabs.size());
 
         mStrategy =
@@ -95,14 +154,36 @@ public class VerticalExternalViewDragDropReorderStrategyUnitTest {
                         () -> mTabModel, mModelList, mRecyclerView, mPinnedTabsRecyclerView);
     }
 
-    private View createChildView(int left, int top, int right, int bottom) {
-        View view = new View(mActivity);
-        view.layout(left, top, right, bottom);
-        view.setLeft(left);
-        view.setTop(top);
-        view.setRight(right);
-        view.setBottom(bottom);
-        return view;
+    private RecyclerView createRecyclerView(TestAdapter adapter, int width, int height) {
+        RecyclerView recyclerView = new RecyclerView(mActivity);
+        recyclerView.setItemAnimator(null);
+        recyclerView.setLayoutManager(new FixedBoundsLayoutManager(adapter));
+        recyclerView.setAdapter(adapter);
+        layoutRecyclerView(recyclerView, width, height);
+        return recyclerView;
+    }
+
+    private static void layoutRecyclerView(RecyclerView recyclerView, int width, int height) {
+        recyclerView.measure(
+                MeasureSpec.makeMeasureSpec(width, MeasureSpec.EXACTLY),
+                MeasureSpec.makeMeasureSpec(height, MeasureSpec.EXACTLY));
+        recyclerView.layout(0, 0, width, height);
+    }
+
+    private void addItem(
+            RecyclerView recyclerView, TestAdapter adapter, PropertyModel model, Rect bounds) {
+        SimpleRecyclerViewAdapter.ViewHolder vh =
+                new SimpleRecyclerViewAdapter.ViewHolder(new View(mActivity), (m, v, k) -> {});
+        vh.model = model;
+
+        adapter.mViewHolders.add(vh);
+        adapter.mBounds.add(bounds);
+        adapter.notifyItemInserted(adapter.getItemCount() - 1);
+        layoutRecyclerView(recyclerView, recyclerView.getWidth(), recyclerView.getHeight());
+    }
+
+    private void stubLocationOnScreen(View view, int screenX, int screenY) {
+        mScreenLocations.put(view, new int[] {screenX, screenY});
     }
 
     private void addMainListItem(
@@ -112,71 +193,17 @@ public class VerticalExternalViewDragDropReorderStrategyUnitTest {
             int top,
             int right,
             int bottom) {
-        int adapterPos = mModelList.size();
         mModelList.add(new ListItem(viewType, model));
-
-        View childView = createChildView(left, top, right, bottom);
-        SimpleRecyclerViewAdapter.ViewHolder vh =
-                spy(new SimpleRecyclerViewAdapter.ViewHolder(childView, (m, v, k) -> {}));
-        vh.model = model;
-        when(vh.getBindingAdapterPosition()).thenReturn(adapterPos);
-
-        mMainListChildren.add(childView);
-        mMainListViewHolders.add(vh);
-
-        when(mRecyclerView.getChildCount()).thenReturn(mMainListChildren.size());
-        for (int i = 0; i < mMainListChildren.size(); i++) {
-            when(mRecyclerView.getChildAt(i)).thenReturn(mMainListChildren.get(i));
-            when(mRecyclerView.getChildViewHolder(mMainListChildren.get(i)))
-                    .thenReturn(mMainListViewHolders.get(i));
-            when(mRecyclerView.getChildAdapterPosition(mMainListChildren.get(i))).thenReturn(i);
-            when(mRecyclerView.getChildLayoutPosition(mMainListChildren.get(i))).thenReturn(i);
-        }
+        addItem(mRecyclerView, mMainListAdapter, model, new Rect(left, top, right, bottom));
     }
 
     private void addPinnedGridItem(PropertyModel model, int left, int top, int right, int bottom) {
-        int adapterPos = mPinnedTabsModelList.size();
         mPinnedTabsModelList.add(new ListItem(TabProperties.UiType.PINNED_TAB, model));
-
-        View childView = createChildView(left, top, right, bottom);
-        SimpleRecyclerViewAdapter.ViewHolder vh =
-                spy(new SimpleRecyclerViewAdapter.ViewHolder(childView, (m, v, k) -> {}));
-        vh.model = model;
-        when(vh.getBindingAdapterPosition()).thenReturn(adapterPos);
-
-        mPinnedGridChildren.add(childView);
-        mPinnedGridViewHolders.add(vh);
-
-        when(mPinnedTabsRecyclerView.getChildCount()).thenReturn(mPinnedGridChildren.size());
-        for (int i = 0; i < mPinnedGridChildren.size(); i++) {
-            when(mPinnedTabsRecyclerView.getChildAt(i)).thenReturn(mPinnedGridChildren.get(i));
-            when(mPinnedTabsRecyclerView.getChildViewHolder(mPinnedGridChildren.get(i)))
-                    .thenReturn(mPinnedGridViewHolders.get(i));
-            when(mPinnedTabsRecyclerView.getChildAdapterPosition(mPinnedGridChildren.get(i)))
-                    .thenReturn(i);
-            when(mPinnedTabsRecyclerView.getChildLayoutPosition(mPinnedGridChildren.get(i)))
-                    .thenReturn(i);
-        }
-    }
-
-    private void mockFindChildViewUnder(RecyclerView rv, List<View> children) {
-        when(rv.findChildViewUnder(
-                        org.mockito.ArgumentMatchers.anyFloat(),
-                        org.mockito.ArgumentMatchers.anyFloat()))
-                .thenAnswer(
-                        invocation -> {
-                            float x = invocation.getArgument(0);
-                            float y = invocation.getArgument(1);
-                            for (View child : children) {
-                                if (x >= child.getLeft()
-                                        && x <= child.getRight()
-                                        && y >= child.getTop()
-                                        && y <= child.getBottom()) {
-                                    return child;
-                                }
-                            }
-                            return null;
-                        });
+        addItem(
+                mPinnedTabsRecyclerView,
+                mPinnedGridAdapter,
+                model,
+                new Rect(left, top, right, bottom));
     }
 
     private Tab createMockTab(int id, boolean isPinned) {
@@ -207,7 +234,6 @@ public class VerticalExternalViewDragDropReorderStrategyUnitTest {
                         .with(TabProperties.TAB_ID, 10)
                         .build();
         addMainListItem(model, TabProperties.UiType.TAB, 0, 0, 300, 100);
-        mockFindChildViewUnder(mRecyclerView, mMainListChildren);
 
         DropTargetResult result =
                 mStrategy.calculateDropTarget(
@@ -220,7 +246,7 @@ public class VerticalExternalViewDragDropReorderStrategyUnitTest {
         assertNotNull(result);
         assertEquals(DropTargetResult.TargetType.MAIN_LIST, result.targetType);
         assertEquals(0, result.destTabIndex);
-        assertEquals(TabList.INVALID_TAB_INDEX, result.destGroupTabId);
+        assertNull(result.destGroupId);
         assertFalse(result.isPinned);
         assertFalse(result.isZeroPinnedState);
         assertTrue(result.insertBefore);
@@ -244,7 +270,6 @@ public class VerticalExternalViewDragDropReorderStrategyUnitTest {
                         .with(TabProperties.TAB_ID, 10)
                         .build();
         addMainListItem(model, TabProperties.UiType.TAB, 0, 0, 300, 100);
-        mockFindChildViewUnder(mRecyclerView, mMainListChildren);
 
         DropTargetResult result =
                 mStrategy.calculateDropTarget(
@@ -257,7 +282,7 @@ public class VerticalExternalViewDragDropReorderStrategyUnitTest {
         assertNotNull(result);
         assertEquals(DropTargetResult.TargetType.MAIN_LIST, result.targetType);
         assertEquals(1, result.destTabIndex);
-        assertEquals(TabList.INVALID_TAB_INDEX, result.destGroupTabId);
+        assertNull(result.destGroupId);
         assertFalse(result.isPinned);
         assertFalse(result.isZeroPinnedState);
         assertFalse(result.insertBefore);
@@ -286,7 +311,6 @@ public class VerticalExternalViewDragDropReorderStrategyUnitTest {
                                 TabListModel.CardProperties.ModelType.TAB_GROUP)
                         .with(TabProperties.TAB_GROUP_HEADER_ID, groupId)
                         .with(TabProperties.IS_COLLAPSED, false)
-                        .with(TabProperties.TAB_ID, 20)
                         .build();
         addMainListItem(headerModel, TabProperties.UiType.TAB_GROUP, 0, 0, 300, 50);
 
@@ -310,8 +334,6 @@ public class VerticalExternalViewDragDropReorderStrategyUnitTest {
                         .build();
         addMainListItem(child2Model, TabProperties.UiType.TAB, 0, 100, 300, 150);
 
-        mockFindChildViewUnder(mRecyclerView, mMainListChildren);
-
         // Hover over top half of header (y = 15 in range 0..50)
         DropTargetResult result =
                 mStrategy.calculateDropTarget(
@@ -324,7 +346,7 @@ public class VerticalExternalViewDragDropReorderStrategyUnitTest {
         assertNotNull(result);
         assertEquals(DropTargetResult.TargetType.MAIN_LIST, result.targetType);
         assertEquals(0, result.destTabIndex);
-        assertEquals(TabList.INVALID_TAB_INDEX, result.destGroupTabId);
+        assertNull(result.destGroupId);
         assertFalse(result.isPinned);
         assertFalse(result.isZeroPinnedState);
         assertTrue(result.insertBefore);
@@ -350,7 +372,6 @@ public class VerticalExternalViewDragDropReorderStrategyUnitTest {
                                 TabListModel.CardProperties.ModelType.TAB_GROUP)
                         .with(TabProperties.TAB_GROUP_HEADER_ID, groupId)
                         .with(TabProperties.IS_COLLAPSED, false)
-                        .with(TabProperties.TAB_ID, 20)
                         .build();
         addMainListItem(headerModel, TabProperties.UiType.TAB_GROUP, 0, 0, 300, 50);
 
@@ -374,8 +395,6 @@ public class VerticalExternalViewDragDropReorderStrategyUnitTest {
                         .build();
         addMainListItem(child2Model, TabProperties.UiType.TAB, 0, 100, 300, 150);
 
-        mockFindChildViewUnder(mRecyclerView, mMainListChildren);
-
         // Hover over bottom half of header (y = 35 in range 0..50)
         DropTargetResult result =
                 mStrategy.calculateDropTarget(
@@ -388,7 +407,7 @@ public class VerticalExternalViewDragDropReorderStrategyUnitTest {
         assertNotNull(result);
         assertEquals(DropTargetResult.TargetType.MAIN_LIST, result.targetType);
         assertEquals(0, result.destTabIndex);
-        assertEquals(20, result.destGroupTabId);
+        assertEquals(groupId, result.destGroupId);
         assertFalse(result.isPinned);
         assertFalse(result.isZeroPinnedState);
         assertFalse(result.insertBefore);
@@ -413,7 +432,6 @@ public class VerticalExternalViewDragDropReorderStrategyUnitTest {
                                 TabListModel.CardProperties.ModelType.TAB_GROUP)
                         .with(TabProperties.TAB_GROUP_HEADER_ID, groupId)
                         .with(TabProperties.IS_COLLAPSED, false)
-                        .with(TabProperties.TAB_ID, 20)
                         .build();
         addMainListItem(headerModel, TabProperties.UiType.TAB_GROUP, 0, 0, 300, 50);
 
@@ -437,8 +455,6 @@ public class VerticalExternalViewDragDropReorderStrategyUnitTest {
                         .build();
         addMainListItem(child2Model, TabProperties.UiType.TAB, 0, 100, 300, 150);
 
-        mockFindChildViewUnder(mRecyclerView, mMainListChildren);
-
         // Hover over Child 2 at top half (y = 110 in range 100..150)
         DropTargetResult result =
                 mStrategy.calculateDropTarget(
@@ -451,7 +467,7 @@ public class VerticalExternalViewDragDropReorderStrategyUnitTest {
         assertNotNull(result);
         assertEquals(DropTargetResult.TargetType.MAIN_LIST, result.targetType);
         assertEquals(1, result.destTabIndex);
-        assertEquals(20, result.destGroupTabId);
+        assertEquals(groupId, result.destGroupId);
         assertTrue(result.insertBefore);
         assertFalse(result.isGroupTopOrBottomBoundary);
         assertEquals(2, result.adapterPosition);
@@ -475,7 +491,6 @@ public class VerticalExternalViewDragDropReorderStrategyUnitTest {
                                 TabListModel.CardProperties.ModelType.TAB_GROUP)
                         .with(TabProperties.TAB_GROUP_HEADER_ID, groupId)
                         .with(TabProperties.IS_COLLAPSED, false)
-                        .with(TabProperties.TAB_ID, 20)
                         .build();
         addMainListItem(headerModel, TabProperties.UiType.TAB_GROUP, 0, 0, 300, 50);
 
@@ -499,8 +514,6 @@ public class VerticalExternalViewDragDropReorderStrategyUnitTest {
                         .build();
         addMainListItem(child2Model, TabProperties.UiType.TAB, 0, 100, 300, 150);
 
-        mockFindChildViewUnder(mRecyclerView, mMainListChildren);
-
         // Child 2 is range 100..150 (centerY: 125, 75% height: 137.5).
         // Hover at y = 130 (upper bottom half) -> inserts after Child 2 inside group.
         DropTargetResult result =
@@ -514,7 +527,7 @@ public class VerticalExternalViewDragDropReorderStrategyUnitTest {
         assertNotNull(result);
         assertEquals(DropTargetResult.TargetType.MAIN_LIST, result.targetType);
         assertEquals(2, result.destTabIndex);
-        assertEquals(20, result.destGroupTabId);
+        assertEquals(groupId, result.destGroupId);
         assertFalse(result.insertBefore);
         assertFalse(result.isGroupTopOrBottomBoundary);
         assertEquals(2, result.adapterPosition);
@@ -538,7 +551,6 @@ public class VerticalExternalViewDragDropReorderStrategyUnitTest {
                                 TabListModel.CardProperties.ModelType.TAB_GROUP)
                         .with(TabProperties.TAB_GROUP_HEADER_ID, groupId)
                         .with(TabProperties.IS_COLLAPSED, false)
-                        .with(TabProperties.TAB_ID, 20)
                         .build();
         addMainListItem(headerModel, TabProperties.UiType.TAB_GROUP, 0, 0, 300, 50);
 
@@ -562,8 +574,6 @@ public class VerticalExternalViewDragDropReorderStrategyUnitTest {
                         .build();
         addMainListItem(child2Model, TabProperties.UiType.TAB, 0, 100, 300, 150);
 
-        mockFindChildViewUnder(mRecyclerView, mMainListChildren);
-
         // Child 2 is range 100..150 (centerY: 125, 75% height: 137.5).
         // Hover at y = 145 (lower bottom half >= 137.5) -> snaps below group as standalone tab.
         DropTargetResult result =
@@ -577,7 +587,7 @@ public class VerticalExternalViewDragDropReorderStrategyUnitTest {
         assertNotNull(result);
         assertEquals(DropTargetResult.TargetType.MAIN_LIST, result.targetType);
         assertEquals(2, result.destTabIndex);
-        assertEquals(TabList.INVALID_TAB_INDEX, result.destGroupTabId);
+        assertNull(result.destGroupId);
         assertFalse(result.insertBefore);
         assertTrue(result.isGroupTopOrBottomBoundary);
         assertEquals(2, result.adapterPosition);
@@ -600,7 +610,6 @@ public class VerticalExternalViewDragDropReorderStrategyUnitTest {
                                 TabListModel.CardProperties.ModelType.TAB_GROUP)
                         .with(TabProperties.TAB_GROUP_HEADER_ID, groupId)
                         .with(TabProperties.IS_COLLAPSED, false)
-                        .with(TabProperties.TAB_ID, 20)
                         .build();
         addMainListItem(headerModel, TabProperties.UiType.TAB_GROUP, 0, 0, 300, 50);
 
@@ -624,8 +633,6 @@ public class VerticalExternalViewDragDropReorderStrategyUnitTest {
                         .build();
         addMainListItem(child2Model, TabProperties.UiType.TAB, 0, 100, 300, 150);
 
-        mockFindChildViewUnder(mRecyclerView, mMainListChildren);
-
         // Hover below the entire list (y = 250 > 150)
         DropTargetResult result =
                 mStrategy.calculateDropTarget(
@@ -638,7 +645,7 @@ public class VerticalExternalViewDragDropReorderStrategyUnitTest {
         assertNotNull(result);
         assertEquals(DropTargetResult.TargetType.MAIN_LIST, result.targetType);
         assertEquals(2, result.destTabIndex);
-        assertEquals(TabList.INVALID_TAB_INDEX, result.destGroupTabId);
+        assertNull(result.destGroupId);
         assertFalse(result.insertBefore);
         assertTrue(result.isGroupTopOrBottomBoundary);
         assertEquals(2, result.adapterPosition);
@@ -663,7 +670,6 @@ public class VerticalExternalViewDragDropReorderStrategyUnitTest {
                                 TabListModel.CardProperties.ModelType.TAB_GROUP)
                         .with(TabProperties.TAB_GROUP_HEADER_ID, groupId)
                         .with(TabProperties.IS_COLLAPSED, false)
-                        .with(TabProperties.TAB_ID, 20)
                         .build();
         addMainListItem(headerModel, TabProperties.UiType.TAB_GROUP, 0, 0, 300, 50);
 
@@ -697,8 +703,6 @@ public class VerticalExternalViewDragDropReorderStrategyUnitTest {
                         .build();
         addMainListItem(child3Model, TabProperties.UiType.TAB, 0, 150, 300, 200);
 
-        mockFindChildViewUnder(mRecyclerView, mMainListChildren);
-
         // Hover over Child 2 top half (y = 110) -> destTabIndex = 1 (inserts before child 2, index
         // 1)
         DropTargetResult resultTop =
@@ -710,7 +714,7 @@ public class VerticalExternalViewDragDropReorderStrategyUnitTest {
                         /* isPinnedDrag= */ false);
         assertNotNull(resultTop);
         assertEquals(1, resultTop.destTabIndex);
-        assertEquals(20, resultTop.destGroupTabId);
+        assertEquals(groupId, resultTop.destGroupId);
         assertTrue(resultTop.insertBefore);
 
         // Hover over Child 2 bottom half (y = 140) -> destTabIndex = 2 (inserts after child 2,
@@ -724,7 +728,7 @@ public class VerticalExternalViewDragDropReorderStrategyUnitTest {
                         /* isPinnedDrag= */ false);
         assertNotNull(resultBottom);
         assertEquals(2, resultBottom.destTabIndex);
-        assertEquals(20, resultBottom.destGroupTabId);
+        assertEquals(groupId, resultBottom.destGroupId);
         assertFalse(resultBottom.insertBefore);
     }
 
@@ -749,10 +753,8 @@ public class VerticalExternalViewDragDropReorderStrategyUnitTest {
                                 TabListModel.CardProperties.ModelType.TAB_GROUP)
                         .with(TabProperties.TAB_GROUP_HEADER_ID, groupId)
                         .with(TabProperties.IS_COLLAPSED, true)
-                        .with(TabProperties.TAB_ID, 20)
                         .build();
         addMainListItem(headerModel, TabProperties.UiType.TAB_GROUP, 0, 0, 300, 50);
-        mockFindChildViewUnder(mRecyclerView, mMainListChildren);
 
         // Hover over collapsed header at top half (y = 15 in range 0..50)
         DropTargetResult result =
@@ -766,7 +768,7 @@ public class VerticalExternalViewDragDropReorderStrategyUnitTest {
         assertNotNull(result);
         assertEquals(DropTargetResult.TargetType.MAIN_LIST, result.targetType);
         assertEquals(0, result.destTabIndex);
-        assertEquals(TabList.INVALID_TAB_INDEX, result.destGroupTabId);
+        assertNull(result.destGroupId);
         assertTrue(result.insertBefore);
         assertTrue(result.isGroupTopOrBottomBoundary);
         assertFalse(result.isPinned);
@@ -790,10 +792,8 @@ public class VerticalExternalViewDragDropReorderStrategyUnitTest {
                                 TabListModel.CardProperties.ModelType.TAB_GROUP)
                         .with(TabProperties.TAB_GROUP_HEADER_ID, groupId)
                         .with(TabProperties.IS_COLLAPSED, true)
-                        .with(TabProperties.TAB_ID, 20)
                         .build();
         addMainListItem(headerModel, TabProperties.UiType.TAB_GROUP, 0, 0, 300, 50);
-        mockFindChildViewUnder(mRecyclerView, mMainListChildren);
 
         // Hover over collapsed header at bottom half (y = 35 in range 0..50)
         DropTargetResult result =
@@ -807,7 +807,7 @@ public class VerticalExternalViewDragDropReorderStrategyUnitTest {
         assertNotNull(result);
         assertEquals(DropTargetResult.TargetType.MAIN_LIST, result.targetType);
         assertEquals(2, result.destTabIndex); // 1 + 1 = 2 (after tab21)
-        assertEquals(TabList.INVALID_TAB_INDEX, result.destGroupTabId);
+        assertNull(result.destGroupId);
         assertFalse(result.insertBefore);
         assertTrue(result.isGroupTopOrBottomBoundary);
         assertFalse(result.isPinned);
@@ -836,7 +836,6 @@ public class VerticalExternalViewDragDropReorderStrategyUnitTest {
                                 TabListModel.CardProperties.ModelType.TAB_GROUP)
                         .with(TabProperties.TAB_GROUP_HEADER_ID, groupId)
                         .with(TabProperties.IS_COLLAPSED, false)
-                        .with(TabProperties.TAB_ID, 20)
                         .build();
         addMainListItem(headerModel, TabProperties.UiType.TAB_GROUP, 0, 0, 300, 50);
 
@@ -862,8 +861,6 @@ public class VerticalExternalViewDragDropReorderStrategyUnitTest {
                         .build();
         addMainListItem(child2Model, TabProperties.UiType.TAB, 0, 100, 300, 150);
 
-        mockFindChildViewUnder(mRecyclerView, mMainListChildren);
-
         // Envelope: 0..150, center = 75. Hover over Child 1 at y = 60 (< 75, closer to top)
         DropTargetResult result =
                 mStrategy.calculateDropTarget(
@@ -876,7 +873,7 @@ public class VerticalExternalViewDragDropReorderStrategyUnitTest {
         assertNotNull(result);
         assertEquals(DropTargetResult.TargetType.MAIN_LIST, result.targetType);
         assertEquals(0, result.destTabIndex);
-        assertEquals(TabList.INVALID_TAB_INDEX, result.destGroupTabId);
+        assertNull(result.destGroupId);
         assertTrue(result.insertBefore);
         assertTrue(result.isGroupTopOrBottomBoundary);
         assertEquals(0, result.adapterPosition); // Snaps to header viewholder
@@ -900,7 +897,6 @@ public class VerticalExternalViewDragDropReorderStrategyUnitTest {
                                 TabListModel.CardProperties.ModelType.TAB_GROUP)
                         .with(TabProperties.TAB_GROUP_HEADER_ID, groupId)
                         .with(TabProperties.IS_COLLAPSED, false)
-                        .with(TabProperties.TAB_ID, 20)
                         .build();
         addMainListItem(headerModel, TabProperties.UiType.TAB_GROUP, 0, 0, 300, 50);
 
@@ -926,8 +922,6 @@ public class VerticalExternalViewDragDropReorderStrategyUnitTest {
                         .build();
         addMainListItem(child2Model, TabProperties.UiType.TAB, 0, 100, 300, 150);
 
-        mockFindChildViewUnder(mRecyclerView, mMainListChildren);
-
         // Envelope: 0..150, center = 75. Hover over Child 1 at y = 90 (>= 75, closer to bottom)
         DropTargetResult result =
                 mStrategy.calculateDropTarget(
@@ -940,7 +934,7 @@ public class VerticalExternalViewDragDropReorderStrategyUnitTest {
         assertNotNull(result);
         assertEquals(DropTargetResult.TargetType.MAIN_LIST, result.targetType);
         assertEquals(2, result.destTabIndex); // 1 + 1 = 2 (after tab21)
-        assertEquals(TabList.INVALID_TAB_INDEX, result.destGroupTabId);
+        assertNull(result.destGroupId);
         assertFalse(result.insertBefore);
         assertTrue(result.isGroupTopOrBottomBoundary);
         assertEquals(2, result.adapterPosition); // Snaps to last child viewholder
@@ -964,7 +958,6 @@ public class VerticalExternalViewDragDropReorderStrategyUnitTest {
                         .with(TabProperties.TAB_ID, 10)
                         .build();
         addMainListItem(model, TabProperties.UiType.TAB, 0, 0, 300, 100);
-        mockFindChildViewUnder(mRecyclerView, mMainListChildren);
 
         DropTargetResult result =
                 mStrategy.calculateDropTarget(
@@ -977,7 +970,7 @@ public class VerticalExternalViewDragDropReorderStrategyUnitTest {
         assertNotNull(result);
         assertEquals(DropTargetResult.TargetType.MAIN_LIST, result.targetType);
         assertEquals(0, result.destTabIndex);
-        assertEquals(TabList.INVALID_TAB_INDEX, result.destGroupTabId);
+        assertNull(result.destGroupId);
         assertTrue(result.insertBefore);
         assertFalse(result.isGroupTopOrBottomBoundary);
     }
@@ -996,7 +989,6 @@ public class VerticalExternalViewDragDropReorderStrategyUnitTest {
                         .with(TabProperties.TAB_ID, 10)
                         .build();
         addMainListItem(model, TabProperties.UiType.TAB, 0, 0, 300, 100);
-        mockFindChildViewUnder(mRecyclerView, mMainListChildren);
 
         DropTargetResult result =
                 mStrategy.calculateDropTarget(
@@ -1009,7 +1001,7 @@ public class VerticalExternalViewDragDropReorderStrategyUnitTest {
         assertNotNull(result);
         assertEquals(DropTargetResult.TargetType.MAIN_LIST, result.targetType);
         assertEquals(1, result.destTabIndex);
-        assertEquals(TabList.INVALID_TAB_INDEX, result.destGroupTabId);
+        assertNull(result.destGroupId);
         assertFalse(result.insertBefore);
         assertFalse(result.isGroupTopOrBottomBoundary);
     }
@@ -1044,8 +1036,6 @@ public class VerticalExternalViewDragDropReorderStrategyUnitTest {
                         .build();
         addPinnedGridItem(pModel2, 100, 0, 200, 100);
 
-        mockFindChildViewUnder(mPinnedTabsRecyclerView, mPinnedGridChildren);
-
         // Hover over pinned tab 1, left half (x = 30 in 0..100)
         DropTargetResult result =
                 mStrategy.calculateDropTarget(
@@ -1058,7 +1048,7 @@ public class VerticalExternalViewDragDropReorderStrategyUnitTest {
         assertNotNull(result);
         assertEquals(DropTargetResult.TargetType.PINNED_GRID, result.targetType);
         assertEquals(0, result.destTabIndex);
-        assertEquals(TabList.INVALID_TAB_INDEX, result.destGroupTabId);
+        assertNull(result.destGroupId);
         assertTrue(result.isPinned);
         assertFalse(result.isZeroPinnedState);
         assertTrue(result.insertBefore);
@@ -1091,8 +1081,6 @@ public class VerticalExternalViewDragDropReorderStrategyUnitTest {
                         .build();
         addPinnedGridItem(pModel2, 100, 0, 200, 100);
 
-        mockFindChildViewUnder(mPinnedTabsRecyclerView, mPinnedGridChildren);
-
         // Hover over pinned tab 1, right half (x = 70 in 0..100)
         DropTargetResult result =
                 mStrategy.calculateDropTarget(
@@ -1105,7 +1093,7 @@ public class VerticalExternalViewDragDropReorderStrategyUnitTest {
         assertNotNull(result);
         assertEquals(DropTargetResult.TargetType.PINNED_GRID, result.targetType);
         assertEquals(1, result.destTabIndex);
-        assertEquals(TabList.INVALID_TAB_INDEX, result.destGroupTabId);
+        assertNull(result.destGroupId);
         assertTrue(result.isPinned);
         assertFalse(result.isZeroPinnedState);
         assertFalse(result.insertBefore);
@@ -1138,8 +1126,6 @@ public class VerticalExternalViewDragDropReorderStrategyUnitTest {
                         .build();
         addPinnedGridItem(pModel2, 100, 0, 200, 100);
 
-        mockFindChildViewUnder(mPinnedTabsRecyclerView, mPinnedGridChildren);
-
         // Hover over pinned tab 2, right half (x = 170 in 100..200)
         DropTargetResult result =
                 mStrategy.calculateDropTarget(
@@ -1152,7 +1138,7 @@ public class VerticalExternalViewDragDropReorderStrategyUnitTest {
         assertNotNull(result);
         assertEquals(DropTargetResult.TargetType.PINNED_GRID, result.targetType);
         assertEquals(2, result.destTabIndex);
-        assertEquals(TabList.INVALID_TAB_INDEX, result.destGroupTabId);
+        assertNull(result.destGroupId);
         assertTrue(result.isPinned);
         assertFalse(result.isZeroPinnedState);
         assertFalse(result.insertBefore);
@@ -1178,7 +1164,7 @@ public class VerticalExternalViewDragDropReorderStrategyUnitTest {
         assertNotNull(result);
         assertEquals(DropTargetResult.TargetType.MAIN_LIST, result.targetType);
         assertEquals(0, result.destTabIndex);
-        assertEquals(TabList.INVALID_TAB_INDEX, result.destGroupTabId);
+        assertNull(result.destGroupId);
         assertTrue(result.isPinned);
         assertTrue(result.isZeroPinnedState);
         assertTrue(result.insertBefore);
@@ -1239,11 +1225,164 @@ public class VerticalExternalViewDragDropReorderStrategyUnitTest {
         assertNotNull(result);
         assertEquals(DropTargetResult.TargetType.MAIN_LIST, result.targetType);
         assertEquals(2, result.destTabIndex);
-        assertEquals(TabList.INVALID_TAB_INDEX, result.destGroupTabId);
+        assertNull(result.destGroupId);
         assertFalse(result.isPinned);
         assertFalse(result.isZeroPinnedState);
         assertTrue(result.isZeroNormalTabsState);
         assertNull(result.targetViewHolder);
+        assertTrue(result.insertBefore);
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // Pinned grid detection (point-based, not view-identity based)
+    // ---------------------------------------------------------------------------------------------
+
+    @Test
+    public void testPinnedGridDetection_PointOverPinnedGrid_DeliveredToRail_TreatedAsPinnedGrid() {
+        when(mTabModel.getCount()).thenReturn(4);
+        when(mTabModel.getPinnedTabsCount()).thenReturn(2);
+        when(mTabModel.findFirstNonPinnedTabIndex()).thenReturn(2);
+
+        // A view that contains both lists, such as the rail, rather than either list itself. It is
+        // not an ancestor-chain match for the pinned RecyclerView, so the old view-identity check
+        // would have called this point part of the main list.
+        View rail = new View(mActivity);
+        stubLocationOnScreen(rail, /* screenX= */ 0, /* screenY= */ 0);
+
+        DropTargetResult result =
+                mStrategy.calculateDropTarget(
+                        rail,
+                        /* xPx= */ 50,
+                        /* yPx= */ 50,
+                        /* isGroupDrag= */ false,
+                        /* isPinnedDrag= */ false);
+
+        // Rejected, which is the pinned-grid answer for a regular tab drag.
+        assertNull(result);
+    }
+
+    @Test
+    public void testPinnedGridDetection_PointOverPinnedGridPadding_TreatedAsPinnedGrid() {
+        when(mTabModel.getCount()).thenReturn(4);
+        when(mTabModel.getPinnedTabsCount()).thenReturn(2);
+        when(mTabModel.findFirstNonPinnedTabIndex()).thenReturn(2);
+
+        // No pinned children are registered, so nothing is under this point. Containment is a
+        // question about the RecyclerView's own bounds, so padding and empty space still count.
+        DropTargetResult result =
+                mStrategy.calculateDropTarget(
+                        mPinnedTabsRecyclerView,
+                        /* xPx= */ 50,
+                        /* yPx= */ 190,
+                        /* isGroupDrag= */ false,
+                        /* isPinnedDrag= */ false);
+
+        assertNull(result);
+    }
+
+    @Test
+    public void testPinnedGridDetection_PointBelowPinnedGrid_TreatedAsMainList() {
+        when(mTabModel.getCount()).thenReturn(4);
+        when(mTabModel.getPinnedTabsCount()).thenReturn(2);
+        when(mTabModel.findFirstNonPinnedTabIndex()).thenReturn(2);
+
+        // The pinned grid is 200px tall, so this point is past its bottom edge even though the
+        // event was delivered to the pinned RecyclerView. The old view-identity check keyed off
+        // the receiving view and would have called this the pinned grid.
+        DropTargetResult result =
+                mStrategy.calculateDropTarget(
+                        mPinnedTabsRecyclerView,
+                        /* xPx= */ 50,
+                        /* yPx= */ 500,
+                        /* isGroupDrag= */ false,
+                        /* isPinnedDrag= */ true);
+
+        // A pinned tab over the main list, with pinned tabs already present, is rejected.
+        assertNull(result);
+    }
+
+    @Test
+    public void testPinnedGridDetection_ZeroSizedPinnedGrid_NoPointIsOverIt() {
+        when(mTabModel.getCount()).thenReturn(4);
+        when(mTabModel.getPinnedTabsCount()).thenReturn(2);
+        when(mTabModel.findFirstNonPinnedTabIndex()).thenReturn(2);
+        // An empty pinned grid collapses to zero height.
+        layoutRecyclerView(mPinnedTabsRecyclerView, 0, 0);
+
+        DropTargetResult result =
+                mStrategy.calculateDropTarget(
+                        mPinnedTabsRecyclerView,
+                        /* xPx= */ 0,
+                        /* yPx= */ 0,
+                        /* isGroupDrag= */ false,
+                        /* isPinnedDrag= */ true);
+
+        assertNull(result);
+    }
+
+    @Test
+    public void testPinnedGridDetection_PinnedDragDeliveredToRail_ReturnsValidPinnedDropTarget() {
+        Tab tab1 = createMockTab(1, /* isPinned= */ true);
+        when(mTabModel.getPinnedTabsCount()).thenReturn(1);
+        when(mTabModel.findFirstNonPinnedTabIndex()).thenReturn(1);
+
+        PropertyModel pModel1 =
+                new PropertyModel.Builder(TabProperties.ALL_KEYS_VERTICAL_TAB)
+                        .with(
+                                TabListModel.CardProperties.CARD_TYPE,
+                                TabListModel.CardProperties.ModelType.TAB)
+                        .with(TabProperties.TAB_ID, 1)
+                        .with(TabProperties.IS_PINNED, true)
+                        .build();
+        addPinnedGridItem(pModel1, 0, 0, 100, 100);
+
+        View rail = new View(mActivity);
+        stubLocationOnScreen(rail, /* screenX= */ 0, /* screenY= */ 0);
+
+        DropTargetResult result =
+                mStrategy.calculateDropTarget(
+                        rail,
+                        /* xPx= */ 25,
+                        /* yPx= */ 50,
+                        /* isGroupDrag= */ false,
+                        /* isPinnedDrag= */ true);
+
+        assertNotNull(result);
+        assertEquals(DropTargetResult.TargetType.PINNED_GRID, result.targetType);
+        assertEquals(0, result.destTabIndex);
+        assertTrue(result.insertBefore);
+    }
+
+    @Test
+    public void
+            testPinnedGridDetection_RegularDragBelowPinnedGridDeliveredToPinnedRv_ReturnsValidMainListDropTarget() {
+        Tab tab10 = createMockTab(10, /* isPinned= */ false);
+        when(mTabModel.indexOf(tab10)).thenReturn(0);
+        when(mTabModel.getPinnedTabsCount()).thenReturn(1);
+        when(mTabModel.findFirstNonPinnedTabIndex()).thenReturn(0);
+
+        PropertyModel model =
+                new PropertyModel.Builder(TabProperties.ALL_KEYS_VERTICAL_TAB)
+                        .with(
+                                TabListModel.CardProperties.CARD_TYPE,
+                                TabListModel.CardProperties.ModelType.TAB)
+                        .with(TabProperties.TAB_ID, 10)
+                        .build();
+        addMainListItem(model, TabProperties.UiType.TAB, 0, 0, 300, 100);
+
+        // mPinnedTabsRecyclerView is at (0, 0) with height 200. mRecyclerView is at (0, 200).
+        // yPx = 225 relative to mPinnedTabsRecyclerView maps to y = 25 inside mRecyclerView.
+        DropTargetResult result =
+                mStrategy.calculateDropTarget(
+                        mPinnedTabsRecyclerView,
+                        /* xPx= */ 150,
+                        /* yPx= */ 225,
+                        /* isGroupDrag= */ false,
+                        /* isPinnedDrag= */ false);
+
+        assertNotNull(result);
+        assertEquals(DropTargetResult.TargetType.MAIN_LIST, result.targetType);
+        assertEquals(0, result.destTabIndex);
         assertTrue(result.insertBefore);
     }
 
@@ -1264,7 +1403,7 @@ public class VerticalExternalViewDragDropReorderStrategyUnitTest {
         assertNotNull(result);
         assertEquals(DropTargetResult.TargetType.MAIN_LIST, result.targetType);
         assertEquals(2, result.destTabIndex);
-        assertEquals(TabList.INVALID_TAB_INDEX, result.destGroupTabId);
+        assertNull(result.destGroupId);
         assertFalse(result.isPinned);
         assertFalse(result.isZeroPinnedState);
         assertTrue(result.isZeroNormalTabsState);
@@ -1329,7 +1468,6 @@ public class VerticalExternalViewDragDropReorderStrategyUnitTest {
                         .with(TabProperties.TAB_ID, 5)
                         .build();
         addMainListItem(model, TabProperties.UiType.TAB, 0, 0, 300, 100);
-        mockFindChildViewUnder(mRecyclerView, mMainListChildren);
 
         DropTargetResult result =
                 mStrategy.calculateDropTarget(mRecyclerView, /* xPx= */ 150, /* yPx= */ 25);
@@ -1347,7 +1485,15 @@ public class VerticalExternalViewDragDropReorderStrategyUnitTest {
         Tab tab = createMockTab(5, /* isPinned= */ false);
         TabGroupMetadata metadata =
                 new TabGroupMetadata(
-                        0, 0, groupId, new ArrayList<>(), 0, "Title", null, false, false, false);
+                        /* selectedTabId= */ 0,
+                        /* sourceWindowId= */ 0,
+                        groupId,
+                        new ArrayList<>(),
+                        /* tabGroupColor= */ 0,
+                        "Title",
+                        /* mhtmlTabTitle= */ null,
+                        /* tabGroupCollapsed= */ false,
+                        /* isIncognito= */ false);
 
         ChromeTabGroupDropDataAndroid dropData =
                 (ChromeTabGroupDropDataAndroid)
@@ -1369,7 +1515,6 @@ public class VerticalExternalViewDragDropReorderStrategyUnitTest {
                         .with(TabProperties.TAB_ID, 5)
                         .build();
         addMainListItem(model, TabProperties.UiType.TAB, 0, 0, 300, 100);
-        mockFindChildViewUnder(mRecyclerView, mMainListChildren);
 
         DropTargetResult result =
                 mStrategy.calculateDropTarget(mRecyclerView, /* xPx= */ 150, /* yPx= */ 25);
@@ -1409,8 +1554,6 @@ public class VerticalExternalViewDragDropReorderStrategyUnitTest {
                         .build();
         addPinnedGridItem(pModel2, 100, 0, 200, 100);
 
-        mockFindChildViewUnder(mPinnedTabsRecyclerView, mPinnedGridChildren);
-
         // In RTL, right half (x = 70 in 0..100, center = 50) is the leading edge (insertBefore =
         // true -> index 0).
         DropTargetResult resultRightHalf =
@@ -1447,7 +1590,6 @@ public class VerticalExternalViewDragDropReorderStrategyUnitTest {
         when(mTabModel.getCount()).thenReturn(2);
         when(mTabModel.getPinnedTabsCount()).thenReturn(2);
         when(mTabModel.findFirstNonPinnedTabIndex()).thenReturn(2);
-        when(mRecyclerView.getChildCount()).thenReturn(0);
         assertEquals(0, mModelList.size());
 
         // Single tab drag into empty destination window.
@@ -1462,7 +1604,7 @@ public class VerticalExternalViewDragDropReorderStrategyUnitTest {
         assertNotNull(resultSingleTab);
         assertEquals(DropTargetResult.TargetType.MAIN_LIST, resultSingleTab.targetType);
         assertEquals(2, resultSingleTab.destTabIndex);
-        assertEquals(TabList.INVALID_TAB_INDEX, resultSingleTab.destGroupTabId);
+        assertNull(resultSingleTab.destGroupId);
         assertFalse(resultSingleTab.isPinned);
         assertFalse(resultSingleTab.isZeroPinnedState);
         assertNull(resultSingleTab.targetViewHolder);
@@ -1483,7 +1625,7 @@ public class VerticalExternalViewDragDropReorderStrategyUnitTest {
         assertNotNull(resultGroup);
         assertEquals(DropTargetResult.TargetType.MAIN_LIST, resultGroup.targetType);
         assertEquals(2, resultGroup.destTabIndex);
-        assertEquals(TabList.INVALID_TAB_INDEX, resultGroup.destGroupTabId);
+        assertNull(resultGroup.destGroupId);
         assertFalse(resultGroup.isPinned);
         assertFalse(resultGroup.isZeroPinnedState);
         assertTrue(resultGroup.isZeroNormalTabsState);
@@ -1498,7 +1640,6 @@ public class VerticalExternalViewDragDropReorderStrategyUnitTest {
         when(mTabModel.getCount()).thenReturn(0);
         when(mTabModel.getPinnedTabsCount()).thenReturn(0);
         when(mTabModel.findFirstNonPinnedTabIndex()).thenReturn(0);
-        when(mRecyclerView.getChildCount()).thenReturn(0);
         assertEquals(0, mModelList.size());
 
         DropTargetResult result =
@@ -1523,7 +1664,6 @@ public class VerticalExternalViewDragDropReorderStrategyUnitTest {
         when(mTabModel.getCount()).thenReturn(4);
         when(mTabModel.getPinnedTabsCount()).thenReturn(1);
         when(mTabModel.findFirstNonPinnedTabIndex()).thenReturn(1);
-        when(mRecyclerView.getChildCount()).thenReturn(0);
         assertEquals(0, mModelList.size());
 
         DropTargetResult result =
@@ -1643,8 +1783,6 @@ public class VerticalExternalViewDragDropReorderStrategyUnitTest {
                         .build();
         addMainListItem(model2, TabProperties.UiType.TAB, 0, 70, 300, 120);
 
-        mockFindChildViewUnder(mRecyclerView, mMainListChildren);
-
         // Hover in gap at y = 55 (findChildViewUnder returns null).
         // Closest child is Item 0 (center 25, diff = 30 vs Item 1 center 95, diff = 40).
         // Since y = 55 > 25, insertBefore is false -> destTabIndex = 0 + 1 = 1.
@@ -1698,7 +1836,6 @@ public class VerticalExternalViewDragDropReorderStrategyUnitTest {
                                 TabListModel.CardProperties.ModelType.TAB_GROUP)
                         .with(TabProperties.TAB_GROUP_HEADER_ID, groupId)
                         .with(TabProperties.IS_COLLAPSED, true)
-                        .with(TabProperties.TAB_ID, 20)
                         .build();
         addMainListItem(headerModel, TabProperties.UiType.TAB_GROUP, 0, 0, 300, 50);
 
@@ -1711,7 +1848,6 @@ public class VerticalExternalViewDragDropReorderStrategyUnitTest {
                         .with(TabProperties.TAB_ID, 999)
                         .build();
         addMainListItem(unresolvableModel, TabProperties.UiType.TAB, 0, 50, 300, 100);
-        mockFindChildViewUnder(mRecyclerView, mMainListChildren);
 
         // Hover over top half of unresolvable item (y = 60).
         // Fallback backward scan resolves preceding group's lastIndex = 1 -> fallback modelIndex =
@@ -1760,7 +1896,6 @@ public class VerticalExternalViewDragDropReorderStrategyUnitTest {
                         .with(TabProperties.TAB_ID, 30)
                         .build();
         addMainListItem(followModel, TabProperties.UiType.TAB, 0, 50, 300, 100);
-        mockFindChildViewUnder(mRecyclerView, mMainListChildren);
 
         // Hover over top half of unresolvable item (y = 20).
         // Fallback forward scan resolves following tab's modelIndex = 2 -> fallback modelIndex = 2.

@@ -7,6 +7,7 @@
 #include <array>
 #include <utility>
 
+#include "ash/constants/ash_extension_constants.h"
 #include "ash/constants/ash_paths.h"
 #include "ash/constants/web_app_id_constants.h"
 #include "ash/public/cpp/app_list/internal_app_id_constants.h"
@@ -21,10 +22,8 @@
 #include "base/path_service.h"
 #include "base/task/thread_pool.h"
 #include "build/branding_buildflags.h"
-#include "chrome/browser/apps/app_service/policy_util.h"
 #include "chrome/browser/ash/guest_os/guest_os_terminal.h"
 #include "chrome/browser/web_applications/policy/app_service_web_app_policy.h"
-#include "chrome/common/extensions/extension_constants.h"
 #include "chromeos/ash/components/file_manager/app_id.h"
 #include "chromeos/ash/components/system_web_apps/system_web_app_type.h"
 #include "chromeos/ash/experiences/arc/app/arc_app_constants.h"
@@ -111,9 +110,7 @@ void GetDefault(std::vector<std::string>* app_ids) {
   });
 
 #if BUILDFLAG(GOOGLE_CHROME_BRANDING)
-  if (chromeos::features::IsGeminiAppPreinstallEnabled()) {
-    app_ids->push_back(ash::kGeminiAppId);
-  }
+  app_ids->push_back(ash::kGeminiAppId);
 #endif  // BUILDFLAG(GOOGLE_CHROME_BRANDING)
 
   app_ids->insert(app_ids->end(), {
@@ -213,10 +210,6 @@ void GetDefault(std::vector<std::string>* app_ids) {
     extension_misc::kGooglePlusAppId,
   });
   // clang-format on
-
-  if (chromeos::features::IsCloudGamingDeviceEnabled()) {
-    app_ids->push_back(ash::kNvidiaGeForceNowAppId);
-  }
 }
 
 PackageId SystemPackageId(ash::SystemWebAppType type) {

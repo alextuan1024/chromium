@@ -4,14 +4,18 @@
 
 #include "chrome/browser/ui/webui/ash/cloud_upload/cloud_upload_dialog.h"
 
+#include <algorithm>
+#include <string_view>
 #include <utility>
 
 #include "ash/constants/web_app_id_constants.h"
 #include "ash/constants/webui_url_constants.h"
 #include "ash/public/cpp/new_window_delegate.h"
+#include "ash/public/cpp/notification_utils.h"
 #include "ash/resources/vector_icons/vector_icons.h"
 #include "base/check_deref.h"
 #include "base/containers/enum_set.h"
+#include "base/containers/span.h"
 #include "base/files/file.h"
 #include "base/files/file_path.h"
 #include "base/functional/bind.h"
@@ -31,6 +35,7 @@
 #include "chrome/browser/apps/app_service/app_service_proxy.h"
 #include "chrome/browser/apps/app_service/app_service_proxy_factory.h"
 #include "chrome/browser/ash/arc/fileapi/arc_documents_provider_util.h"
+#include "chrome/browser/ash/cloud_upload/upload_office_to_cloud.h"
 #include "chrome/browser/ash/drive/drive_integration_service.h"
 #include "chrome/browser/ash/drive/drive_integration_service_factory.h"
 #include "chrome/browser/ash/extensions/file_manager/event_router_factory.h"
@@ -41,8 +46,6 @@
 #include "chrome/browser/ash/file_manager/open_with_browser.h"
 #include "chrome/browser/ash/file_manager/volume_manager.h"
 #include "chrome/browser/ash/file_system_provider/mount_path_util.h"
-#include "chrome/browser/chromeos/upload_office_to_cloud/upload_office_to_cloud.h"
-#include "chrome/browser/notifications/notification_display_service.h"
 #include "chrome/browser/ui/ash/system_web_apps/system_web_app_ui_utils.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/webui/ash/cloud_upload/cloud_upload.mojom.h"
@@ -56,6 +59,7 @@
 #include "chromeos/ash/components/browser_delegate/browser_controller.h"
 #include "chromeos/ash/components/browser_delegate/browser_delegate.h"
 #include "chromeos/ash/experiences/system_web_apps/types/system_web_app_delegate.h"
+#include "components/user_manager/user.h"
 #include "components/user_manager/user_manager.h"
 #include "content/public/browser/navigation_controller.h"
 #include "extensions/browser/api/file_handlers/mime_util.h"
@@ -68,6 +72,7 @@
 #include "ui/base/mojom/ui_base_types.mojom-shared.h"
 #include "ui/chromeos/strings/grit/ui_chromeos_strings.h"
 #include "ui/gfx/geometry/size.h"
+#include "ui/message_center/message_center.h"
 #include "ui/message_center/public/cpp/notification.h"
 #include "ui/message_center/public/cpp/notification_delegate.h"
 
@@ -118,7 +123,9 @@ enum class Microsoft365Availability {
 };
 
 // Handle system error notification "Sign in" click.
-void HandleSignInClick(Profile* profile, std::optional<int> button_index) {
+void HandleSignInClick(Profile* profile,
+                       const std::string& notification_id,
+                       std::optional<int> button_index) {
   // If the "Sign in" button was pressed, rather than a click to somewhere
   // else in the notification.
   if (button_index) {
@@ -126,10 +133,8 @@ void HandleSignInClick(Profile* profile, std::optional<int> button_index) {
     // Request an ODFS mount which will trigger reauthentication.
     RequestODFSMount(profile, base::DoNothing());
   }
-  NotificationDisplayService* notification_service =
-      NotificationDisplayServiceFactory::GetForProfile(profile);
-  notification_service->Close(NotificationHandler::Type::TRANSIENT,
-                              kNotificationId);
+  message_center::MessageCenter::Get()->RemoveNotification(notification_id,
+                                                           /*by_user=*/false);
 }
 
 // TODO(b/288038136): Use a notification manager to handle error notifications.
@@ -146,6 +151,25 @@ void ShowUnableToOpenNotification(
                                         1),
     message_center::SystemNotificationWarningLevel warning_level =
         message_center::SystemNotificationWarningLevel::WARNING) {
+  // During logout or shutdown, the message center is destroyed before profile
+  // teardown aborts pending ODFS requests. The aborted request's error callback
+  // still calls this function, but there is no message center to show the
+  // notification in.
+  auto* message_center = message_center::MessageCenter::Get();
+  if (!message_center) {
+    return;
+  }
+
+  const user_manager::User& user = CHECK_DEREF(
+      ash::BrowserContextHelper::Get()->GetUserByBrowserContext(profile));
+  const std::string notification_id = ash::CreateUserScopedNotificationId(
+      kNotificationId, user.username_hash());
+
+  // Set `profile_id` so that the notification is hidden while another
+  // signed-in user is active.
+  message_center::NotifierId notifier_id;
+  notifier_id.profile_id = user.GetAccountId().GetUserEmail();
+
   std::vector<message_center::ButtonInfo> notification_buttons;
 
   if (message == GetReauthenticationRequiredMessage()) {
@@ -158,28 +182,23 @@ void ShowUnableToOpenNotification(
 
   auto notification = ash::CreateSystemNotificationPtr(
       /*type=*/message_center::NOTIFICATION_TYPE_SIMPLE,
-      /*id=*/kNotificationId,
+      /*id=*/notification_id,
       /*title*/ base::UTF8ToUTF16(title),
       /*message=*/base::UTF8ToUTF16(message),
       /*display_source=*/
       l10n_util::GetStringUTF16(IDS_ASH_MESSAGE_CENTER_SYSTEM_APP_NAME_FILES),
-      /*notifier_id=*/message_center::NotifierId(),
+      /*notifier_id=*/notifier_id,
       /*optional_fields=*/{},
       /*delegate=*/
       base::MakeRefCounted<message_center::HandleNotificationClickDelegate>(
-          base::BindRepeating(&HandleSignInClick, profile)),
+          base::BindRepeating(&HandleSignInClick, profile, notification_id)),
       /*small_image=*/ash::kFolderIcon, warning_level);
 
   notification->set_buttons(notification_buttons);
-  // Set never_timeout with the highest priority, SYSTEM_PRIORITY, so that the
-  // notification never times out.
-  notification->set_never_timeout(true);
+  // Set SYSTEM_PRIORITY so that the notification has the highest priority and
+  // never times out.
   notification->SetSystemPriority();
-  NotificationDisplayService* notification_service =
-      NotificationDisplayServiceFactory::GetForProfile(profile);
-  notification_service->Display(NotificationHandler::Type::TRANSIENT,
-                                *notification,
-                                /*metadata=*/nullptr);
+  message_center->AddNotification(std::move(notification));
 }
 
 // Check if reauthentication to OneDrive is required from the ODFS metadata
@@ -316,7 +335,7 @@ void OpenODFSUrl(Profile* profile,
 
 bool HasFileWithExtensionFromSet(
     const std::vector<storage::FileSystemURL>& file_urls,
-    const std::set<std::string>& extensions) {
+    base::span<const std::string_view> extensions) {
   return std::ranges::any_of(file_urls, [&extensions](const auto& file_url) {
     return std::ranges::any_of(extensions, [&file_url](const auto& extension) {
       return file_url.path().MatchesExtension(extension);
@@ -353,7 +372,7 @@ bool HaveExplicitFileHandlers(
 // This indicates we ran Office setup and set a preference, or the user had a
 // pre-existing preference for these file types.
 bool HaveExplicitFileHandlers(Profile* profile,
-                              const std::set<std::string>& extensions) {
+                              base::span<const std::string_view> extensions) {
   return std::ranges::all_of(extensions, [profile](const auto& extension) {
     return fm_tasks::HasExplicitDefaultFileHandler(profile, extension);
   });
@@ -449,7 +468,7 @@ bool CloudOpenTask::Execute(
     const fm_tasks::TaskDescriptor& task,
     const CloudProvider cloud_provider,
     std::unique_ptr<CloudOpenMetrics> cloud_open_metrics) {
-  DCHECK(!file_urls.empty());
+  CHECK(!file_urls.empty(), base::NotFatalUntil::M162);
   auto* event_router = file_manager::EventRouterFactory::GetForProfile(profile);
   // TODO(b/242685536) add support for multiple files.
   if (event_router) {
@@ -509,7 +528,7 @@ CloudOpenTask::CloudOpenTask(
 CloudOpenTask::~CloudOpenTask() {
   auto* event_router =
       file_manager::EventRouterFactory::GetForProfile(profile_);
-  DCHECK(!file_urls_.empty());
+  CHECK(!file_urls_.empty(), base::NotFatalUntil::M162);
   if (event_router) {
     event_router->RemoveCloudOpenTask(file_urls_.front());
   } else {
@@ -693,10 +712,10 @@ void CloudOpenTask::OnGoogleDriveGetMetadata(
     } else if (!hosted_url.is_valid()) {
       LOG(ERROR) << "Invalid URL";
       open_result = OfficeDriveOpenErrors::kInvalidAlternateUrl;
-    } else if (hosted_url.GetHost() == "drive.google.com") {
+    } else if (hosted_url.host() == "drive.google.com") {
       LOG(ERROR) << "URL was from drive.google.com";
       open_result = OfficeDriveOpenErrors::kDriveAlternateUrl;
-    } else if (hosted_url.GetHost() != "docs.google.com") {
+    } else if (hosted_url.host() != "docs.google.com") {
       LOG(ERROR) << "URL was not from docs.google.com";
       open_result = OfficeDriveOpenErrors::kUnexpectedAlternateUrl;
     } else {
@@ -930,7 +949,7 @@ void CloudOpenTask::OpenAndroidOneDriveUrl(
 }
 
 void CloudOpenTask::StartUpload() {
-  DCHECK_EQ(file_urls_idx_, 0UL);
+  CHECK_EQ(file_urls_idx_, 0UL, base::NotFatalUntil::M162);
   upload_timer_ = base::ElapsedTimer();
   // CloudOpenTask is the only owner of the `CloudOpenMetrics` object and will
   // still be alive after the upload handler completes. Thus, pass a `SafeRef`
@@ -944,7 +963,7 @@ void CloudOpenTask::StartUpload() {
 }
 
 void CloudOpenTask::StartNextGoogleDriveUpload() {
-  DCHECK_LT(file_urls_idx_, file_urls_.size());
+  CHECK_LT(file_urls_idx_, file_urls_.size(), base::NotFatalUntil::M162);
   drive_upload_handler_ = std::make_unique<DriveUploadHandler>(
       profile_, file_urls_[file_urls_idx_],
       SourceTypeToUploadType(source_type_),
@@ -954,7 +973,7 @@ void CloudOpenTask::StartNextGoogleDriveUpload() {
 }
 
 void CloudOpenTask::StartNextOneDriveUpload() {
-  DCHECK_LT(file_urls_idx_, file_urls_.size());
+  CHECK_LT(file_urls_idx_, file_urls_.size(), base::NotFatalUntil::M162);
   one_drive_upload_handler_ = std::make_unique<OneDriveUploadHandler>(
       profile_, file_urls_[file_urls_idx_],
       SourceTypeToUploadType(source_type_),
@@ -967,7 +986,7 @@ void CloudOpenTask::StartNextOneDriveUpload() {
 void CloudOpenTask::FinishedDriveUpload(OfficeTaskResult task_result,
                                         std::optional<GURL> url,
                                         int64_t size) {
-  DCHECK_LT(file_urls_idx_, file_urls_.size());
+  CHECK_LT(file_urls_idx_, file_urls_.size(), base::NotFatalUntil::M162);
   if (url.has_value()) {
     upload_total_size_ += size;
     fm_tasks::SetOfficeFileMovedToGoogleDrive(profile_, base::Time::Now());
@@ -993,7 +1012,7 @@ void CloudOpenTask::FinishedOneDriveUpload(
     OfficeTaskResult task_result,
     std::optional<storage::FileSystemURL> url,
     int64_t size) {
-  DCHECK_LT(file_urls_idx_, file_urls_.size());
+  CHECK_LT(file_urls_idx_, file_urls_.size(), base::NotFatalUntil::M162);
   if (url.has_value()) {
     upload_total_size_ += size;
     Profile* profile = profile_weak_ptr.get();
@@ -1117,9 +1136,9 @@ mojom::DialogArgsPtr CloudOpenTask::CreateDialogArgs(
     case SetupOrMoveDialogPage::kFileHandlerDialog: {
       auto file_handler_dialog_args = mojom::FileHandlerDialogArgs::New();
       file_handler_dialog_args->show_google_workspace_task =
-          chromeos::cloud_upload::IsGoogleWorkspaceCloudUploadAllowed(profile_);
+          IsGoogleWorkspaceCloudUploadAllowed(profile_);
       file_handler_dialog_args->show_microsoft_office_task =
-          chromeos::cloud_upload::IsMicrosoftOfficeCloudUploadAllowed(profile_);
+          IsMicrosoftOfficeCloudUploadAllowed(profile_);
       args->dialog_specific_args =
           mojom::DialogSpecificArgs::NewFileHandlerDialogArgs(
               std::move(file_handler_dialog_args));
@@ -1228,7 +1247,7 @@ void CloudOpenTask::ShowDialog(
   }
   if (!modal_parent) {
     need_new_files_app_ = true;
-    DCHECK(!pending_dialog_);
+    CHECK(!pending_dialog_, base::NotFatalUntil::M162);
     pending_dialog_ = dialog;
     // Create a files app window and use it as the modal parent. CloudOpenTask
     // is kept alive by the callback passed to CloudUploadDialog above. We
@@ -1278,7 +1297,7 @@ void CloudOpenTask::OnBrowserCreated(BrowserWindowInterface* browser) {
 
   // TODO(petermarshall): Add a timeout. If Files app never launches for some
   // reason, then we will never show the dialog.
-  DCHECK(pending_dialog_);
+  CHECK(pending_dialog_, base::NotFatalUntil::M162);
   const BrowserDelegate& delegate =
       CHECK_DEREF(ash::BrowserController::GetInstance()->GetDelegate(browser));
   if (!ash::IsBrowserForSystemWebApp(delegate,
@@ -1519,7 +1538,7 @@ void CloudOpenTask::ConstructEntriesAndFindTasks(
     fm_tasks::FindTasksCallback find_all_types_of_tasks_callback,
     std::unique_ptr<std::vector<std::string>> mime_types) {
   std::vector<extensions::EntryInfo> entries;
-  DCHECK_EQ(file_paths.size(), mime_types->size());
+  CHECK_EQ(file_paths.size(), mime_types->size(), base::NotFatalUntil::M162);
   for (size_t i = 0; i < file_paths.size(); ++i) {
     entries.emplace_back(file_paths[i], (*mime_types)[i], false);
   }
@@ -1669,9 +1688,7 @@ void LaunchMicrosoft365Setup(Profile* profile, gfx::NativeWindow modal_parent) {
   // Office file types, or that the user has pre-existing preferences for these
   // file types.
   one_drive_setup_dialog_args->set_office_as_default_handler =
-      !HaveExplicitFileHandlers(profile, fm_tasks::WordGroupExtensions()) ||
-      !HaveExplicitFileHandlers(profile, fm_tasks::ExcelGroupExtensions()) ||
-      !HaveExplicitFileHandlers(profile, fm_tasks::PowerPointGroupExtensions());
+      !HaveExplicitFileHandlers(profile, fm_tasks::OfficeGroupExtensions());
 
   args->dialog_specific_args =
       mojom::DialogSpecificArgs::NewOneDriveSetupDialogArgs(

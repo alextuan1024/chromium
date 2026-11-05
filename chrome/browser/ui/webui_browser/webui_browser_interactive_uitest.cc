@@ -17,11 +17,10 @@
 #include "chrome/test/base/ui_test_utils.h"
 #include "content/public/browser/render_widget_host_view.h"
 #include "content/public/browser/web_contents.h"
-#include "content/public/common/content_features.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
 #include "net/dns/mock_host_resolver.h"
-#include "ui/base/window_open_disposition.h"
+#include "ui/base/mojom/window_open_disposition.mojom-shared.h"
 #include "ui/gfx/geometry/rect.h"
 #include "ui/views/test/widget_activation_waiter.h"
 
@@ -31,8 +30,7 @@ class WebUIBrowserInteractiveTest : public InProcessBrowserTest {
  public:
   void SetUp() override {
     scoped_feature_list_.InitWithFeatures(
-        /*enabled_features=*/{features::kWebium,
-                              features::kAttachUnownedInnerWebContents},
+        /*enabled_features=*/{features::kWebium},
         /*disabled_features=*/{});
     InProcessBrowserTest::SetUp();
   }
@@ -65,7 +63,7 @@ IN_PROC_BROWSER_TEST_F(WebUIBrowserInteractiveTest,
   // Add a second tab.
   GURL url = embedded_https_test_server().GetURL("a.com", "/defaultresponse");
   EXPECT_TRUE(ui_test_utils::NavigateToURLWithDisposition(
-      browser(), url, WindowOpenDisposition::NEW_FOREGROUND_TAB,
+      browser(), url, ui::mojom::WindowOpenDisposition::kNewForegroundTab,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP));
 
   content::WebContents* second_tab =

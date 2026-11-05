@@ -92,7 +92,6 @@
 #include "ui/views/controls/scroll_view.h"
 #include "ui/views/controls/textfield/textfield.h"
 #include "ui/views/drag_utils.h"
-#include "ui/views/highlight_border.h"
 #include "ui/views/layout/box_layout.h"
 #include "ui/views/layout/box_layout_view.h"
 #include "ui/views/layout/flex_layout.h"
@@ -152,11 +151,6 @@ constexpr int kTitleLabelCollapsedMaxLines = 1;
 // The size for `icon_view_`, which is the icon within right content (between
 // title/message view and expand button).
 constexpr int kIconViewSize = 48;
-
-// The size for `icon_view_` with RenderArcNotificationsInChrome enabled. UX
-// requires reducing the size of the icons but changing it without this feature
-// would require updating it for both ash and arc notifications.
-constexpr int kIconViewSizeRenderArcInChromeEnabled = 36;
 
 // If the image displayed in `icon_view()` is smaller in either width or height
 // than this value, we draw a background around the image.
@@ -706,7 +700,7 @@ std::optional<gfx::ImageSkia> AshNotificationView::GetDragImage() {
   // Add the drop shadow.
   return gfx::ImageSkiaOperations::CreateImageWithDropShadow(
       drag_image_with_background,
-      ui::Shadow::MakeShadowValues(drag_drop::kDragImageElevation));
+      ui::decoration::Shadow::MakeShadowValues(drag_drop::kDragImageElevation));
 }
 
 void AshNotificationView::AttachDropData(ui::OSExchangeData* data) {
@@ -1067,13 +1061,6 @@ void AshNotificationView::UpdateViewForExpandedState(bool expanded) {
                               use_expanded_padding ? kAppIconExpandedPadding
                                                    : kAppIconCollapsedPadding);
 
-  if (features::IsRenderArcNotificationsByChromeEnabled()) {
-    right_content()->SetProperty(views::kCrossAxisAlignmentKey,
-                                 use_expanded_padding
-                                     ? views::LayoutAlignment::kStart
-                                     : views::LayoutAlignment::kCenter);
-  }
-
   right_content()->SetProperty(
       views::kMarginsKey, use_expanded_padding ? kRightContentExpandedPadding
                                                : kRightContentCollapsedPadding);
@@ -1392,10 +1379,7 @@ AshNotificationView::GenerateNotificationLabelButton(
 }
 
 gfx::Size AshNotificationView::GetIconViewSize() const {
-  int icon_size = features::IsRenderArcNotificationsByChromeEnabled()
-                      ? kIconViewSizeRenderArcInChromeEnabled
-                      : kIconViewSize;
-  return gfx::Size(icon_size, icon_size);
+  return gfx::Size(kIconViewSize, kIconViewSize);
 }
 
 int AshNotificationView::GetLargeImageViewMaxWidth() const {

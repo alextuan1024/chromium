@@ -4,7 +4,10 @@
 
 #include "components/enterprise/net/core/enterprise_network_auth_service.h"
 
+#include <map>
+#include <string_view>
 #include <utility>
+#include <vector>
 
 #include "base/check.h"
 #include "base/functional/bind.h"
@@ -19,6 +22,7 @@
 #include "components/signin/public/identity_manager/account_managed_status_finder.h"
 #include "components/signin/public/identity_manager/identity_manager.h"
 #include "components/signin/public/identity_manager/primary_account_access_token_fetcher.h"
+#include "url/gurl.h"
 
 namespace enterprise_net {
 
@@ -58,6 +62,27 @@ void RecordResultAndRunCallback(
 
 }  // namespace
 
+std::string_view TokenFetchErrorToString(TokenFetchError error) {
+  switch (error) {
+    case TokenFetchError::kNoPrimaryAccount:
+      return "no_primary_account";
+    case TokenFetchError::kUnmanagedUser:
+      return "unmanaged_user";
+    case TokenFetchError::kUnsupportedScope:
+      return "unsupported_scope";
+    case TokenFetchError::kInvalidCredentials:
+      return "invalid_credentials";
+    case TokenFetchError::kTransientError:
+      return "transient_error";
+    case TokenFetchError::kAuthError:
+      return "auth_error";
+    case TokenFetchError::kCanceled:
+      return "canceled";
+    case TokenFetchError::kInapplicableServer:
+      return "inapplicable_server";
+  }
+}
+
 EnterpriseNetworkAuthService::PendingManagedStatusCheck::
     PendingManagedStatusCheck() = default;
 EnterpriseNetworkAuthService::PendingManagedStatusCheck::
@@ -88,15 +113,18 @@ EnterpriseNetworkAuthService::PendingTokenFetch::operator=(
     PendingTokenFetch&&) noexcept = default;
 EnterpriseNetworkAuthService::PendingTokenFetch::~PendingTokenFetch() = default;
 
-EnterpriseNetworkAuthService::EnterpriseNetworkAuthService() = default;
+EnterpriseNetworkAuthService::EnterpriseNetworkAuthService()
+    : channel_(version_info::Channel::UNKNOWN) {}
 
 EnterpriseNetworkAuthService::EnterpriseNetworkAuthService(
     signin::IdentityManager* identity_manager,
     PrefService* pref_service,
-    enterprise::ProfileIdService* profile_id_service)
+    enterprise::ProfileIdService* profile_id_service,
+    version_info::Channel channel)
     : identity_manager_(identity_manager),
       pref_service_(pref_service),
-      profile_id_service_(profile_id_service) {
+      profile_id_service_(profile_id_service),
+      channel_(channel) {
   CHECK(identity_manager_);
   CHECK(pref_service_);
   CHECK(profile_id_service_);
@@ -165,17 +193,21 @@ void EnterpriseNetworkAuthService::Shutdown() {
 
 void EnterpriseNetworkAuthService::FetchAccessToken(
     AuthScope scope,
+    const GURL& destination_url,
     AccessTokenCallback callback) {
-  // TODO(crbug.com/535229810): We need to have a check which prevents sending
-  // access tokens for a scope to non-applicable servers. In this case, access
-  // token with Secure Gateway scope is only applicable for Secure Gateway
-  // servers.
   std::optional<signin::OAuthConsumerId> consumer_id =
       GetOAuthConsumerIdForScope(scope);
   if (!consumer_id.has_value()) {
     RecordResultAndRunCallback(
         std::move(callback),
         base::unexpected(TokenFetchError::kUnsupportedScope));
+    return;
+  }
+
+  if (!IsDestinationAllowedForScope(scope, destination_url, channel_)) {
+    RecordResultAndRunCallback(
+        std::move(callback),
+        base::unexpected(TokenFetchError::kInapplicableServer));
     return;
   }
 

@@ -28,7 +28,7 @@
 #import "components/safe_browsing/core/browser/hashprefix_realtime/ohttp_key_service.h"
 #import "components/safe_browsing/core/browser/realtime/url_lookup_service.h"
 #import "components/safe_browsing/core/browser/safe_browsing_token_fetcher.h"
-#import "components/safe_browsing/core/browser/safe_browsing_url_checker_impl.h"
+#import "components/safe_browsing/core/browser/url_checker/safe_browsing_url_checker_impl.h"
 #import "components/safe_browsing/core/browser/verdict_cache_manager.h"
 #import "components/safe_browsing/core/common/features.h"
 #import "components/safe_browsing/core/common/proto/realtimeapi.pb.h"
@@ -301,7 +301,8 @@ class SafeBrowsingServiceTest : public PlatformTest,
     v5_get_hash_protocol_manager_ =
         std::make_unique<safe_browsing::V5GetHashProtocolManager>(
             safe_browsing_service_->GetURLLoaderFactory(),
-            safe_browsing::GetTestSBProtocolConfig(), v5_cache_.get());
+            safe_browsing::GetTestSBProtocolConfig(), v5_cache_.get(),
+            /*webui_delegate=*/nullptr);
     safe_browsing_client_->set_v5_get_hash_protocol_manager(
         v5_get_hash_protocol_manager_.get());
 

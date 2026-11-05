@@ -32,7 +32,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -83,7 +83,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -134,7 +134,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -185,7 +185,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -236,7 +236,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -287,7 +287,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -338,7 +338,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -389,7 +389,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -440,7 +440,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -491,7 +491,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -542,7 +542,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -593,7 +593,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -644,7 +644,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -695,7 +695,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -746,7 +746,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -797,7 +797,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -848,7 +848,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -899,7 +899,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -950,7 +950,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -1001,7 +1001,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -1052,7 +1052,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -1103,7 +1103,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -1154,7 +1154,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -1205,7 +1205,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -1256,7 +1256,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -1307,7 +1307,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -1358,7 +1358,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -1409,7 +1409,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -1460,7 +1460,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -1511,7 +1511,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -1562,7 +1562,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -1613,7 +1613,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -1664,7 +1664,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -1695,8 +1695,6 @@
           "--version",
           "27.0",
           "--xcodebuild-sim-runner",
-          "--record-video",
-          "failed_only",
           "--out-dir",
           "${ISOLATED_OUTDIR}",
           "--xcode-build-version",
@@ -1706,9 +1704,9 @@
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
-        "module_name": "//ios/chrome/test/earl_grey2:ios_chrome_bookmarks_eg2tests_module",
+        "module_name": "//ios/chrome/test/earl_grey2:ios_chrome_all_eg2tests_module",
         "module_scheme": "xctest",
-        "name": "ios_chrome_bookmarks_eg2tests_module iPad (A16) 27.0",
+        "name": "ios_chrome_all_eg2tests_module iPad (A16) 27.0",
         "resultdb": {
           "enable": true,
           "has_native_resultdb_integration": true
@@ -1718,7 +1716,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -1735,11 +1733,16 @@
               "path": "Xcode.app"
             }
           ],
+          "optional_dimensions": {
+            "180": {
+              "cpu": "Apple_(Virtual)"
+            }
+          },
           "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com",
-          "shards": 2
+          "shards": 66
         },
-        "test": "ios_chrome_bookmarks_eg2tests_module",
-        "test_id_prefix": "ninja://ios/chrome/test/earl_grey2:ios_chrome_bookmarks_eg2tests_module/",
+        "test": "ios_chrome_all_eg2tests_module",
+        "test_id_prefix": "ninja://ios/chrome/test/earl_grey2:ios_chrome_all_eg2tests_module/",
         "variant_id": "iPad (A16) 27.0"
       },
       {
@@ -1750,8 +1753,6 @@
           "--version",
           "18.5",
           "--xcodebuild-sim-runner",
-          "--record-video",
-          "failed_only",
           "--out-dir",
           "${ISOLATED_OUTDIR}",
           "--xcode-build-version",
@@ -1761,9 +1762,9 @@
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
-        "module_name": "//ios/chrome/test/earl_grey2:ios_chrome_bookmarks_eg2tests_module",
+        "module_name": "//ios/chrome/test/earl_grey2:ios_chrome_all_eg2tests_module",
         "module_scheme": "xctest",
-        "name": "ios_chrome_bookmarks_eg2tests_module iPad Pro 13-inch (M4) 18.5",
+        "name": "ios_chrome_all_eg2tests_module iPad Pro 13-inch (M4) 18.5",
         "resultdb": {
           "enable": true,
           "has_native_resultdb_integration": true
@@ -1773,176 +1774,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
-            }
-          ],
-          "dimensions": {
-            "cpu": "arm64",
-            "os": "Mac-26"
-          },
-          "named_caches": [
-            {
-              "name": "runtime_ios_18_5",
-              "path": "Runtime-ios-18.5"
-            },
-            {
-              "name": "xcode_ios_27a266a",
-              "path": "Xcode.app"
-            }
-          ],
-          "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com",
-          "shards": 2
-        },
-        "test": "ios_chrome_bookmarks_eg2tests_module",
-        "test_id_prefix": "ninja://ios/chrome/test/earl_grey2:ios_chrome_bookmarks_eg2tests_module/",
-        "variant_id": "iPad Pro 13-inch (M4) 18.5"
-      },
-      {
-        "args": [
-          "--use-simulator-cache",
-          "--platform",
-          "iPad Pro 13-inch (M4)",
-          "--version",
-          "26.5",
-          "--xcodebuild-sim-runner",
-          "--record-video",
-          "failed_only",
-          "--out-dir",
-          "${ISOLATED_OUTDIR}",
-          "--xcode-build-version",
-          "27a266a",
-          "--xctest"
-        ],
-        "merge": {
-          "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
-        },
-        "module_name": "//ios/chrome/test/earl_grey2:ios_chrome_bookmarks_eg2tests_module",
-        "module_scheme": "xctest",
-        "name": "ios_chrome_bookmarks_eg2tests_module iPad Pro 13-inch (M4) 26.5",
-        "resultdb": {
-          "enable": true,
-          "has_native_resultdb_integration": true
-        },
-        "swarming": {
-          "cipd_packages": [
-            {
-              "cipd_package": "infra/tools/mac_toolchain/${platform}",
-              "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
-            }
-          ],
-          "dimensions": {
-            "cpu": "arm64",
-            "os": "Mac-26"
-          },
-          "named_caches": [
-            {
-              "name": "runtime_ios_26_5",
-              "path": "Runtime-ios-26.5"
-            },
-            {
-              "name": "xcode_ios_27a266a",
-              "path": "Xcode.app"
-            }
-          ],
-          "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com",
-          "shards": 2
-        },
-        "test": "ios_chrome_bookmarks_eg2tests_module",
-        "test_id_prefix": "ninja://ios/chrome/test/earl_grey2:ios_chrome_bookmarks_eg2tests_module/",
-        "variant_id": "iPad Pro 13-inch (M4) 26.5"
-      },
-      {
-        "args": [
-          "--clones",
-          "2",
-          "--use-simulator-cache",
-          "--platform",
-          "iPad (A16)",
-          "--version",
-          "27.0",
-          "--xcodebuild-sim-runner",
-          "--record-video",
-          "failed_only",
-          "--out-dir",
-          "${ISOLATED_OUTDIR}",
-          "--xcode-build-version",
-          "27a266a",
-          "--xctest"
-        ],
-        "merge": {
-          "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
-        },
-        "module_name": "//ios/chrome/test/earl_grey2:ios_chrome_integration_eg2tests_module",
-        "module_scheme": "xctest",
-        "name": "ios_chrome_integration_eg2tests_module iPad (A16) 27.0",
-        "resultdb": {
-          "enable": true,
-          "has_native_resultdb_integration": true
-        },
-        "swarming": {
-          "cipd_packages": [
-            {
-              "cipd_package": "infra/tools/mac_toolchain/${platform}",
-              "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
-            }
-          ],
-          "dimensions": {
-            "cpu": "arm64",
-            "os": "Mac-26"
-          },
-          "named_caches": [
-            {
-              "name": "runtime_ios_27_0",
-              "path": "Runtime-ios-27.0"
-            },
-            {
-              "name": "xcode_ios_27a266a",
-              "path": "Xcode.app"
-            }
-          ],
-          "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com",
-          "shards": 9
-        },
-        "test": "ios_chrome_integration_eg2tests_module",
-        "test_id_prefix": "ninja://ios/chrome/test/earl_grey2:ios_chrome_integration_eg2tests_module/",
-        "variant_id": "iPad (A16) 27.0"
-      },
-      {
-        "args": [
-          "--clones",
-          "2",
-          "--use-simulator-cache",
-          "--platform",
-          "iPad Air 11-inch (M2)",
-          "--version",
-          "18.5",
-          "--xcodebuild-sim-runner",
-          "--record-video",
-          "failed_only",
-          "--out-dir",
-          "${ISOLATED_OUTDIR}",
-          "--xcode-build-version",
-          "27a266a",
-          "--xctest"
-        ],
-        "merge": {
-          "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
-        },
-        "module_name": "//ios/chrome/test/earl_grey2:ios_chrome_integration_eg2tests_module",
-        "module_scheme": "xctest",
-        "name": "ios_chrome_integration_eg2tests_module iPad Air (6th generation) 18.5",
-        "resultdb": {
-          "enable": true,
-          "has_native_resultdb_integration": true
-        },
-        "swarming": {
-          "cipd_packages": [
-            {
-              "cipd_package": "infra/tools/mac_toolchain/${platform}",
-              "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -1960,353 +1792,15 @@
             }
           ],
           "optional_dimensions": {
-            "30": {
+            "180": {
               "cpu": "Apple_(Virtual)"
             }
           },
           "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com",
-          "shards": 10
+          "shards": 66
         },
-        "test": "ios_chrome_integration_eg2tests_module",
-        "test_id_prefix": "ninja://ios/chrome/test/earl_grey2:ios_chrome_integration_eg2tests_module/",
-        "variant_id": "iPad Air (6th generation) 18.5"
-      },
-      {
-        "args": [
-          "--clones",
-          "2",
-          "--use-simulator-cache",
-          "--platform",
-          "iPad Air 11-inch (M2)",
-          "--version",
-          "26.5",
-          "--xcodebuild-sim-runner",
-          "--record-video",
-          "failed_only",
-          "--out-dir",
-          "${ISOLATED_OUTDIR}",
-          "--xcode-build-version",
-          "27a266a",
-          "--xctest"
-        ],
-        "merge": {
-          "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
-        },
-        "module_name": "//ios/chrome/test/earl_grey2:ios_chrome_integration_eg2tests_module",
-        "module_scheme": "xctest",
-        "name": "ios_chrome_integration_eg2tests_module iPad Air (6th generation) 26.5",
-        "resultdb": {
-          "enable": true,
-          "has_native_resultdb_integration": true
-        },
-        "swarming": {
-          "cipd_packages": [
-            {
-              "cipd_package": "infra/tools/mac_toolchain/${platform}",
-              "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
-            }
-          ],
-          "dimensions": {
-            "cpu": "arm64",
-            "os": "Mac-26"
-          },
-          "named_caches": [
-            {
-              "name": "runtime_ios_26_5",
-              "path": "Runtime-ios-26.5"
-            },
-            {
-              "name": "xcode_ios_27a266a",
-              "path": "Xcode.app"
-            }
-          ],
-          "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com",
-          "shards": 9
-        },
-        "test": "ios_chrome_integration_eg2tests_module",
-        "test_id_prefix": "ninja://ios/chrome/test/earl_grey2:ios_chrome_integration_eg2tests_module/",
-        "variant_id": "iPad Air (6th generation) 26.5"
-      },
-      {
-        "args": [
-          "--clones",
-          "2",
-          "--use-simulator-cache",
-          "--platform",
-          "iPad (A16)",
-          "--version",
-          "27.0",
-          "--xcodebuild-sim-runner",
-          "--record-video",
-          "failed_only",
-          "--out-dir",
-          "${ISOLATED_OUTDIR}",
-          "--xcode-build-version",
-          "27a266a",
-          "--xctest"
-        ],
-        "merge": {
-          "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
-        },
-        "module_name": "//ios/chrome/test/earl_grey2:ios_chrome_settings_eg2tests_module",
-        "module_scheme": "xctest",
-        "name": "ios_chrome_settings_eg2tests_module iPad (A16) 27.0",
-        "resultdb": {
-          "enable": true,
-          "has_native_resultdb_integration": true
-        },
-        "swarming": {
-          "cipd_packages": [
-            {
-              "cipd_package": "infra/tools/mac_toolchain/${platform}",
-              "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
-            }
-          ],
-          "dimensions": {
-            "cpu": "arm64",
-            "os": "Mac-26"
-          },
-          "named_caches": [
-            {
-              "name": "runtime_ios_27_0",
-              "path": "Runtime-ios-27.0"
-            },
-            {
-              "name": "xcode_ios_27a266a",
-              "path": "Xcode.app"
-            }
-          ],
-          "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com",
-          "shards": 4
-        },
-        "test": "ios_chrome_settings_eg2tests_module",
-        "test_id_prefix": "ninja://ios/chrome/test/earl_grey2:ios_chrome_settings_eg2tests_module/",
-        "variant_id": "iPad (A16) 27.0"
-      },
-      {
-        "args": [
-          "--clones",
-          "2",
-          "--use-simulator-cache",
-          "--platform",
-          "iPad Pro 13-inch (M4)",
-          "--version",
-          "18.5",
-          "--xcodebuild-sim-runner",
-          "--record-video",
-          "failed_only",
-          "--out-dir",
-          "${ISOLATED_OUTDIR}",
-          "--xcode-build-version",
-          "27a266a",
-          "--xctest"
-        ],
-        "merge": {
-          "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
-        },
-        "module_name": "//ios/chrome/test/earl_grey2:ios_chrome_settings_eg2tests_module",
-        "module_scheme": "xctest",
-        "name": "ios_chrome_settings_eg2tests_module iPad Pro 13-inch (M4) 18.5",
-        "resultdb": {
-          "enable": true,
-          "has_native_resultdb_integration": true
-        },
-        "swarming": {
-          "cipd_packages": [
-            {
-              "cipd_package": "infra/tools/mac_toolchain/${platform}",
-              "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
-            }
-          ],
-          "dimensions": {
-            "cpu": "arm64",
-            "os": "Mac-26"
-          },
-          "named_caches": [
-            {
-              "name": "runtime_ios_18_5",
-              "path": "Runtime-ios-18.5"
-            },
-            {
-              "name": "xcode_ios_27a266a",
-              "path": "Xcode.app"
-            }
-          ],
-          "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com",
-          "shards": 4
-        },
-        "test": "ios_chrome_settings_eg2tests_module",
-        "test_id_prefix": "ninja://ios/chrome/test/earl_grey2:ios_chrome_settings_eg2tests_module/",
-        "variant_id": "iPad Pro 13-inch (M4) 18.5"
-      },
-      {
-        "args": [
-          "--clones",
-          "2",
-          "--use-simulator-cache",
-          "--platform",
-          "iPad Pro 13-inch (M4)",
-          "--version",
-          "26.5",
-          "--xcodebuild-sim-runner",
-          "--record-video",
-          "failed_only",
-          "--out-dir",
-          "${ISOLATED_OUTDIR}",
-          "--xcode-build-version",
-          "27a266a",
-          "--xctest"
-        ],
-        "merge": {
-          "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
-        },
-        "module_name": "//ios/chrome/test/earl_grey2:ios_chrome_settings_eg2tests_module",
-        "module_scheme": "xctest",
-        "name": "ios_chrome_settings_eg2tests_module iPad Pro 13-inch (M4) 26.5",
-        "resultdb": {
-          "enable": true,
-          "has_native_resultdb_integration": true
-        },
-        "swarming": {
-          "cipd_packages": [
-            {
-              "cipd_package": "infra/tools/mac_toolchain/${platform}",
-              "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
-            }
-          ],
-          "dimensions": {
-            "cpu": "arm64",
-            "os": "Mac-26"
-          },
-          "named_caches": [
-            {
-              "name": "runtime_ios_26_5",
-              "path": "Runtime-ios-26.5"
-            },
-            {
-              "name": "xcode_ios_27a266a",
-              "path": "Xcode.app"
-            }
-          ],
-          "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com",
-          "shards": 4
-        },
-        "test": "ios_chrome_settings_eg2tests_module",
-        "test_id_prefix": "ninja://ios/chrome/test/earl_grey2:ios_chrome_settings_eg2tests_module/",
-        "variant_id": "iPad Pro 13-inch (M4) 26.5"
-      },
-      {
-        "args": [
-          "--use-simulator-cache",
-          "--platform",
-          "iPad (A16)",
-          "--version",
-          "27.0",
-          "--xcodebuild-sim-runner",
-          "--record-video",
-          "failed_only",
-          "--out-dir",
-          "${ISOLATED_OUTDIR}",
-          "--xcode-build-version",
-          "27a266a",
-          "--xctest"
-        ],
-        "merge": {
-          "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
-        },
-        "module_name": "//ios/chrome/test/earl_grey2:ios_chrome_signin_eg2tests_module",
-        "module_scheme": "xctest",
-        "name": "ios_chrome_signin_eg2tests_module iPad (A16) 27.0",
-        "resultdb": {
-          "enable": true,
-          "has_native_resultdb_integration": true
-        },
-        "swarming": {
-          "cipd_packages": [
-            {
-              "cipd_package": "infra/tools/mac_toolchain/${platform}",
-              "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
-            }
-          ],
-          "dimensions": {
-            "cpu": "arm64",
-            "os": "Mac-26"
-          },
-          "named_caches": [
-            {
-              "name": "runtime_ios_27_0",
-              "path": "Runtime-ios-27.0"
-            },
-            {
-              "name": "xcode_ios_27a266a",
-              "path": "Xcode.app"
-            }
-          ],
-          "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com",
-          "shards": 6
-        },
-        "test": "ios_chrome_signin_eg2tests_module",
-        "test_id_prefix": "ninja://ios/chrome/test/earl_grey2:ios_chrome_signin_eg2tests_module/",
-        "variant_id": "iPad (A16) 27.0"
-      },
-      {
-        "args": [
-          "--use-simulator-cache",
-          "--platform",
-          "iPad Pro 13-inch (M4)",
-          "--version",
-          "18.5",
-          "--xcodebuild-sim-runner",
-          "--record-video",
-          "failed_only",
-          "--out-dir",
-          "${ISOLATED_OUTDIR}",
-          "--xcode-build-version",
-          "27a266a",
-          "--xctest"
-        ],
-        "merge": {
-          "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
-        },
-        "module_name": "//ios/chrome/test/earl_grey2:ios_chrome_signin_eg2tests_module",
-        "module_scheme": "xctest",
-        "name": "ios_chrome_signin_eg2tests_module iPad Pro 13-inch (M4) 18.5",
-        "resultdb": {
-          "enable": true,
-          "has_native_resultdb_integration": true
-        },
-        "swarming": {
-          "cipd_packages": [
-            {
-              "cipd_package": "infra/tools/mac_toolchain/${platform}",
-              "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
-            }
-          ],
-          "dimensions": {
-            "cpu": "arm64",
-            "os": "Mac-26"
-          },
-          "named_caches": [
-            {
-              "name": "runtime_ios_18_5",
-              "path": "Runtime-ios-18.5"
-            },
-            {
-              "name": "xcode_ios_27a266a",
-              "path": "Xcode.app"
-            }
-          ],
-          "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com",
-          "shards": 6
-        },
-        "test": "ios_chrome_signin_eg2tests_module",
-        "test_id_prefix": "ninja://ios/chrome/test/earl_grey2:ios_chrome_signin_eg2tests_module/",
+        "test": "ios_chrome_all_eg2tests_module",
+        "test_id_prefix": "ninja://ios/chrome/test/earl_grey2:ios_chrome_all_eg2tests_module/",
         "variant_id": "iPad Pro 13-inch (M4) 18.5"
       },
       {
@@ -2317,8 +1811,6 @@
           "--version",
           "26.5",
           "--xcodebuild-sim-runner",
-          "--record-video",
-          "failed_only",
           "--out-dir",
           "${ISOLATED_OUTDIR}",
           "--xcode-build-version",
@@ -2328,9 +1820,9 @@
         "merge": {
           "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
         },
-        "module_name": "//ios/chrome/test/earl_grey2:ios_chrome_signin_eg2tests_module",
+        "module_name": "//ios/chrome/test/earl_grey2:ios_chrome_all_eg2tests_module",
         "module_scheme": "xctest",
-        "name": "ios_chrome_signin_eg2tests_module iPad Pro 13-inch (M4) 26.5",
+        "name": "ios_chrome_all_eg2tests_module iPad Pro 13-inch (M4) 26.5",
         "resultdb": {
           "enable": true,
           "has_native_resultdb_integration": true
@@ -2340,7 +1832,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -2357,344 +1849,16 @@
               "path": "Xcode.app"
             }
           ],
+          "optional_dimensions": {
+            "180": {
+              "cpu": "Apple_(Virtual)"
+            }
+          },
           "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com",
-          "shards": 6
+          "shards": 66
         },
-        "test": "ios_chrome_signin_eg2tests_module",
-        "test_id_prefix": "ninja://ios/chrome/test/earl_grey2:ios_chrome_signin_eg2tests_module/",
-        "variant_id": "iPad Pro 13-inch (M4) 26.5"
-      },
-      {
-        "args": [
-          "--use-simulator-cache",
-          "--platform",
-          "iPad (A16)",
-          "--version",
-          "27.0",
-          "--xcodebuild-sim-runner",
-          "--record-video",
-          "failed_only",
-          "--out-dir",
-          "${ISOLATED_OUTDIR}",
-          "--xcode-build-version",
-          "27a266a",
-          "--xctest"
-        ],
-        "merge": {
-          "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
-        },
-        "module_name": "//ios/chrome/test/earl_grey2:ios_chrome_smoke_eg2tests_module",
-        "module_scheme": "xctest",
-        "name": "ios_chrome_smoke_eg2tests_module iPad (A16) 27.0",
-        "resultdb": {
-          "enable": true,
-          "has_native_resultdb_integration": true
-        },
-        "swarming": {
-          "cipd_packages": [
-            {
-              "cipd_package": "infra/tools/mac_toolchain/${platform}",
-              "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
-            }
-          ],
-          "dimensions": {
-            "cpu": "arm64",
-            "os": "Mac-26"
-          },
-          "named_caches": [
-            {
-              "name": "runtime_ios_27_0",
-              "path": "Runtime-ios-27.0"
-            },
-            {
-              "name": "xcode_ios_27a266a",
-              "path": "Xcode.app"
-            }
-          ],
-          "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com"
-        },
-        "test": "ios_chrome_smoke_eg2tests_module",
-        "test_id_prefix": "ninja://ios/chrome/test/earl_grey2:ios_chrome_smoke_eg2tests_module/",
-        "variant_id": "iPad (A16) 27.0"
-      },
-      {
-        "args": [
-          "--use-simulator-cache",
-          "--platform",
-          "iPad Pro 13-inch (M4)",
-          "--version",
-          "18.5",
-          "--xcodebuild-sim-runner",
-          "--record-video",
-          "failed_only",
-          "--out-dir",
-          "${ISOLATED_OUTDIR}",
-          "--xcode-build-version",
-          "27a266a",
-          "--xctest"
-        ],
-        "merge": {
-          "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
-        },
-        "module_name": "//ios/chrome/test/earl_grey2:ios_chrome_smoke_eg2tests_module",
-        "module_scheme": "xctest",
-        "name": "ios_chrome_smoke_eg2tests_module iPad Pro 13-inch (M4) 18.5",
-        "resultdb": {
-          "enable": true,
-          "has_native_resultdb_integration": true
-        },
-        "swarming": {
-          "cipd_packages": [
-            {
-              "cipd_package": "infra/tools/mac_toolchain/${platform}",
-              "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
-            }
-          ],
-          "dimensions": {
-            "cpu": "arm64",
-            "os": "Mac-26"
-          },
-          "named_caches": [
-            {
-              "name": "runtime_ios_18_5",
-              "path": "Runtime-ios-18.5"
-            },
-            {
-              "name": "xcode_ios_27a266a",
-              "path": "Xcode.app"
-            }
-          ],
-          "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com"
-        },
-        "test": "ios_chrome_smoke_eg2tests_module",
-        "test_id_prefix": "ninja://ios/chrome/test/earl_grey2:ios_chrome_smoke_eg2tests_module/",
-        "variant_id": "iPad Pro 13-inch (M4) 18.5"
-      },
-      {
-        "args": [
-          "--use-simulator-cache",
-          "--platform",
-          "iPad Pro 13-inch (M4)",
-          "--version",
-          "26.5",
-          "--xcodebuild-sim-runner",
-          "--record-video",
-          "failed_only",
-          "--out-dir",
-          "${ISOLATED_OUTDIR}",
-          "--xcode-build-version",
-          "27a266a",
-          "--xctest"
-        ],
-        "merge": {
-          "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
-        },
-        "module_name": "//ios/chrome/test/earl_grey2:ios_chrome_smoke_eg2tests_module",
-        "module_scheme": "xctest",
-        "name": "ios_chrome_smoke_eg2tests_module iPad Pro 13-inch (M4) 26.5",
-        "resultdb": {
-          "enable": true,
-          "has_native_resultdb_integration": true
-        },
-        "swarming": {
-          "cipd_packages": [
-            {
-              "cipd_package": "infra/tools/mac_toolchain/${platform}",
-              "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
-            }
-          ],
-          "dimensions": {
-            "cpu": "arm64",
-            "os": "Mac-26"
-          },
-          "named_caches": [
-            {
-              "name": "runtime_ios_26_5",
-              "path": "Runtime-ios-26.5"
-            },
-            {
-              "name": "xcode_ios_27a266a",
-              "path": "Xcode.app"
-            }
-          ],
-          "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com"
-        },
-        "test": "ios_chrome_smoke_eg2tests_module",
-        "test_id_prefix": "ninja://ios/chrome/test/earl_grey2:ios_chrome_smoke_eg2tests_module/",
-        "variant_id": "iPad Pro 13-inch (M4) 26.5"
-      },
-      {
-        "args": [
-          "--clones",
-          "2",
-          "--use-simulator-cache",
-          "--platform",
-          "iPad (A16)",
-          "--version",
-          "27.0",
-          "--xcodebuild-sim-runner",
-          "--record-video",
-          "failed_only",
-          "--out-dir",
-          "${ISOLATED_OUTDIR}",
-          "--xcode-build-version",
-          "27a266a",
-          "--xctest"
-        ],
-        "merge": {
-          "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
-        },
-        "module_name": "//ios/chrome/test/earl_grey2:ios_chrome_ui_eg2tests_module",
-        "module_scheme": "xctest",
-        "name": "ios_chrome_ui_eg2tests_module iPad (A16) 27.0",
-        "resultdb": {
-          "enable": true,
-          "has_native_resultdb_integration": true
-        },
-        "swarming": {
-          "cipd_packages": [
-            {
-              "cipd_package": "infra/tools/mac_toolchain/${platform}",
-              "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
-            }
-          ],
-          "dimensions": {
-            "cpu": "arm64",
-            "os": "Mac-26"
-          },
-          "named_caches": [
-            {
-              "name": "runtime_ios_27_0",
-              "path": "Runtime-ios-27.0"
-            },
-            {
-              "name": "xcode_ios_27a266a",
-              "path": "Xcode.app"
-            }
-          ],
-          "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com",
-          "shards": 12
-        },
-        "test": "ios_chrome_ui_eg2tests_module",
-        "test_id_prefix": "ninja://ios/chrome/test/earl_grey2:ios_chrome_ui_eg2tests_module/",
-        "variant_id": "iPad (A16) 27.0"
-      },
-      {
-        "args": [
-          "--clones",
-          "2",
-          "--use-simulator-cache",
-          "--platform",
-          "iPad Pro 13-inch (M4)",
-          "--version",
-          "18.5",
-          "--xcodebuild-sim-runner",
-          "--record-video",
-          "failed_only",
-          "--out-dir",
-          "${ISOLATED_OUTDIR}",
-          "--xcode-build-version",
-          "27a266a",
-          "--xctest"
-        ],
-        "merge": {
-          "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
-        },
-        "module_name": "//ios/chrome/test/earl_grey2:ios_chrome_ui_eg2tests_module",
-        "module_scheme": "xctest",
-        "name": "ios_chrome_ui_eg2tests_module iPad Pro 13-inch (M4) 18.5",
-        "resultdb": {
-          "enable": true,
-          "has_native_resultdb_integration": true
-        },
-        "swarming": {
-          "cipd_packages": [
-            {
-              "cipd_package": "infra/tools/mac_toolchain/${platform}",
-              "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
-            }
-          ],
-          "dimensions": {
-            "cpu": "arm64",
-            "os": "Mac-26"
-          },
-          "named_caches": [
-            {
-              "name": "runtime_ios_18_5",
-              "path": "Runtime-ios-18.5"
-            },
-            {
-              "name": "xcode_ios_27a266a",
-              "path": "Xcode.app"
-            }
-          ],
-          "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com",
-          "shards": 12
-        },
-        "test": "ios_chrome_ui_eg2tests_module",
-        "test_id_prefix": "ninja://ios/chrome/test/earl_grey2:ios_chrome_ui_eg2tests_module/",
-        "variant_id": "iPad Pro 13-inch (M4) 18.5"
-      },
-      {
-        "args": [
-          "--clones",
-          "2",
-          "--use-simulator-cache",
-          "--platform",
-          "iPad Pro 13-inch (M4)",
-          "--version",
-          "26.5",
-          "--xcodebuild-sim-runner",
-          "--record-video",
-          "failed_only",
-          "--out-dir",
-          "${ISOLATED_OUTDIR}",
-          "--xcode-build-version",
-          "27a266a",
-          "--xctest"
-        ],
-        "merge": {
-          "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
-        },
-        "module_name": "//ios/chrome/test/earl_grey2:ios_chrome_ui_eg2tests_module",
-        "module_scheme": "xctest",
-        "name": "ios_chrome_ui_eg2tests_module iPad Pro 13-inch (M4) 26.5",
-        "resultdb": {
-          "enable": true,
-          "has_native_resultdb_integration": true
-        },
-        "swarming": {
-          "cipd_packages": [
-            {
-              "cipd_package": "infra/tools/mac_toolchain/${platform}",
-              "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
-            }
-          ],
-          "dimensions": {
-            "cpu": "arm64",
-            "os": "Mac-26"
-          },
-          "named_caches": [
-            {
-              "name": "runtime_ios_26_5",
-              "path": "Runtime-ios-26.5"
-            },
-            {
-              "name": "xcode_ios_27a266a",
-              "path": "Xcode.app"
-            }
-          ],
-          "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com",
-          "shards": 12
-        },
-        "test": "ios_chrome_ui_eg2tests_module",
-        "test_id_prefix": "ninja://ios/chrome/test/earl_grey2:ios_chrome_ui_eg2tests_module/",
+        "test": "ios_chrome_all_eg2tests_module",
+        "test_id_prefix": "ninja://ios/chrome/test/earl_grey2:ios_chrome_all_eg2tests_module/",
         "variant_id": "iPad Pro 13-inch (M4) 26.5"
       },
       {
@@ -2725,7 +1889,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -2776,7 +1940,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -2827,7 +1991,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -2878,7 +2042,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -2929,7 +2093,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -2980,7 +2144,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -3031,7 +2195,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -3082,7 +2246,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -3133,7 +2297,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -3184,7 +2348,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -3235,7 +2399,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -3257,171 +2421,6 @@
         "test": "ios_chrome_unittests",
         "test_id_prefix": "ninja://ios/chrome/test:ios_chrome_unittests/",
         "variant_id": "iPhone SE (3rd generation) 27.0"
-      },
-      {
-        "args": [
-          "--use-simulator-cache",
-          "--platform",
-          "iPad (A16)",
-          "--version",
-          "27.0",
-          "--xcodebuild-sim-runner",
-          "--record-video",
-          "failed_only",
-          "--out-dir",
-          "${ISOLATED_OUTDIR}",
-          "--xcode-build-version",
-          "27a266a",
-          "--xctest"
-        ],
-        "merge": {
-          "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
-        },
-        "module_name": "//ios/chrome/test/earl_grey2:ios_chrome_web_eg2tests_module",
-        "module_scheme": "xctest",
-        "name": "ios_chrome_web_eg2tests_module iPad (A16) 27.0",
-        "resultdb": {
-          "enable": true,
-          "has_native_resultdb_integration": true
-        },
-        "swarming": {
-          "cipd_packages": [
-            {
-              "cipd_package": "infra/tools/mac_toolchain/${platform}",
-              "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
-            }
-          ],
-          "dimensions": {
-            "cpu": "arm64",
-            "os": "Mac-26"
-          },
-          "named_caches": [
-            {
-              "name": "runtime_ios_27_0",
-              "path": "Runtime-ios-27.0"
-            },
-            {
-              "name": "xcode_ios_27a266a",
-              "path": "Xcode.app"
-            }
-          ],
-          "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com",
-          "shards": 2
-        },
-        "test": "ios_chrome_web_eg2tests_module",
-        "test_id_prefix": "ninja://ios/chrome/test/earl_grey2:ios_chrome_web_eg2tests_module/",
-        "variant_id": "iPad (A16) 27.0"
-      },
-      {
-        "args": [
-          "--use-simulator-cache",
-          "--platform",
-          "iPad Pro 13-inch (M4)",
-          "--version",
-          "18.5",
-          "--xcodebuild-sim-runner",
-          "--record-video",
-          "failed_only",
-          "--out-dir",
-          "${ISOLATED_OUTDIR}",
-          "--xcode-build-version",
-          "27a266a",
-          "--xctest"
-        ],
-        "merge": {
-          "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
-        },
-        "module_name": "//ios/chrome/test/earl_grey2:ios_chrome_web_eg2tests_module",
-        "module_scheme": "xctest",
-        "name": "ios_chrome_web_eg2tests_module iPad Pro 13-inch (M4) 18.5",
-        "resultdb": {
-          "enable": true,
-          "has_native_resultdb_integration": true
-        },
-        "swarming": {
-          "cipd_packages": [
-            {
-              "cipd_package": "infra/tools/mac_toolchain/${platform}",
-              "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
-            }
-          ],
-          "dimensions": {
-            "cpu": "arm64",
-            "os": "Mac-26"
-          },
-          "named_caches": [
-            {
-              "name": "runtime_ios_18_5",
-              "path": "Runtime-ios-18.5"
-            },
-            {
-              "name": "xcode_ios_27a266a",
-              "path": "Xcode.app"
-            }
-          ],
-          "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com",
-          "shards": 2
-        },
-        "test": "ios_chrome_web_eg2tests_module",
-        "test_id_prefix": "ninja://ios/chrome/test/earl_grey2:ios_chrome_web_eg2tests_module/",
-        "variant_id": "iPad Pro 13-inch (M4) 18.5"
-      },
-      {
-        "args": [
-          "--use-simulator-cache",
-          "--platform",
-          "iPad Pro 13-inch (M4)",
-          "--version",
-          "26.5",
-          "--xcodebuild-sim-runner",
-          "--record-video",
-          "failed_only",
-          "--out-dir",
-          "${ISOLATED_OUTDIR}",
-          "--xcode-build-version",
-          "27a266a",
-          "--xctest"
-        ],
-        "merge": {
-          "script": "//testing/merge_scripts/standard_isolated_script_merge.py"
-        },
-        "module_name": "//ios/chrome/test/earl_grey2:ios_chrome_web_eg2tests_module",
-        "module_scheme": "xctest",
-        "name": "ios_chrome_web_eg2tests_module iPad Pro 13-inch (M4) 26.5",
-        "resultdb": {
-          "enable": true,
-          "has_native_resultdb_integration": true
-        },
-        "swarming": {
-          "cipd_packages": [
-            {
-              "cipd_package": "infra/tools/mac_toolchain/${platform}",
-              "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
-            }
-          ],
-          "dimensions": {
-            "cpu": "arm64",
-            "os": "Mac-26"
-          },
-          "named_caches": [
-            {
-              "name": "runtime_ios_26_5",
-              "path": "Runtime-ios-26.5"
-            },
-            {
-              "name": "xcode_ios_27a266a",
-              "path": "Xcode.app"
-            }
-          ],
-          "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com",
-          "shards": 2
-        },
-        "test": "ios_chrome_web_eg2tests_module",
-        "test_id_prefix": "ninja://ios/chrome/test/earl_grey2:ios_chrome_web_eg2tests_module/",
-        "variant_id": "iPad Pro 13-inch (M4) 26.5"
       },
       {
         "args": [
@@ -3452,7 +2451,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -3504,7 +2503,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -3556,7 +2555,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -3607,7 +2606,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -3658,7 +2657,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -3709,7 +2708,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -3760,7 +2759,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -3811,7 +2810,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -3862,7 +2861,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -3913,7 +2912,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -3964,7 +2963,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -4015,7 +3014,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -4066,7 +3065,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -4117,7 +3116,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -4168,7 +3167,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -4219,7 +3218,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -4270,7 +3269,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -4321,7 +3320,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -4372,7 +3371,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -4423,7 +3422,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -4474,7 +3473,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -4525,7 +3524,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -4576,7 +3575,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -4627,7 +3626,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -4678,7 +3677,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -4709,8 +3708,6 @@
           "--version",
           "27.0",
           "--xcodebuild-sim-runner",
-          "--record-video",
-          "failed_only",
           "--out-dir",
           "${ISOLATED_OUTDIR}",
           "--xcode-build-version",
@@ -4732,7 +3729,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -4749,6 +3746,11 @@
               "path": "Xcode.app"
             }
           ],
+          "optional_dimensions": {
+            "180": {
+              "cpu": "Apple_(Virtual)"
+            }
+          },
           "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com"
         },
         "test": "ios_web_shell_eg2tests_module",
@@ -4759,12 +3761,10 @@
         "args": [
           "--use-simulator-cache",
           "--platform",
-          "iPad Air 11-inch (M2)",
+          "iPad Pro 13-inch (M4)",
           "--version",
           "18.5",
           "--xcodebuild-sim-runner",
-          "--record-video",
-          "failed_only",
           "--out-dir",
           "${ISOLATED_OUTDIR}",
           "--xcode-build-version",
@@ -4776,7 +3776,7 @@
         },
         "module_name": "//ios/web/shell/test:ios_web_shell_eg2tests_module",
         "module_scheme": "xctest",
-        "name": "ios_web_shell_eg2tests_module iPad Air (6th generation) 18.5",
+        "name": "ios_web_shell_eg2tests_module iPad Pro 13-inch (M4) 18.5",
         "resultdb": {
           "enable": true,
           "has_native_resultdb_integration": true
@@ -4786,7 +3786,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -4804,7 +3804,7 @@
             }
           ],
           "optional_dimensions": {
-            "30": {
+            "180": {
               "cpu": "Apple_(Virtual)"
             }
           },
@@ -4812,18 +3812,16 @@
         },
         "test": "ios_web_shell_eg2tests_module",
         "test_id_prefix": "ninja://ios/web/shell/test:ios_web_shell_eg2tests_module/",
-        "variant_id": "iPad Air (6th generation) 18.5"
+        "variant_id": "iPad Pro 13-inch (M4) 18.5"
       },
       {
         "args": [
           "--use-simulator-cache",
           "--platform",
-          "iPad Air 11-inch (M2)",
+          "iPad Pro 13-inch (M4)",
           "--version",
           "26.5",
           "--xcodebuild-sim-runner",
-          "--record-video",
-          "failed_only",
           "--out-dir",
           "${ISOLATED_OUTDIR}",
           "--xcode-build-version",
@@ -4835,7 +3833,7 @@
         },
         "module_name": "//ios/web/shell/test:ios_web_shell_eg2tests_module",
         "module_scheme": "xctest",
-        "name": "ios_web_shell_eg2tests_module iPad Air (6th generation) 26.5",
+        "name": "ios_web_shell_eg2tests_module iPad Pro 13-inch (M4) 26.5",
         "resultdb": {
           "enable": true,
           "has_native_resultdb_integration": true
@@ -4845,7 +3843,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -4862,11 +3860,16 @@
               "path": "Xcode.app"
             }
           ],
+          "optional_dimensions": {
+            "180": {
+              "cpu": "Apple_(Virtual)"
+            }
+          },
           "service_account": "chromium-tester@chops-service-accounts.iam.gserviceaccount.com"
         },
         "test": "ios_web_shell_eg2tests_module",
         "test_id_prefix": "ninja://ios/web/shell/test:ios_web_shell_eg2tests_module/",
-        "variant_id": "iPad Air (6th generation) 26.5"
+        "variant_id": "iPad Pro 13-inch (M4) 26.5"
       },
       {
         "args": [
@@ -4896,7 +3899,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -4947,7 +3950,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -4998,7 +4001,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -5049,7 +4052,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -5100,7 +4103,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -5151,7 +4154,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -5202,7 +4205,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -5253,7 +4256,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -5304,7 +4307,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -5355,7 +4358,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -5406,7 +4409,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -5457,7 +4460,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -5508,7 +4511,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -5559,7 +4562,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -5610,7 +4613,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -5661,7 +4664,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -5712,7 +4715,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -5763,7 +4766,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -5814,7 +4817,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -5865,7 +4868,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -5916,7 +4919,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -5967,7 +4970,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -6018,7 +5021,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -6069,7 +5072,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -6120,7 +5123,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -6171,7 +5174,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -6222,7 +5225,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -6273,7 +5276,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -6324,7 +5327,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -6375,7 +5378,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -6426,7 +5429,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -6477,7 +5480,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -6528,7 +5531,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -6579,7 +5582,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -6630,7 +5633,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -6681,7 +5684,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -6732,7 +5735,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -6783,7 +5786,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -6834,7 +5837,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -6885,7 +5888,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -6936,7 +5939,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -6987,7 +5990,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -7038,7 +6041,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -7089,7 +6092,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -7140,7 +6143,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -7191,7 +6194,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -7242,7 +6245,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -7293,7 +6296,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -7344,7 +6347,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -7395,7 +6398,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -7446,7 +6449,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -7497,7 +6500,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -7548,7 +6551,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -7599,7 +6602,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {
@@ -7650,7 +6653,7 @@
             {
               "cipd_package": "infra/tools/mac_toolchain/${platform}",
               "location": ".",
-              "revision": "git_revision:07e67ff89ff11ed0e3071867ed6bb49319a91b05"
+              "revision": "git_revision:bc2eb815d4eb1d66007cc1f19dcbe57f59a76b2d"
             }
           ],
           "dimensions": {

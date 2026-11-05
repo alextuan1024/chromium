@@ -112,6 +112,7 @@ public class TabClosureParamsUnitTest {
         assertEquals("Should be TabCloseType.MULTIPLE", TabCloseType.MULTIPLE, params.tabCloseType);
         assertNull("Undo runnable should be null", params.undoRunnable);
         assertFalse("Should not be a tab group", params.isTabGroup);
+        assertTrue("Should allow unload handlers", params.allowUnloadHandlers);
     }
 
     @Test
@@ -123,6 +124,7 @@ public class TabClosureParamsUnitTest {
                         .hideTabGroups(true)
                         .saveToTabRestoreService(false)
                         .withUndoRunnable(mUndoRunnable)
+                        .allowUnloadHandlers(false)
                         .build();
 
         assertEquals("Tabs should be mTab1, mTab2", tabs, params.tabs);
@@ -135,6 +137,7 @@ public class TabClosureParamsUnitTest {
         assertEquals("Should be TabCloseType.MULTIPLE", TabCloseType.MULTIPLE, params.tabCloseType);
         assertEquals("Undo runnable should be set", mUndoRunnable, params.undoRunnable);
         assertFalse("Should not be a tab group", params.isTabGroup);
+        assertFalse("Should not allow unload handlers", params.allowUnloadHandlers);
     }
 
     @Test
@@ -174,6 +177,7 @@ public class TabClosureParamsUnitTest {
         assertEquals("Should be TabCloseType.MULTIPLE", TabCloseType.MULTIPLE, params.tabCloseType);
         assertNull("Undo runnable should be null", params.undoRunnable);
         assertTrue("Should be a tab group", params.isTabGroup);
+        assertTrue("Should allow unload handlers", params.allowUnloadHandlers);
     }
 
     @Test
@@ -190,6 +194,7 @@ public class TabClosureParamsUnitTest {
         assertEquals("Should be TabCloseType.ALL", TabCloseType.ALL, params.tabCloseType);
         assertNull("Undo runnable should be null", params.undoRunnable);
         assertFalse("Should not be a tab group", params.isTabGroup);
+        assertTrue("Should allow unload handlers", params.allowUnloadHandlers);
     }
 
     @Test
@@ -199,6 +204,7 @@ public class TabClosureParamsUnitTest {
                         .uponExit(true)
                         .hideTabGroups(true)
                         .withUndoRunnable(mUndoRunnable)
+                        .allowUnloadHandlers(false)
                         .build();
 
         assertNull("Tabs should be null", params.tabs);
@@ -211,6 +217,7 @@ public class TabClosureParamsUnitTest {
         assertEquals("Should be TabCloseType.ALL", TabCloseType.ALL, params.tabCloseType);
         assertEquals("Undo runnable should be set", mUndoRunnable, params.undoRunnable);
         assertFalse("Should not be a tab group", params.isTabGroup);
+        assertFalse("Should not allow unload handlers", params.allowUnloadHandlers);
     }
 
     @Test
@@ -227,8 +234,9 @@ public class TabClosureParamsUnitTest {
                         .recommendedNextTab(mTab2)
                         .uponExit(true)
                         .allowUndo(false)
-                        .tabClosingSource(TabClosingSource.TABLET_TAB_STRIP)
+                        .tabClosingSource(TabClosingSource.GRID_TAB_SWITCHER)
                         .withUndoRunnable(mUndoRunnable)
+                        .allowUnloadHandlers(false)
                         .build();
 
         assertEquals("Copy should equal the original", params, params.toBuilder().build());
@@ -241,8 +249,9 @@ public class TabClosureParamsUnitTest {
                         .allowUndo(false)
                         .hideTabGroups(true)
                         .saveToTabRestoreService(false)
-                        .tabClosingSource(TabClosingSource.TABLET_TAB_STRIP)
+                        .tabClosingSource(TabClosingSource.GRID_TAB_SWITCHER)
                         .withUndoRunnable(mUndoRunnable)
+                        .allowUnloadHandlers(false)
                         .build();
 
         assertEquals("Copy should equal the original", params, params.toBuilder().build());
@@ -256,8 +265,9 @@ public class TabClosureParamsUnitTest {
                         .allowUndo(false)
                         .hideTabGroups(true)
                         .saveToTabRestoreService(false)
-                        .tabClosingSource(TabClosingSource.TABLET_TAB_STRIP)
+                        .tabClosingSource(TabClosingSource.GRID_TAB_SWITCHER)
                         .withUndoRunnable(mUndoRunnable)
+                        .allowUnloadHandlers(false)
                         .build();
 
         assertEquals("Copy should equal the original", params, params.toBuilder().build());
@@ -309,8 +319,9 @@ public class TabClosureParamsUnitTest {
                         .allowUndo(false)
                         .hideTabGroups(true)
                         .saveToTabRestoreService(false)
-                        .tabClosingSource(TabClosingSource.TABLET_TAB_STRIP)
+                        .tabClosingSource(TabClosingSource.GRID_TAB_SWITCHER)
                         .withUndoRunnable(mUndoRunnable)
+                        .allowUnloadHandlers(false)
                         .build();
 
         TabClosureParams partialParams = params.toPartialClosureBuilder(List.of(mTab1)).build();
@@ -323,12 +334,14 @@ public class TabClosureParamsUnitTest {
         assertEquals("Tabs should be the surviving tabs", List.of(mTab1), partialParams.tabs);
         assertFalse("Should not allow undo", partialParams.allowUndo);
         assertTrue("Should hide tab groups", partialParams.hideTabGroups);
-        assertFalse("Should not save to tab restore service", partialParams.saveToTabRestoreService);
+        assertFalse(
+                "Should not save to tab restore service", partialParams.saveToTabRestoreService);
         assertEquals(
                 "Tab closing source should carry over",
-                TabClosingSource.TABLET_TAB_STRIP,
+                TabClosingSource.GRID_TAB_SWITCHER,
                 partialParams.tabClosingSource);
         assertEquals("Undo runnable should carry over", mUndoRunnable, partialParams.undoRunnable);
+        assertFalse("Should not allow unload handlers", partialParams.allowUnloadHandlers);
         assertFalse(
                 "uponExit is unsupported by a multi-tab closure and must be dropped",
                 partialParams.uponExit);
@@ -357,6 +370,16 @@ public class TabClosureParamsUnitTest {
         TabClosureParams tab2Params = TabClosureParams.closeTab(mTab2).build();
 
         assertEqualsAndHashCodeWork(tab1Params, tab1ParamsDuplicate, tab2Params);
+    }
+
+    @Test
+    public void testTabClosureParams_Equality_AllowUnloadHandlers() {
+        TabClosureParams params = TabClosureParams.closeTab(mTab1).build();
+        TabClosureParams duplicateParams = TabClosureParams.closeTab(mTab1).build();
+        TabClosureParams differentParams =
+                TabClosureParams.closeTab(mTab1).allowUnloadHandlers(false).build();
+
+        assertEqualsAndHashCodeWork(params, duplicateParams, differentParams);
     }
 
     private void assertEqualsAndHashCodeWork(

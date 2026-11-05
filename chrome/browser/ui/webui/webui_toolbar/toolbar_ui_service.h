@@ -12,7 +12,7 @@
 #include "base/memory/weak_ptr.h"
 #include "base/types/expected.h"
 #include "chrome/browser/ui/webui/webui_toolbar/adapters/icon_table_fetcher.h"
-#include "chrome/browser/ui/webui/webui_toolbar/adapters/navigation_controls_state_fetcher.h"
+#include "chrome/browser/ui/webui/webui_toolbar/adapters/toolbar_state_fetcher.h"
 #include "components/browser_apis/ui_controllers/toolbar/toolbar_ui_api.mojom.h"
 #include "components/browser_apis/ui_controllers/toolbar/toolbar_ui_api_data_model.mojom.h"
 #include "mojo/public/cpp/bindings/pending_receiver.h"
@@ -49,10 +49,6 @@ class ToolbarUIService : public toolbar_ui_api::mojom::ToolbarUIService {
         ShowContentSettingsBubbleCallback callback) = 0;
     virtual void OnContentSettingImagePointerDown(
         ::toolbar_ui_api::mojom::ContentSettingImageType type) = 0;
-    virtual void OnContentSettingImageAnimationEnded(
-        ::toolbar_ui_api::mojom::ContentSettingImageType type) = 0;
-    virtual void OnPageActionPointerDown(
-        ::toolbar_ui_api::mojom::PageActionId action_id) = 0;
     virtual void OnPageActionClick(
         ::toolbar_ui_api::mojom::PageActionId action_id,
         ::toolbar_ui_api::mojom::PageActionTrigger trigger,
@@ -95,19 +91,18 @@ class ToolbarUIService : public toolbar_ui_api::mojom::ToolbarUIService {
         ui::mojom::DragEventSource source) = 0;
     virtual void OnHomeButtonDropUrl(const GURL& url) = 0;
     virtual void OnHomeButtonDropFile(const gfx::PointF& drop_position) = 0;
+    virtual void OnHomeButtonDropText(const std::string& text) = 0;
+    virtual void OnToolbarDropUrl(const GURL& url) = 0;
+    virtual void OnToolbarDropText(const std::string& text) = 0;
     virtual void OnToolbarDropFile(const gfx::PointF& drop_position) = 0;
     virtual base::expected<std::monostate, mojo_base::mojom::ErrorPtr>
     OnOmniboxAction(toolbar_ui_api::mojom::OmniboxActionPtr action) = 0;
-    virtual void ShowAvatarMenu(bool is_pointer_interaction) = 0;
-    virtual void OnAvatarButtonMousePressed() = 0;
+    virtual void ShowAvatarMenu() = 0;
     virtual void SetAvatarButtonHovered(bool hovered) = 0;
     virtual void SetAvatarButtonFocused(bool focused) = 0;
     virtual void SetAvatarButtonIPHPromoShowing(bool showing) = 0;
     virtual void OnAppMenuFocusChanged(bool focused) = 0;
-    virtual void ExecuteExtensionAction(const std::string& extension_id,
-                                        bool is_pointer_interaction) = 0;
-    virtual void OnExtensionActionPointerDown(
-        const std::string& extension_id) = 0;
+    virtual void ExecuteExtensionAction(const std::string& extension_id) = 0;
     virtual void ShowExtensionContextMenu(const std::string& extension_id,
                                           ui::mojom::MenuSourceType source) = 0;
     virtual base::expected<
@@ -115,16 +110,14 @@ class ToolbarUIService : public toolbar_ui_api::mojom::ToolbarUIService {
         mojo_base::mojom::ErrorPtr>
     AdjustOmniboxTextForCopy(const std::u16string& text,
                              int32_t selection_start) = 0;
-    virtual void OnPerformanceInterventionButtonClicked(
-        bool is_mouse_interaction) = 0;
-    virtual void OnPerformanceInterventionButtonMousePressed() = 0;
-    virtual void OnMediaButtonClicked(bool is_mouse_interaction) = 0;
-    virtual void OnMediaButtonMousePressed() = 0;
+    virtual void OnPerformanceInterventionButtonClicked() = 0;
+    virtual void OnMediaButtonClicked() = 0;
+    virtual void OnGlicButtonClicked() = 0;
   };
 
   ToolbarUIService(
       mojo::PendingReceiver<toolbar_ui_api::mojom::ToolbarUIService> service,
-      std::unique_ptr<NavigationControlsStateFetcher> state_fetcher,
+      std::unique_ptr<ToolbarStateFetcher> state_fetcher,
       std::unique_ptr<IconTableFetcher> icon_table_fetcher,
       MetricsReporter* metrics_reporter,
       ToolbarUIServiceDelegate* delegate);
@@ -136,10 +129,13 @@ class ToolbarUIService : public toolbar_ui_api::mojom::ToolbarUIService {
 
   void SetDelegate(ToolbarUIServiceDelegate* delegate);
 
-  void OnNavigationControlsStateChanged(
-      const mojom::NavigationControlsState& state);
+  void OnToolbarStateChanged(const mojom::ToolbarState& state);
   void OnFocusRequested(toolbar_ui_api::mojom::FocusRequestTarget target);
   void ShowSplitTabsContextMenu();
+
+  // Blocks until every ToolbarUIObserver message sent so far has been
+  // dispatched by the WebUI.
+  void FlushObserversForTesting();
 
   // toolbar_ui_api::mojom::ToolbarUIService:
   void Bind(BindCallback callback) override;
@@ -161,10 +157,6 @@ class ToolbarUIService : public toolbar_ui_api::mojom::ToolbarUIService {
       ShowContentSettingsBubbleCallback callback) override;
   void OnContentSettingImagePointerDown(
       ::toolbar_ui_api::mojom::ContentSettingImageType type) override;
-  void OnContentSettingImageAnimationEnded(
-      ::toolbar_ui_api::mojom::ContentSettingImageType type) override;
-  void OnPageActionPointerDown(
-      ::toolbar_ui_api::mojom::PageActionId action_id) override;
   void OnPageActionClick(::toolbar_ui_api::mojom::PageActionId action_id,
                          ::toolbar_ui_api::mojom::PageActionTrigger trigger,
                          OnPageActionClickCallback callback) override;
@@ -203,10 +195,11 @@ class ToolbarUIService : public toolbar_ui_api::mojom::ToolbarUIService {
                      ui::mojom::DragEventSource source) override;
   void OnHomeButtonDropUrl(const GURL& url) override;
   void OnHomeButtonDropFile(const gfx::PointF& drop_position) override;
+  void OnHomeButtonDropText(const std::string& text) override;
+  void OnToolbarDropUrl(const GURL& url) override;
+  void OnToolbarDropText(const std::string& text) override;
   void OnToolbarDropFile(const gfx::PointF& drop_position) override;
-  void ShowAvatarMenu(bool is_pointer_interaction,
-                      ShowAvatarMenuCallback callback) override;
-  void OnAvatarButtonMousePressed() override;
+  void ShowAvatarMenu(ShowAvatarMenuCallback callback) override;
   void SetAvatarButtonHovered(bool hovered,
                               SetAvatarButtonHoveredCallback callback) override;
   void SetAvatarButtonFocused(bool focused,
@@ -215,26 +208,24 @@ class ToolbarUIService : public toolbar_ui_api::mojom::ToolbarUIService {
       bool showing,
       SetAvatarButtonIphPromoShowingCallback callback) override;
   void OnAppMenuFocusChanged(bool focused) override;
-  void ExecuteExtensionAction(const std::string& extension_id,
-                              bool is_pointer_interaction) override;
-  void OnExtensionActionPointerDown(const std::string& extension_id) override;
+  void ExecuteExtensionAction(const std::string& extension_id) override;
   void ShowExtensionContextMenu(const std::string& extension_id,
                                 ui::mojom::MenuSourceType source) override;
   void AdjustOmniboxTextForCopy(
       const std::u16string& text,
       int32_t selection_start,
       AdjustOmniboxTextForCopyCallback callback) override;
-  void OnPerformanceInterventionButtonClicked(
-      bool is_mouse_interaction) override;
-  void OnPerformanceInterventionButtonMousePressed() override;
-  void OnMediaButtonClicked(bool is_mouse_interaction) override;
-  void OnMediaButtonMousePressed() override;
+  void OnPerformanceInterventionButtonClicked() override;
+  void OnMediaButtonClicked() override;
+  // Handles click events from the WebUI Glic button by forwarding them to the
+  // delegate.
+  void OnGlicButtonClicked() override;
 
  private:
   mojo::Receiver<toolbar_ui_api::mojom::ToolbarUIService> service_;
   mojo::RemoteSet<toolbar_ui_api::mojom::ToolbarUIObserver> observers_;
 
-  std::unique_ptr<NavigationControlsStateFetcher> state_fetcher_;
+  std::unique_ptr<ToolbarStateFetcher> state_fetcher_;
   std::unique_ptr<IconTableFetcher> icon_table_fetcher_;
 
   // Not owned.

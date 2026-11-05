@@ -41,14 +41,20 @@ public class MediaCapturePickerInvoker {
         MediaCapturePickerDelegate impl =
                 ServiceLoaderUtil.maybeCreate(MediaCapturePickerDelegate.class);
         if (impl != null) {
+            Activity activity = ContextUtils.activityFromContext(context);
+            // We should always get a non-null ChromeActivity which is a FragmentActivity.
+            // Crash here if this is not true for investigation.
+            MediaCapturePickerHeadlessFragment fragment =
+                    MediaCapturePickerHeadlessFragment.getInstance(
+                            assumeNonNull((FragmentActivity) activity));
+            // One prompt per window. Reject before createScreenCaptureIntent().
+            if (fragment.hasPendingRequest()) {
+                // A capture prompt is already showing, cancel request.
+                delegate.onCancel();
+                return;
+            }
             Intent intent = impl.createScreenCaptureIntent(context, params, delegate);
             if (intent != null) {
-                Activity activity = ContextUtils.activityFromContext(context);
-                // We should always get a non-null ChromeActivity which is a FragmentActivity.
-                // Crash here if this is not true for investigation.
-                MediaCapturePickerHeadlessFragment fragment =
-                        MediaCapturePickerHeadlessFragment.getInstance(
-                                assumeNonNull((FragmentActivity) activity));
                 Log.d(
                         TAG,
                         "PickerInvoker: Starting AndroidCapturePrompt for tab/ window/ screen"
@@ -85,7 +91,13 @@ public class MediaCapturePickerInvoker {
             MediaCapturePickerManager.Delegate delegate,
             MediaCapturePickerDelegate impl) {
         Log.d(TAG, "PickerInvoker: AndroidCapturePrompt received user action %d", action);
-        if (action == CaptureAction.CAPTURE_CANCELLED) {
+        // Cancel if the user dismissed the prompt or the request/tab died while it was open, so we
+        // do not start a projection or arm ScreenCapture with no live requester.
+        boolean shouldCancel =
+                action == CaptureAction.CAPTURE_CANCELLED
+                        || webContents.isDestroyed()
+                        || delegate.isRequestDestroyed();
+        if (shouldCancel) {
             delegate.onCancel();
             MediaCapturePickerManager.recordResult(MediaCapturePickerManager.Result.CANCELLED);
         } else {
@@ -99,7 +111,22 @@ public class MediaCapturePickerInvoker {
                         tab.getTitle());
                 tab.loadIfNeeded(/* forceBackingSize= */ true);
                 WebContents pickedTabwebContents = tab.getWebContents();
-                assert pickedTabwebContents != null;
+                // The picked tab comes from picker delegate state, not this request. Don't share
+                // it if it's gone or this request's filter excludes it.
+                if (pickedTabwebContents == null
+                        || delegate.shouldFilterWebContents(pickedTabwebContents)) {
+                    Log.w(TAG, "PickerInvoker: Picked tab can't be shared, cancel request");
+                    delegate.onCancel();
+                    MediaCapturePickerManager.recordResult(
+                            MediaCapturePickerManager.Result.CANCELLED);
+                    impl.onFinish(webContents);
+                    return;
+                }
+
+                // Read the user's audio choice before startAppContentMediaProjection().
+                // TODO(crbug.com/574286713): remove the ordering dependency between
+                // getPickedTab(), shouldShareAudio() and startAppContentMediaProjection().
+                final boolean shouldShareAudio = impl.shouldShareAudio();
 
                 // Bring tab and its window to front. This is necessary for tabs belonging to a
                 // minimized window, or sharing will not be able to start.
@@ -109,8 +136,11 @@ public class MediaCapturePickerInvoker {
 
                 impl.startAppContentMediaProjection(webContents, result);
 
-                Log.d(TAG, "PickerInvoker: call delegate.onPickTab");
-                delegate.onPickTab(pickedTabwebContents, impl.shouldShareAudio());
+                Log.d(
+                        TAG,
+                        "PickerInvoker: call delegate.onPickTab, shareAudio=%b",
+                        shouldShareAudio);
+                delegate.onPickTab(pickedTabwebContents, shouldShareAudio);
                 MediaCapturePickerManager.recordResult(
                         MediaCapturePickerManager.Result.TAB_SELECTED);
             } else {

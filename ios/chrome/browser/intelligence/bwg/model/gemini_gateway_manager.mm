@@ -100,6 +100,7 @@
                                  ? actor_browser_agent->browser_id()
                                  : SessionID::InvalidValue()];
     _gateway.actuationHandler = _actuationHandler;
+    _sessionHandler.chatMessageHandler = _actuationHandler;
   }
 }
 
@@ -109,6 +110,7 @@
   _sessionHandler = nil;
   _pageStateChangeHandler = nil;
   _cameraHandler = nil;
+  _tabPickerHandler.sharedTabsManager = nullptr;
   _tabPickerHandler = nil;
   [_actuationHandler disconnect];
   _actuationHandler = nil;

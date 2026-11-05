@@ -14,8 +14,6 @@
 #include "chrome/browser/accessibility/accessibility_labels_service_factory.h"
 #include "chrome/browser/actor/actor_script_tool_receiver.h"
 #include "chrome/browser/buildflags.h"
-#include "chrome/browser/dom_distiller/dom_distiller_service_factory.h"
-#include "chrome/browser/geic/geic_host.h"
 #include "chrome/browser/glic/host/glic_page_handler.h"
 #include "chrome/browser/glic/host/guest_util.h"
 #include "chrome/browser/glic/public/features.h"
@@ -30,6 +28,7 @@
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/profiles/profile_manager.h"
 #include "chrome/browser/pwc/pwc_api_binder.h"
+#include "chrome/browser/reader_mode/reader_mode_service_factory.h"
 #include "chrome/browser/signin/identity_manager_factory.h"
 #include "chrome/browser/speech/on_device_speech_recognition_impl.h"
 #include "chrome/browser/ssl/chrome_security_state_util.h"
@@ -62,6 +61,7 @@
 #include "content/public/browser/browser_context.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/render_process_host.h"
+#include "content/public/browser/web_contents.h"
 #include "content/public/common/content_features.h"
 #include "content/public/common/url_constants.h"
 #include "mojo/public/cpp/bindings/binder_map.h"
@@ -81,6 +81,7 @@
 #include "third_party/blink/public/mojom/prerender/prerender.mojom.h"
 #include "third_party/blink/public/public_buildflags.h"
 #include "ui/accessibility/accessibility_features.h"
+#include "ui/accessibility/ax_mode.h"
 
 #if BUILDFLAG(ENABLE_UNHANDLED_TAP)
 #include "chrome/browser/android/contextualsearch/unhandled_tap_notifier_impl.h"  // nogncheck crbug.com/40147906
@@ -92,11 +93,13 @@
     BUILDFLAG(IS_CHROMEOS)
 #include "chrome/browser/screen_ai/screen_ai_service_router.h"
 #include "chrome/browser/screen_ai/screen_ai_service_router_factory.h"
+#include "chrome/browser/text_detection/text_detection_impl.h"
 #include "chrome/browser/web_applications/sub_apps/sub_apps_service_impl.h"
+#include "services/shape_detection/public/mojom/textdetection.mojom.h"
 #endif
 
 #if BUILDFLAG(IS_ANDROID)
-#include "chrome/browser/android/dom_distiller/distiller_ui_handle_android.h"
+#include "chrome/browser/android/reader_mode/reader_mode_ui_handle_android.h"
 #include "chrome/browser/facilitated_payments/payment_link_handler_binder.h"
 #include "chrome/browser/offline_pages/android/offline_page_auto_fetcher.h"
 #include "chrome/common/offline_page_auto_fetcher.mojom.h"
@@ -105,8 +108,6 @@
 #include "third_party/blink/public/mojom/installedapp/installed_app_provider.mojom.h"
 #else
 #include "chrome/browser/badging/badge_manager.h"
-#include "chrome/browser/geic/geic.mojom.h"
-#include "chrome/browser/geic/geic_pwc_manager.h"
 #include "chrome/browser/payments/payment_request_factory.h"
 #include "chrome/browser/prefs/persistent_renderer_prefs_manager.h"
 #include "chrome/browser/web_applications/web_install_service_impl.h"
@@ -129,11 +130,13 @@
 #endif
 
 #if BUILDFLAG(ENABLE_SPEECH_SERVICE)
+#include "chrome/browser/accessibility/live_caption/live_caption_controller_factory.h"
 #include "chrome/browser/accessibility/live_caption/live_caption_speech_recognition_host.h"
 #include "chrome/browser/accessibility/live_caption/live_caption_unavailability_notifier.h"
 #include "chrome/browser/speech/speech_recognition_client_browser_interface.h"
 #include "chrome/browser/speech/speech_recognition_client_browser_interface_factory.h"
 #include "chrome/browser/speech/speech_recognition_service.h"
+#include "components/live_caption/live_caption_controller.h"
 #include "media/mojo/mojom/renderer_extensions.mojom.h"
 #include "media/mojo/mojom/speech_recognition.mojom.h"  // nogncheck
 #endif  // BUILDFLAG(ENABLE_SPEECH_SERVICE)
@@ -196,6 +199,12 @@ void BindUnhandledTapWebContentsObserver(
 void BindImageAnnotator(
     content::RenderFrameHost* frame_host,
     mojo::PendingReceiver<image_annotation::mojom::Annotator> receiver) {
+  content::WebContents* web_contents =
+      content::WebContents::FromRenderFrameHost(frame_host);
+  if (!web_contents || !web_contents->GetAccessibilityMode().has_mode(
+                           ui::AXMode::kLabelImages)) {
+    return;
+  }
   AccessibilityLabelsServiceFactory::GetForProfile(
       Profile::FromBrowserContext(
           frame_host->GetProcess()->GetBrowserContext()))
@@ -236,10 +245,10 @@ void BindDistillerJavaScriptService(
   }
 
   dom_distiller::DomDistillerService* dom_distiller_service =
-      dom_distiller::DomDistillerServiceFactory::GetForBrowserContext(
+      reader_mode::ReaderModeServiceFactory::GetForBrowserContext(
           web_contents->GetBrowserContext());
 #if BUILDFLAG(IS_ANDROID)
-  static_cast<dom_distiller::android::DistillerUIHandleAndroid*>(
+  static_cast<reader_mode::android::ReaderModeUIHandleAndroid*>(
       dom_distiller_service->GetDistillerUIHandle())
       ->set_render_frame_host(frame_host);
 #endif
@@ -293,18 +302,30 @@ void BindNetworkHintsHandler(
 }
 
 #if BUILDFLAG(ENABLE_SPEECH_SERVICE)
+bool IsSpeechRecognitionAllowed(Profile* profile,
+                                content::RenderFrameHost* frame_host) {
+  if (!profile || !captions::IsLiveCaptionFeatureSupported()) {
+    return false;
+  }
+  PrefService* profile_prefs = profile->GetPrefs();
+  if (profile_prefs->GetBoolean(prefs::kLiveCaptionEnabled)) {
+    return true;
+  }
+  if (!captions::IsHeadlessCaptionFeatureSupported() ||
+      !profile_prefs->GetBoolean(prefs::kHeadlessCaptionEnabled)) {
+    return false;
+  }
+  auto* controller =
+      captions::LiveCaptionControllerFactory::GetForProfileIfExists(profile);
+  return controller && controller->IsTranscriptionAllowed(frame_host);
+}
+
 void BindSpeechRecognitionContextHandler(
     content::RenderFrameHost* frame_host,
     mojo::PendingReceiver<media::mojom::SpeechRecognitionContext> receiver) {
   Profile* profile = Profile::FromBrowserContext(
       frame_host->GetProcess()->GetBrowserContext());
-  if (!profile) {
-    return;
-  }
-  PrefService* profile_prefs = profile->GetPrefs();
-  if (!(profile_prefs->GetBoolean(prefs::kLiveCaptionEnabled) ||
-        profile_prefs->GetBoolean(prefs::kHeadlessCaptionEnabled)) ||
-      !captions::IsLiveCaptionFeatureSupported()) {
+  if (!IsSpeechRecognitionAllowed(profile, frame_host)) {
     return;
   }
 
@@ -328,7 +349,7 @@ void BindSpeechRecognitionClientBrowserInterfaceHandler(
     Profile* profile = Profile::FromBrowserContext(
         frame_host->GetProcess()->GetBrowserContext());
     SpeechRecognitionClientBrowserInterfaceFactory::GetForProfile(profile)
-        ->BindReceiver(std::move(receiver));
+        ->BindReceiver(std::move(receiver), frame_host->GetGlobalId());
   }
 }
 
@@ -338,10 +359,7 @@ void BindSpeechRecognitionRecognizerClientHandler(
         client_receiver) {
   Profile* profile = Profile::FromBrowserContext(
       frame_host->GetProcess()->GetBrowserContext());
-  PrefService* profile_prefs = profile->GetPrefs();
-  if ((profile_prefs->GetBoolean(prefs::kLiveCaptionEnabled) ||
-       profile_prefs->GetBoolean(prefs::kHeadlessCaptionEnabled)) &&
-      captions::IsLiveCaptionFeatureSupported()) {
+  if (IsSpeechRecognitionAllowed(profile, frame_host)) {
     captions::LiveCaptionSpeechRecognitionHost::Create(
         frame_host, std::move(client_receiver));
   }
@@ -402,6 +420,12 @@ void BindScreen2xMainContentExtractor(
       frame_host->GetProcess()->GetBrowserContext())
       ->BindMainContentExtractor(std::move(receiver));
 }
+
+void BindTextDetection(
+    content::RenderFrameHost* frame_host,
+    mojo::PendingReceiver<shape_detection::mojom::TextDetection> receiver) {
+  text_detection::TextDetectionImpl::Create(frame_host, std::move(receiver));
+}
 #endif
 
 void BindModelBroker(
@@ -454,7 +478,6 @@ void PopulateChromeFrameBinders(
   // remains the security boundary for frames that do get the binders.
   if (render_frame_host->GetProcess()->IsPrivileged()) {
     map->Add<pwc::mojom::PrivilegedBridge>(&pwc::BindPrivilegedBridge);
-    map->Add<geic::mojom::GeicApi>(&geic::BindGeicApi);
   }
   map->Add<image_annotation::mojom::Annotator>(&BindImageAnnotator);
 
@@ -518,7 +541,6 @@ void PopulateChromeFrameBinders(
 #endif  // BUILDFLAG(ENABLE_UNHANDLED_TAP)
 
 #else
-  map->Add<geic::mojom::GeicBrowserHost>(&geic::BindGeicBrowserHost);
   map->Add<blink::mojom::BadgeService>(
       &badging::BadgeManager::BindFrameReceiverIfAllowed);
   map->Add<blink::mojom::PersistentRendererPrefsService>(
@@ -580,6 +602,8 @@ void PopulateChromeFrameBinders(
 
   map->Add<screen_ai::mojom::Screen2xMainContentExtractor>(
       &BindScreen2xMainContentExtractor);
+
+  map->Add<shape_detection::mojom::TextDetection>(&BindTextDetection);
 #endif
 
 #if BUILDFLAG(IS_WIN)

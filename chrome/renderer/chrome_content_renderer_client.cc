@@ -20,7 +20,6 @@
 #include "base/functional/bind.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/metrics/user_metrics_action.h"
-#include "base/no_destructor.h"
 #include "base/notreached.h"
 #include "base/process/current_process.h"
 #include "base/profiler/thread_group_profiler.h"
@@ -111,12 +110,12 @@
 #include "components/page_content_annotations/core/page_content_annotations_features.h"
 #include "components/page_load_metrics/renderer/metrics_render_frame_observer.h"
 #include "components/paint_preview/buildflags/buildflags.h"
-#include "components/password_manager/core/common/password_manager_features.h"
+#include "components/password_manager/core/common/remote_actor/remote_actor_features.h"
 #include "components/pdf/common/constants.h"
 #include "components/pdf/common/pdf_util.h"
 #include "components/permissions/features.h"
 #include "components/safe_browsing/buildflags.h"
-#include "components/safe_browsing/content/renderer/threat_dom_details.h"
+#include "components/safe_browsing/content/renderer/threat_details/threat_dom_details.h"
 #include "components/sampling_profiler/process_type.h"
 #include "components/sampling_profiler/thread_profiler.h"
 #include "components/security_interstitials/content/renderer/security_interstitial_page_controller_delegate_impl.h"
@@ -188,6 +187,7 @@
 #include "ui/base/page_transition_types.h"
 #include "ui/base/resource/resource_bundle.h"
 #include "ui/base/webui/jstemplate_builder.h"
+#include "ui/webui/buildflags.h"
 #include "url/origin.h"
 #include "v8/include/v8-isolate.h"
 
@@ -205,11 +205,8 @@
 #include "chrome/renderer/indigo/indigo_agent.h"
 #include "chrome/renderer/indigo/onboarding_agent.h"
 #include "chrome/renderer/password_manager/remote_actor_credential_sharing_extension.h"
-#include "chrome/renderer/searchbox/searchbox.h"
-#include "chrome/renderer/searchbox/searchbox_extension.h"
 #include "components/record_replay/content/renderer/record_replay_agent.h"
 #include "components/record_replay/core/common/record_replay_features.h"
-#include "components/search/ntp_features.h"  // nogncheck
 #endif
 
 #if BUILDFLAG(ENABLE_SPEECH_SERVICE)
@@ -227,6 +224,7 @@
 #include "extensions/common/constants.h"
 #include "extensions/common/context_data.h"
 #include "extensions/common/extension_urls.h"
+#include "extensions/common/manifest_handlers/back_forward_cache_info.h"
 #include "extensions/common/manifest_handlers/csp_info.h"
 #include "extensions/common/manifest_handlers/web_accessible_resources_info.h"
 #include "extensions/common/switches.h"
@@ -276,6 +274,11 @@
 
 #if BUILDFLAG(ENABLE_LIBRARY_CDMS) || BUILDFLAG(IS_WIN) || BUILDFLAG(IS_ANDROID)
 #include "chrome/renderer/media/chrome_key_systems.h"
+#endif
+
+#if BUILDFLAG(ENABLE_WEBUI_NTP)
+#include "chrome/renderer/searchbox/searchbox.h"
+#include "chrome/renderer/searchbox/searchbox_extension.h"
 #endif
 
 using autofill::AutofillAgent;
@@ -368,6 +371,13 @@ std::unique_ptr<base::Unwinder> CreateV8Unwinder(v8::Isolate* isolate) {
 }  // namespace
 
 ChromeContentRendererClient::ChromeContentRendererClient()
+    : ChromeContentRendererClient(
+          /*create_extensions_client=*/
+          !base::CommandLine::ForCurrentProcess()->HasSwitch(
+              switches::kSingleProcess)) {}
+
+ChromeContentRendererClient::ChromeContentRendererClient(
+    bool create_extensions_client)
 #if BUILDFLAG(IS_WIN)
     : remote_module_watcher_(nullptr, base::OnTaskRunnerDeleter(nullptr))
 #endif
@@ -385,8 +395,10 @@ ChromeContentRendererClient::ChromeContentRendererClient()
       sampling_profiler::ThreadProfiler::CreateAndStartOnMainThread();
 #endif
 #if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
-  extensions_client_ =
-      std::make_unique<extensions::ScopedChromeExtensionsClient>();
+  if (create_extensions_client) {
+    extensions_client_ =
+        std::make_unique<extensions::ScopedChromeExtensionsClient>();
+  }
   ChromeExtensionsRendererClient::Create();
 #endif
 }
@@ -465,8 +477,6 @@ void ChromeContentRendererClient::RenderThreadStarted() {
       WebString::FromAscii(webapps::kIsolatedAppScheme));
 #endif  // BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX) ||
         // BUILDFLAG(IS_CHROMEOS)
-  WebSecurityPolicy::RegisterURLSchemeAsCodeCacheWithHashing(
-      WebString::FromAscii(extensions::kExtensionScheme));
 #endif  // BUILDFLAG(ENABLE_EXTENSIONS_CORE)
 
 #if BUILDFLAG(ENABLE_SPELLCHECK)
@@ -559,7 +569,7 @@ void ChromeContentRendererClient::RenderThreadStarted() {
   bool should_restrict_chrome_search_scheme =
       !command_line->HasSwitch(switches::kInstantProcess);
 
-#if !BUILDFLAG(IS_ANDROID)
+#if BUILDFLAG(ENABLE_WEBUI_NTP)
   // If the feature is enabled, the `kInstantProcess` command line switch is
   // replaced by the `is_instant_process` flag, which is set later. As a result,
   // we cannot perform chrome-search scheme registration at this stage. This
@@ -569,7 +579,7 @@ void ChromeContentRendererClient::RenderThreadStarted() {
   if (base::FeatureList::IsEnabled(features::kInstantUsesSpareRenderer)) {
     should_restrict_chrome_search_scheme = false;
   }
-#endif  // !BUILDFLAG(IS_ANDROID)
+#endif  // BUILDFLAG(ENABLE_WEBUI_NTP)
   if (should_restrict_chrome_search_scheme) {
     WebSecurityPolicy::RegisterURLSchemeAsDisplayIsolated(chrome_search_scheme);
   }
@@ -691,7 +701,7 @@ void ChromeContentRendererClient::RenderFrameCreated(
   TabContextDecryptionTokenExtension::Create(render_frame);
   TrustedVaultEncryptionKeysExtension::Create(render_frame);
 #if !BUILDFLAG(IS_ANDROID)
-  if (features::RemoteActorCredentialSharingEnabled() &&
+  if (password_manager::features::RemoteActorCredentialSharingEnabled() &&
       render_frame->IsMainFrame()) {
     RemoteActorCredentialSharingExtension::Create(render_frame);
   }
@@ -741,15 +751,27 @@ void ChromeContentRendererClient::RenderFrameCreated(
   blink::AssociatedInterfaceRegistry* associated_interfaces =
       render_frame_observer->associated_interfaces();
 
-  if (!render_frame->IsInFencedFrameTree() ||
-      base::FeatureList::IsEnabled(blink::features::kFencedFramesAPIChanges)) {
+  const bool is_pdf_renderer =
+#if BUILDFLAG(ENABLE_PDF)
+      pdf::IsPdfRenderer();
+#else
+      false;
+#endif
+  if (!is_pdf_renderer && (!render_frame->IsInFencedFrameTree() ||
+                           base::FeatureList::IsEnabled(
+                               blink::features::kFencedFramesAPIChanges))) {
     auto password_autofill_agent = std::make_unique<PasswordAutofillAgent>(
         render_frame, associated_interfaces);
     auto password_generation_agent = std::make_unique<PasswordGenerationAgent>(
         render_frame, password_autofill_agent.get(), associated_interfaces);
-    new AutofillAgent(render_frame, std::move(password_autofill_agent),
-                      std::move(password_generation_agent),
-                      associated_interfaces);
+    auto* autofill_agent = new AutofillAgent(
+        render_frame, std::move(password_autofill_agent),
+        std::move(password_generation_agent), associated_interfaces);
+    if (base::FeatureList::IsEnabled(
+            autofill::features::kAutofillCustomFormControlScripts)) {
+      autofill_agent->EnableCustomFormControlScripts(
+          ISOLATED_WORLD_ID_AUTOFILL_CUSTOM_FORM_CONTROLS);
+    }
   }
 
 #if !BUILDFLAG(IS_ANDROID)
@@ -785,7 +807,7 @@ void ChromeContentRendererClient::RenderFrameCreated(
     subresource_filter_agent->Initialize();
   }
 
-#if !BUILDFLAG(IS_ANDROID)
+#if BUILDFLAG(ENABLE_WEBUI_NTP)
   if (process_state::IsInstantProcess() && render_frame->IsMainFrame()) {
     new SearchBox(render_frame);
   }
@@ -819,9 +841,14 @@ void ChromeContentRendererClient::RenderFrameCreated(
   }
 #endif
 
-  if (base::FeatureList::IsEnabled(
-          wallet::features::kWalletablePassDetection) &&
-      render_frame->IsMainFrame()) {
+  // Shared by Wallet pass detection and payment QR code detection. The main
+  // frame check precedes the feature flag checks so that subframes never enroll
+  // into either experiment.
+  if (render_frame->IsMainFrame() &&
+      (base::FeatureList::IsEnabled(
+           wallet::features::kWalletablePassDetection) ||
+       base::FeatureList::IsEnabled(
+           payments::facilitated::kEnableDesktopQrCodeDetection))) {
     wallet::ImageExtractor::Create(render_frame, registry);
   }
 
@@ -929,6 +956,10 @@ bool ChromeContentRendererClient::IsDomStorageDisabled() const {
   // opaque origins). This avoids a renderer kill by the browser process which
   // isn't expecting PDF renderer processes to ever use DOM storage
   // interfaces. See https://crbug.com/357014503.
+  //
+  // TODO(crbug.com/559567801): Remove this once `features::kPdfOpaqueOrigin`
+  // ships, since PDF documents will then have opaque origins, for which DOM
+  // storage access already throws a SecurityError.
   return pdf::IsPdfRenderer();
 #else
   return false;
@@ -943,6 +974,10 @@ bool ChromeContentRendererClient::AreDedicatedWorkersDisabled() const {
   // throws a SecurityError DOMException. This avoids a renderer kill by the
   // browser process which isn't expecting PDF renderer processes to ever create
   // dedicated workers. See https://crbug.com/553118313.
+  //
+  // TODO(crbug.com/559567801): Remove this once `features::kPdfOpaqueOrigin`
+  // ships, since PDF documents will then have opaque origins, for which
+  // creating a dedicated worker already throws a SecurityError.
   return pdf::IsPdfRenderer();
 #else
   return false;
@@ -1287,6 +1322,18 @@ bool ChromeContentRendererClient::AllowPopup() {
 #endif
 }
 
+bool ChromeContentRendererClient::IsUnboundedElementAllowed(
+    const blink::WebSecurityOrigin& origin) {
+#if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
+  if (!origin.IsNull() &&
+      origin.Protocol().Equals(extensions::kExtensionScheme) &&
+      origin.Host().Equals(extension_misc::kContextualTasksExtensionId)) {
+    return true;
+  }
+#endif
+  return false;
+}
+
 bool ChromeContentRendererClient::ShouldNotifyServiceWorkerOnWebSocketActivity(
     v8::Local<v8::Context> context) {
 #if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
@@ -1330,7 +1377,7 @@ void ChromeContentRendererClient::WillSendRequest(
     return;
   }
 
-#if !BUILDFLAG(IS_ANDROID)
+#if BUILDFLAG(ENABLE_WEBUI_NTP)
   SearchBox* search_box =
       SearchBox::Get(content::RenderFrame::FromWebFrame(frame->LocalRoot()));
   if (search_box) {
@@ -1340,7 +1387,7 @@ void ChromeContentRendererClient::WillSendRequest(
       search_box->GenerateImageURLFromTransientURL(target_url, new_url);
     }
   }
-#endif  // !BUILDFLAG(IS_ANDROID)
+#endif  // BUILDFLAG(ENABLE_WEBUI_NTP)
 }
 
 bool ChromeContentRendererClient::IsPrefetchOnly(
@@ -1521,9 +1568,18 @@ void ChromeContentRendererClient::
   if (IsStandaloneContentExtensionProcess()) {
     // These Web API features are exposed in extensions.
     blink::WebRuntimeFeatures::EnableWebUSBOnServiceWorkers(true);
-#if !BUILDFLAG(IS_ANDROID)
-    blink::WebRuntimeFeatures::EnableWebHIDOnServiceWorkers(true);
-#endif  // !BUILDFLAG(IS_ANDROID)
+#if BUILDFLAG(ENABLE_DESKTOP_ANDROID_EXTENSIONS)
+    if (base::FeatureList::IsEnabled(blink::features::kWebHID) &&
+        base::FeatureList::IsEnabled(
+            features::kWebHidOnDesktopAndroidServiceWorkers))
+#endif  // BUILDFLAG(ENABLE_DESKTOP_ANDROID_EXTENSIONS)
+    {
+      blink::WebRuntimeFeatures::EnableWebHIDOnServiceWorkers(true);
+    }
+    if (base::FeatureList::IsEnabled(
+            blink::features::kClipboardOnExtensionServiceWorker)) {
+      blink::WebRuntimeFeatures::EnableClipboardOnExtensionServiceWorker(true);
+    }
     blink::WebRuntimeFeatures::EnableAIPromptAPIForWorkers(true);
     blink::WebRuntimeFeatures::EnableAIPromptAPILegacyIdentifiers(true);
     blink::WebRuntimeFeatures::EnableAIPromptAPILegacyParams(true);
@@ -1664,6 +1720,21 @@ bool ChromeContentRendererClient::IsSafeRedirectTarget(
   return true;
 }
 
+bool ChromeContentRendererClient::ShouldUsePerBrowsingInstanceWindowAgent(
+    const url::Origin& origin) {
+#if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
+  if (origin.scheme() == extensions::kExtensionScheme) {
+    scoped_refptr<const extensions::Extension> extension =
+        extensions::RendererExtensionRegistry::Get()
+            ->GetRefCountedExtensionOrAppByURL(origin.GetURL(),
+                                               /*include_guid=*/true);
+    return extension &&
+           extensions::BackForwardCacheInfo::IsSupported(*extension);
+  }
+#endif  // BUILDFLAG(ENABLE_EXTENSIONS_CORE)
+  return false;
+}
+
 void ChromeContentRendererClient::DidSetUserAgent(
     const std::string& user_agent) {
 #if BUILDFLAG(ENABLE_PRINTING)
@@ -1696,15 +1767,16 @@ void ChromeContentRendererClient::AppendContentSecurityPolicy(
 
   // Append a minimum CSP to ensure the extension can't relax the default
   // applied CSP through means like Service Worker.
-  const std::string* default_csp = extensions::CSPInfo::GetMinimumCSPToAppend(
-      *extension, gurl.GetPath(),
-      /*is_service_worker=*/content::WorkerThread::GetCurrentId() != 0);
-  if (!default_csp)
+  std::optional<std::string_view> default_csp =
+      extensions::CSPInfo::GetMinimumCSPToAppend(
+          *extension, gurl.GetPath(),
+          /*is_service_worker=*/content::WorkerThread::GetCurrentId() != 0);
+  if (!default_csp) {
     return;
+  }
 
   csp->push_back({blink::WebString::FromUtf8(*default_csp),
                   network::mojom::ContentSecurityPolicyType::kEnforce,
                   network::mojom::ContentSecurityPolicySource::kHTTP});
 #endif
 }
-

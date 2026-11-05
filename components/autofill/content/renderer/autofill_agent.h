@@ -5,6 +5,7 @@
 #ifndef COMPONENTS_AUTOFILL_CONTENT_RENDERER_AUTOFILL_AGENT_H_
 #define COMPONENTS_AUTOFILL_CONTENT_RENDERER_AUTOFILL_AGENT_H_
 
+#include <cstdint>
 #include <list>
 #include <memory>
 #include <optional>
@@ -15,6 +16,7 @@
 
 #include "base/compiler_specific.h"
 #include "base/functional/callback_helpers.h"
+#include "base/functional/function_ref.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/raw_ref.h"
 #include "base/memory/weak_ptr.h"
@@ -53,6 +55,7 @@
 
 namespace autofill {
 
+class CustomFormControlScriptExecutor;
 class PasswordAutofillAgent;
 class PasswordGenerationAgent;
 
@@ -100,6 +103,8 @@ class AutofillAgent : public content::RenderFrameObserver,
       base::StrongAlias<class UserGestureRequiredTag, bool>;
   using UsesKeyboardAccessoryForSuggestions =
       base::StrongAlias<class UsesKeyboardAccessoryForSuggestionsTag, bool>;
+  using KeyboardAccessoryUsesDynamicPositioning =
+      base::StrongAlias<class KeyboardAccessoryUsesDynamicPositioningTag, bool>;
 
   struct Config {
     // Controls whether or not all datalists shall be extracted into
@@ -131,6 +136,11 @@ class AutofillAgent : public content::RenderFrameObserver,
     // information in or near the keyboard instead.
     UsesKeyboardAccessoryForSuggestions uses_keyboard_accessory_for_suggestions{
         BUILDFLAG(IS_ANDROID)};
+
+    // Controls whether the keyboard accessory is dynamically positioned near
+    // the focused field rather than docked at the bottom of the screen.
+    KeyboardAccessoryUsesDynamicPositioning
+        keyboard_accessory_uses_dynamic_positioning{false};
   };
 
   // `PasswordAutofillAgent` and `PasswordGenerationAgent` may be `nullptr`. If
@@ -148,6 +158,12 @@ class AutofillAgent : public content::RenderFrameObserver,
 
   void BindPendingReceiver(
       mojo::PendingAssociatedReceiver<mojom::AutofillAgent> pending_receiver);
+
+  // Lets custom form control scripts run in this frame, in the isolated world
+  // `world_id` (Chrome passes
+  // `ISOLATED_WORLD_ID_AUTOFILL_CUSTOM_FORM_CONTROLS`). Requires
+  // `features::kAutofillCustomFormControlScripts`. Call at most once.
+  void EnableCustomFormControlScripts(int32_t world_id);
 
   blink::WebDocument GetDocument() const;
 
@@ -177,10 +193,10 @@ class AutofillAgent : public content::RenderFrameObserver,
 
   // mojom::AutofillAgent:
   void ScrollFieldIntoView(FieldRendererId field_id) override;
-  void TriggerFormExtraction() override;
+  void TriggerFormExtraction(bool force) override;
   void TriggerFormExtractionWithResponse(
+      bool force,
       base::OnceCallback<void(bool)> callback) override;
-  void ClearFormCache() override;
   void ApplyFieldsAction(mojom::FormActionType action_type,
                          mojom::ActionPersistence action_persistence,
                          const std::vector<FormFieldData::FillData>& fields,
@@ -271,10 +287,10 @@ class AutofillAgent : public content::RenderFrameObserver,
 
   // TODO(crbug.com/376628389): Remove.
   void OnTextFieldValueChanged(const blink::WebFormControlElement& element,
-                               const SynchronousFormCache& form_cache);
+                               SynchronousFormCache& form_cache);
   void OnSelectControlSelectionChanged(
       const blink::WebFormControlElement& element,
-      const SynchronousFormCache& form_cache);
+      SynchronousFormCache& form_cache);
 
   bool IsPrerendering() const;
 
@@ -294,11 +310,13 @@ class AutofillAgent : public content::RenderFrameObserver,
   // blink::WebAutofillClient:
 
   // Signals from blink that a form related element changed dynamically,
-  // passing the changed element as well as the type of the change.
+  // passing the type of the change, the element's FormControlTypeForAutofill()
+  // if it is a form control, and a getter for the changed element.
   // TODO(crbug.com/40281981): Fire the signal for elements that become hidden.
   void DidChangeFormRelatedElementDynamically(
-      const blink::WebElement&,
-      blink::WebFormRelatedChangeType) override;
+      blink::WebFormRelatedChangeType,
+      std::optional<blink::mojom::FormControlType> form_control_type,
+      base::FunctionRef<blink::WebElement()> element) override;
 
   // content::RenderFrameObserver:
 
@@ -440,6 +458,8 @@ class AutofillAgent : public content::RenderFrameObserver,
   // Hides any currently showing Autofill popup.
   void HidePopup();
 
+  gfx::Rect GetCaretBounds() const;
+
   // Helpers for SelectFieldOptionsChanged() and
   // DataListOptionsChanged(), which get called after a timer that is restarted
   // when another event of the same type started.
@@ -483,6 +503,13 @@ class AutofillAgent : public content::RenderFrameObserver,
   std::unique_ptr<FormSubmissionTracker> form_tracker_;
 
   mojo::AssociatedReceiver<mojom::AutofillAgent> receiver_{this};
+
+  // Runs the custom form control script of the current document. Only exists
+  // if custom form control scripts are enabled (see
+  // `EnableCustomFormControlScripts()`), until the frame is destroyed (see
+  // `OnDestruct()`).
+  std::unique_ptr<CustomFormControlScriptExecutor>
+      custom_form_control_script_executor_;
 
   mojo::AssociatedRemote<mojom::AutofillDriver> autofill_driver_;
 

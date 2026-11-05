@@ -36,8 +36,8 @@
 #include "components/mirroring/service/audio_capturing_callback.h"
 #include "components/mirroring/service/captured_audio_input.h"
 #include "components/mirroring/service/mirroring_features.h"
+#include "components/mirroring/service/openscreen_rpc_dispatcher.h"
 #include "components/mirroring/service/remoting_sender.h"
-#include "components/mirroring/service/rpc_dispatcher.h"
 #include "components/mirroring/service/video_capture_client.h"
 #include "components/openscreen_platform/network_util.h"
 #include "components/openscreen_platform/socket_factory.h"
@@ -136,6 +136,27 @@ const char* AsErrorMessage(OperationalStatus status) {
 
     case OperationalStatus::STATUS_CODEC_RUNTIME_ERROR:
       return "Fatal error in codec runtime.";
+  }
+}
+
+constexpr bool IsAnswerError(SessionError error) {
+  switch (error) {
+    case SessionError::ANSWER_TIME_OUT:
+    case SessionError::ANSWER_NOT_OK:
+    case SessionError::ANSWER_MISMATCHED_CAST_MODE:
+    case SessionError::ANSWER_MISMATCHED_SSRC_LENGTH:
+    case SessionError::ANSWER_SELECT_MULTIPLE_AUDIO:
+    case SessionError::ANSWER_SELECT_MULTIPLE_VIDEO:
+    case SessionError::ANSWER_SELECT_INVALID_INDEX:
+    case SessionError::ANSWER_NO_AUDIO_OR_VIDEO:
+      return true;
+    case SessionError::AUDIO_CAPTURE_ERROR:
+    case SessionError::VIDEO_CAPTURE_ERROR:
+    case SessionError::RTP_STREAM_ERROR:
+    case SessionError::ENCODING_ERROR:
+    case SessionError::CAST_TRANSPORT_ERROR:
+    case SessionError::OPENSCREEN_SESSION_ERROR:
+      return false;
   }
 }
 }  // namespace
@@ -538,8 +559,14 @@ void OpenscreenSessionHost::OnError(
 
     // If remoting is not supported, the session will continue but
     // OnCapabilitiesDetermined() will never be called and the media remoter
-    // will not be set up.
+    // will not be set up. If this error occurs while attempting to start
+    // remoting, report the error so that the session can fallback to
+    // mirroring.
     case openscreen::Error::Code::kRemotingNotSupported:
+      if (state_ == State::kRemoting) {
+        ReportAndLogError(SessionError::ANSWER_NOT_OK, error.ToString());
+        return;
+      }
       logger_.LogInfo(base::StrCat(
           {"Remoting is disabled for this session. error=", error.ToString()}));
       return;
@@ -767,7 +794,7 @@ void OpenscreenSessionHost::ReportAndLogError(SessionError error,
                                 error);
   logger_.LogError(error, message);
 
-  if (state_ == State::kRemoting) {
+  if (state_ == State::kRemoting && IsAnswerError(error)) {
     // Try to fallback to mirroring.
     media_remoter_->OnRemotingFailed();
     return;
@@ -1038,6 +1065,12 @@ void OpenscreenSessionHost::UpdateBandwidthEstimate() {
 void OpenscreenSessionHost::UpdateBandwidthEstimate(
     const int bandwidth_estimate) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  const int current_frames_dropped =
+      video_sender_ ? video_sender_->GetFramesDropped() : 0;
+  const bool frames_dropped_since_last_update =
+      video_sender_ && (current_frames_dropped > num_video_frames_dropped_);
+  num_video_frames_dropped_ = current_frames_dropped;
+
   // Nothing to do yet.
   if (bandwidth_estimate <= 0) {
     return;
@@ -1053,20 +1086,8 @@ void OpenscreenSessionHost::UpdateBandwidthEstimate(
     constexpr double kConservativeIncrease = 1.1;
     usable_bandwidth_ = std::min<uint32_t>(
         usable_bandwidth_ * kConservativeIncrease, usable_bandwidth);
-    if (video_sender_) {
-      num_video_frames_dropped_ = video_sender_->GetFramesDropped();
-    }
   } else if (usable_bandwidth < usable_bandwidth_) {
-    bool should_decrease_bandwidth = true;
-    if (video_sender_) {
-      const int current_frames_dropped = video_sender_->GetFramesDropped();
-      should_decrease_bandwidth =
-          current_frames_dropped > num_video_frames_dropped_;
-      if (should_decrease_bandwidth) {
-        num_video_frames_dropped_ = current_frames_dropped;
-      }
-    }
-    if (should_decrease_bandwidth) {
+    if (!video_sender_ || frames_dropped_since_last_update) {
       usable_bandwidth_ = usable_bandwidth;
     }
   }
@@ -1186,7 +1207,7 @@ void OpenscreenSessionHost::InitMediaRemoter(
     const openscreen::cast::RemotingCapabilities& capabilities) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   rpc_dispatcher_ =
-      std::make_unique<RpcDispatcher>(session_->session_messenger());
+      std::make_unique<OpenscreenRpcDispatcher>(session_->session_messenger());
   media_remoter_ = std::make_unique<MediaRemoter>(
       *this,
       media::cast::ToRemotingSinkMetadata(

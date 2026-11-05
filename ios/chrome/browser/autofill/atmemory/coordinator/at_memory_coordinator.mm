@@ -5,20 +5,24 @@
 #import "ios/chrome/browser/autofill/atmemory/coordinator/at_memory_coordinator.h"
 
 #import "base/check.h"
+#import "base/feature_list.h"
 #import "components/autofill/core/browser/at_memory/at_memory_manager.h"
 #import "components/autofill/core/browser/foundations/browser_autofill_manager.h"
 #import "components/autofill/core/browser/metrics/autofill_settings_metrics.h"
+#import "components/autofill/core/common/autofill_debug_features.h"
 #import "components/autofill/ios/browser/autofill_client_ios.h"
+#import "components/personal_context/core/personal_context_prefs.h"
+#import "components/prefs/pref_service.h"
 #import "ios/chrome/browser/autofill/atmemory/coordinator/at_memory_granular_fill_coordinator.h"
 #import "ios/chrome/browser/autofill/atmemory/coordinator/at_memory_mediator.h"
 #import "ios/chrome/browser/autofill/atmemory/coordinator/at_memory_search_coordinator.h"
 #import "ios/chrome/browser/autofill/atmemory/public/at_memory_commands.h"
 #import "ios/chrome/browser/autofill/atmemory/public/at_memory_search_result_commands.h"
-#import "ios/chrome/browser/autofill/manual_fill/public/manual_fill_content_injector.h"
 #import "ios/chrome/browser/autofill/model/autofill_ai_util.h"
 #import "ios/chrome/browser/autofill/public/autofill_settings_navigator.h"
 #import "ios/chrome/browser/settings/ui_bundled/settings_navigation_controller.h"
 #import "ios/chrome/browser/shared/model/browser/browser.h"
+#import "ios/chrome/browser/shared/model/profile/profile_ios.h"
 #import "ios/chrome/browser/shared/model/web_state_list/web_state_list.h"
 #import "ios/chrome/browser/shared/public/commands/command_dispatcher.h"
 #import "ios/web/public/web_state.h"
@@ -40,10 +44,6 @@ using autofill::autofill_metrics::AutofillSettingsReferrer;
   UINavigationController* _atMemoryNavigationController;
   // NavigationController for Settings.
   SettingsNavigationController* _settingsNavigationController;
-  // Completion block invoked when Settings is dismissed.
-  ProceduralBlock _settingsDismissalCompletion;
-  // Injector for manual fill data.
-  id<ManualFillContentInjector> _contentInjector;
   // Coordinator for AtMemory search.
   AtMemorySearchCoordinator* _atMemorySearchCoordinator;
   // Coordinator for AtMemory granular fill.
@@ -56,15 +56,16 @@ using autofill::autofill_metrics::AutofillSettingsReferrer;
 
 - (instancetype)initWithBaseViewController:(UIViewController*)viewController
                                    browser:(Browser*)browser
-                           contentInjector:
-                               (id<ManualFillContentInjector>)contentInjector
                                    fieldId:(FieldGlobalId)fieldId {
   self = [super initWithBaseViewController:viewController browser:browser];
   if (self) {
-    _contentInjector = contentInjector;
     _fieldId = fieldId;
   }
   return self;
+}
+
+- (BOOL)isSettingsPresented {
+  return _settingsNavigationController != nil;
 }
 
 - (void)start {
@@ -85,7 +86,6 @@ using autofill::autofill_metrics::AutofillSettingsReferrer;
 
   _mediator = [[AtMemoryMediator alloc] initWithAtMemoryManager:atMemoryManager
                                                 autofillManager:autofillManager
-                                                contentInjector:_contentInjector
                                                         fieldId:_fieldId];
   _mediator.atMemoryHandler = HandlerForProtocol(
       self.browser->GetCommandDispatcher(), AtMemoryCommands);
@@ -124,7 +124,6 @@ using autofill::autofill_metrics::AutofillSettingsReferrer;
 - (void)stop {
   [_settingsNavigationController cleanUpSettings];
   _settingsNavigationController = nil;
-  _settingsDismissalCompletion = nil;
 
   [_atMemoryGranularFillCoordinator stop];
   _atMemoryGranularFillCoordinator = nil;
@@ -158,25 +157,9 @@ using autofill::autofill_metrics::AutofillSettingsReferrer;
 #pragma mark - AutofillSettingsNavigator
 
 - (void)openSettingsForPage:(AutofillSettingsPage)page {
-  if (page != AutofillSettingsPage::kEnhancedAutofill) {
-    [self openSettingsForPage:page completion:nil];
-    return;
-  }
-
-  __weak __typeof(self) weakSelf = self;
-  [self openSettingsForPage:page
-                 completion:^{
-                   [weakSelf onEnhancedAutofillSettingsDismissed];
-                 }];
-}
-
-- (void)openSettingsForPage:(AutofillSettingsPage)page
-                 completion:(ProceduralBlock)completion {
   if (_settingsNavigationController) {
     return;
   }
-
-  _settingsDismissalCompletion = [completion copy];
 
   switch (page) {
     case AutofillSettingsPage::kAddresses:
@@ -210,12 +193,10 @@ using autofill::autofill_metrics::AutofillSettingsReferrer;
                                          kFillingFlowDropdown
                             delegate:self];
       break;
-    case AutofillSettingsPage::kEnhancedAutofill:
-      _settingsNavigationController = [[SettingsNavigationController alloc]
-          initWithRootViewController:nil
-                             browser:self.browser
-                            delegate:self];
-      [_settingsNavigationController showEnhancedAutofillSettings];
+    case AutofillSettingsPage::kSuggestionsFromGemini:
+      _settingsNavigationController = [SettingsNavigationController
+          geminiSuggestionsControllerForBrowser:self.browser
+                                       delegate:self];
       break;
     case AutofillSettingsPage::kSuggestionsFromGeminiHelpImprove:
       _settingsNavigationController = [SettingsNavigationController
@@ -267,26 +248,41 @@ using autofill::autofill_metrics::AutofillSettingsReferrer;
 
 #pragma mark - Private
 
-// Handles cleanup and completion callback after Settings is dismissed.
+// Handles cleanup after Settings is dismissed and closes AtMemory if the 'Find
+// and fill with Gemini' toggle or AtMemory is no longer enabled.
 - (void)onSettingsDismissed {
   _settingsNavigationController = nil;
-  if (_settingsDismissalCompletion) {
-    ProceduralBlock completion = _settingsDismissalCompletion;
-    _settingsDismissalCompletion = nil;
-    completion();
-  }
-}
-
-// Dismisses the AtMemory UI if the user turned Enhanced Autofill off from the
-// settings page, as AtMemory is unavailable without it.
-- (void)onEnhancedAutofillSettingsDismissed {
-  if (!self.browser ||
-      autofill::IsEnhancedAutofillEnabled(self.browser->GetProfile())) {
+  if (!self.browser) {
     return;
   }
-  id<AtMemoryCommands> handler = HandlerForProtocol(
-      self.browser->GetCommandDispatcher(), AtMemoryCommands);
-  [handler dismissAtMemory];
+  web::WebState* webState =
+      self.browser->GetWebStateList()->GetActiveWebState();
+  if (!webState) {
+    return;
+  }
+  AutofillClientIOS* autofillClient = AutofillClientIOS::FromWebState(webState);
+  if (!autofillClient) {
+    return;
+  }
+  PrefService* prefService = self.browser->GetProfile()->GetPrefs();
+
+  // TODO(crbug.com/566222022): Remove this check once
+  // `kAtMemorySkipEnablementChecks` is no longer required for local
+  // development.
+  const bool isEnabled =
+      base::FeatureList::IsEnabled(
+          autofill::features::debug::kAtMemorySkipEnablementChecks)
+          ? (prefService &&
+             prefService->GetBoolean(
+                 personal_context::prefs::
+                     kPersonalContextInAutofillSettingsToggleStatus))
+          : autofill::IsAutofillAtMemorySearchUIEnabled(autofillClient);
+
+  if (!isEnabled) {
+    id<AtMemoryCommands> handler = HandlerForProtocol(
+        self.browser->GetCommandDispatcher(), AtMemoryCommands);
+    [handler dismissAtMemory];
+  }
 }
 
 @end

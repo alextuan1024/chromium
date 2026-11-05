@@ -45,7 +45,6 @@
 #include "base/time/time.h"
 #include "build/build_config.h"
 #include "components/viz/common/surfaces/frame_sink_id.h"
-#include "media/base/audio_bus.h"
 #include "media/base/audio_capturer_source.h"
 #include "media/base/audio_latency.h"
 #include "media/base/audio_renderer_sink.h"
@@ -130,6 +129,7 @@ class MainThread;
 class ThreadSafeBrowserInterfaceBrokerProxy;
 class URLLoaderThrottle;
 class UserMetricsAction;
+class WebAudioBus;
 class WebAudioLatencyHint;
 class WebAudioSinkDescriptor;
 class WebCrypto;
@@ -424,15 +424,10 @@ class BLINK_PLATFORM_EXPORT Platform {
     return std::nullopt;
   }
 
-  struct DecodedAudioFile {
-    std::unique_ptr<media::AudioBus> bus;
-    double sample_rate = 0.0;
-  };
-
   // Decodes the in-memory audio file data and returns the linear PCM audio data
-  // along with its sample rate.
-  // Returns nullptr on failure.
-  virtual std::unique_ptr<DecodedAudioFile> DecodeAudioFileData(
+  // in the |destination_bus|.
+  // Returns true on success.
+  virtual std::unique_ptr<WebAudioBus> DecodeAudioFileData(
       base::span<const char> audio_file_data) {
     return nullptr;
   }
@@ -635,6 +630,11 @@ class BLINK_PLATFORM_EXPORT Platform {
   using EstablishGpuChannelCallback =
       base::OnceCallback<void(scoped_refptr<gpu::GpuChannelHost>)>;
   virtual void EstablishGpuChannel(EstablishGpuChannelCallback callback);
+
+  // Sends the deferred messages of the GPU channel right away, if a channel is
+  // established and not lost. Unlike the methods above, this never establishes
+  // a channel.
+  virtual void FlushGpuChannelIfEstablished();
 
   // Media stream ----------------------------------------------------
   virtual scoped_refptr<media::AudioCapturerSource> NewAudioCapturerSource(
@@ -872,6 +872,14 @@ class BLINK_PLATFORM_EXPORT Platform {
   // subframe. To allow this viewer to function correctly, Chrome uses this
   // method to grant it access to the file picker.
   virtual bool IsFilePickerAllowedForCrossOriginSubframe(
+      const WebSecurityOrigin& origin) {
+    return false;
+  }
+
+  // Returns true if windows with the given origin should allocate isolated
+  // WindowAgents per BrowsingInstance rather than sharing a process-global
+  // agent.
+  virtual bool ShouldUsePerBrowsingInstanceWindowAgent(
       const WebSecurityOrigin& origin) {
     return false;
   }

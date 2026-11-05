@@ -352,8 +352,8 @@ void AccountSelectionBubbleView::ShowFailureDialog(
                           base::Unretained(owner_), idp_metadata.config_url,
                           idp_metadata.idp_login_url),
       l10n_util::GetStringUTF16(IDS_SIGNIN_CONTINUE), idp_metadata,
-      // TODO (kylixrd@): Shouldn't the following be a localizable string?
-      /*extra_accessible_text=*/u"Opens in a new tab");
+      /*extra_accessible_text=*/
+      l10n_util::GetStringUTF16(IDS_ACCOUNT_SELECTION_OPENS_IN_NEW_TAB));
   row->AddChildView(std::move(button));
   AddChildView(std::move(row));
 
@@ -438,6 +438,14 @@ void AccountSelectionBubbleView::ShowRequestPermissionDialog(
     const IdentityRequestAccountPtr& account) {
   NOTREACHED() << "ShowRequestPermissionDialog is only implemented for "
                   "AccountSelectionModalView";
+}
+
+void AccountSelectionBubbleView::ShowIdpPicker(
+    const std::vector<IdentityProviderDataPtr>& idp_list,
+    const gfx::Image& rp_icon,
+    bool show_back_button) {
+  NOTREACHED()
+      << "ShowIdpPicker is only implemented for AccountSelectionModalView";
 }
 
 std::string AccountSelectionBubbleView::GetDialogTitle() const {
@@ -618,7 +626,7 @@ AccountSelectionBubbleView::CreateSingleAccountChooser(
   }
 
   // Add disclosure text.
-  row->AddChildView(CreateDisclosureLabel(account));
+  row->AddChildView(CreateDisclosureLabel(account, views::style::STYLE_LINK));
   return std::make_pair(std::move(row), button_ptr);
 }
 

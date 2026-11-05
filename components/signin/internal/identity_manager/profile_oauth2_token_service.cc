@@ -242,22 +242,23 @@ void ProfileOAuth2TokenService::InvalidateAccessToken(
     const CoreAccountId& account_id,
     const OAuth2AccessTokenManager::ScopeSet& scopes,
     const std::string& access_token) {
-  CHECK(!account_id.empty(), base::NotFatalUntil::M145);
-  CHECK(!access_token.empty(), base::NotFatalUntil::M145);
+  CHECK(!account_id.empty());
+  CHECK(!access_token.empty());
 
   token_manager_->InvalidateAccessToken(account_id, scopes, access_token);
 }
 
 void ProfileOAuth2TokenService::InvalidateTokenForMultilogin(
     const CoreAccountId& failed_account,
-    const std::string& token) {
+    const std::string& token,
+    const GoogleServiceAuthError& error) {
   // Remove from cache. This will have no effect on desktop since token is a
   // refresh token and is not in cache.
   InvalidateAccessToken(failed_account, {GaiaConstants::kOAuth1LoginScope},
                         token);
   // For desktop refresh tokens can be invalidated directly in delegate. This
   // will have no effect on mobile.
-  delegate_->InvalidateTokenForMultilogin(failed_account);
+  delegate_->InvalidateTokenForMultilogin(failed_account, error);
 }
 
 void ProfileOAuth2TokenService::SetRefreshTokenAvailableFromSourceCallback(

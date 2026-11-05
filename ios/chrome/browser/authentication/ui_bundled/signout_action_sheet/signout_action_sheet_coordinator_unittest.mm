@@ -7,7 +7,6 @@
 #import <UIKit/UIKit.h>
 
 #import "base/memory/raw_ptr.h"
-#import "base/strings/sys_string_conversions.h"
 #import "base/test/metrics/histogram_tester.h"
 #import "base/test/metrics/user_action_tester.h"
 #import "base/test/mock_callback.h"
@@ -15,9 +14,7 @@
 #import "base/test/scoped_feature_list.h"
 #import "components/prefs/pref_service.h"
 #import "components/signin/public/base/signin_metrics.h"
-#import "components/signin/public/base/signin_pref_names.h"
 #import "components/sync/test/mock_sync_service.h"
-#import "google_apis/gaia/gaia_id.h"
 #import "ios/chrome/app/profile/profile_state.h"
 #import "ios/chrome/browser/shared/coordinator/scene/scene_state.h"
 #import "ios/chrome/browser/shared/coordinator/scene/test/fake_scene_state.h"
@@ -25,7 +22,6 @@
 #import "ios/chrome/browser/shared/model/browser/browser.h"
 #import "ios/chrome/browser/shared/model/browser/browser_provider.h"
 #import "ios/chrome/browser/shared/model/browser/browser_provider_interface.h"
-#import "ios/chrome/browser/shared/model/prefs/pref_names.h"
 #import "ios/chrome/browser/shared/model/profile/test/test_profile_ios.h"
 #import "ios/chrome/browser/shared/model/profile/test/test_profile_manager_ios.h"
 #import "ios/chrome/browser/shared/public/commands/command_dispatcher.h"
@@ -49,7 +45,6 @@
 #import "third_party/ocmock/OCMock/OCMock.h"
 #import "third_party/ocmock/gtest_support.h"
 #import "ui/base/l10n/l10n_util.h"
-#import "ui/strings/grit/ui_strings.h"
 
 class SignoutActionSheetCoordinatorTest : public PlatformTest {
  public:
@@ -62,36 +57,28 @@ class SignoutActionSheetCoordinatorTest : public PlatformTest {
     PlatformTest::SetUp();
 
     TestProfileIOS::Builder builder;
-    builder.SetName(GetApplicationContext()
-                        ->GetProfileManager()
-                        ->GetProfileAttributesStorage()
-                        ->GetPersonalProfileName());
     builder.AddTestingFactory(
         AuthenticationServiceFactory::GetInstance(),
         AuthenticationServiceFactory::GetDefaultFactory());
     builder.AddTestingFactory(SyncServiceFactory::GetInstance(),
                               base::BindRepeating(&CreateMockSyncService));
-    profile_ = profile_manager_.AddProfileWithBuilder(std::move(builder));
-    GetApplicationContext()
-        ->GetProfileManager()
-        ->GetProfileAttributesStorage()
-        ->SetPersonalProfileName(profile_->GetProfileName());
+    personal_profile_ =
+        profile_manager_.AddProfileWithBuilder(std::move(builder));
 
     identity_ = [FakeSystemIdentity fakeIdentity1];
-    managed_identity_ = [FakeSystemIdentity fakeManagedIdentity];
     FakeSystemIdentityManager* system_identity_manager =
         FakeSystemIdentityManager::FromSystemIdentityManager(
             GetApplicationContext()->GetSystemIdentityManager());
     system_identity_manager->AddIdentity(identity_);
-    system_identity_manager->AddIdentity(managed_identity_);
 
     ProfileState* profile_state = [[ProfileState alloc] initWithAppState:nil];
-    profile_state.profile = profile_.get();
-    scene_state_ = [[FakeSceneState alloc] initWithProfile:profile_.get()];
+    profile_state.profile = personal_profile_.get();
+    scene_state_ =
+        [[FakeSceneState alloc] initWithProfile:personal_profile_.get()];
     scene_state_.profileState = profile_state;
 
     sync_service_mock_ = static_cast<syncer::MockSyncService*>(
-        SyncServiceFactory::GetForProfile(profile_.get()));
+        SyncServiceFactory::GetForProfile(personal_profile_.get()));
 
     Browser* browser =
         scene_state_.browserProviderInterface.currentBrowserProvider.browser;
@@ -121,7 +108,7 @@ class SignoutActionSheetCoordinatorTest : public PlatformTest {
 
   // Identity services.
   AuthenticationService* authentication_service() {
-    return AuthenticationServiceFactory::GetForProfile(profile_.get());
+    return AuthenticationServiceFactory::GetForProfile(personal_profile_.get());
   }
 
   // Sign-out coordinator.
@@ -152,12 +139,6 @@ class SignoutActionSheetCoordinatorTest : public PlatformTest {
         signin_metrics::ProfileSignout::kUserClickedSignoutSettings);
   }
 
-  PrefService* GetLocalState() {
-    return GetApplicationContext()->GetLocalState();
-  }
-
-  PrefService* GetPrefs() { return profile_->GetPrefs(); }
-
  protected:
   // Needed for test profile created by TestProfileIOS().
   web::WebTaskEnvironment task_environment_;
@@ -168,10 +149,9 @@ class SignoutActionSheetCoordinatorTest : public PlatformTest {
   ScopedKeyWindow scoped_key_window_;
   UIViewController* view_controller_ = nullptr;
   TestProfileManagerIOS profile_manager_;
-  raw_ptr<TestProfileIOS> profile_;
+  raw_ptr<TestProfileIOS> personal_profile_;
   FakeSceneState* scene_state_;
   id<SystemIdentity> identity_ = nil;
-  id<SystemIdentity> managed_identity_ = nil;
   id<SnackbarCommands> snackbar_handler_ =
       OCMStrictProtocolMock(@protocol(SnackbarCommands));
   id<SceneCommands> scene_handler_ =
@@ -196,12 +176,15 @@ TEST_F(SignoutActionSheetCoordinatorTest,
             std::move(callback).Run(
                 absl::flat_hash_map<syncer::DataType, size_t>());
           });
+  OCMExpect([snackbar_handler_ showSnackbarMessage:[OCMArg any]
+                                      bottomOffset:0]);
   EXPECT_CALL(completion_callback_, Run);
 
   base::HistogramTester histogram_tester;
 
   [signout_coordinator_ start];
 
+  EXPECT_OCMOCK_VERIFY((id)snackbar_handler_);
   histogram_tester.ExpectTotalCount("Sync.UnsyncedDataOnSignout2", 0u);
   histogram_tester.ExpectTotalCount("Sync.SignoutWithUnsyncedData", 0u);
 }

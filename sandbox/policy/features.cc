@@ -37,6 +37,13 @@ BASE_FEATURE(kOnDeviceModelExecutionMultiThreadedSandbox,
 #endif  // BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS)
 #endif  // !BUILDFLAG(IS_MAC) && !BUILDFLAG(IS_FUCHSIA)
 
+#if BUILDFLAG(IS_MAC)
+// Enables sandbox violation logging on macOS (equivalent to the
+// --enable-sandbox-logging command-line flag). When enabled, every attempt to
+// access a resource denied by the sandbox will be logged to the system log.
+BASE_FEATURE(kEnableSandboxLogging, base::FEATURE_DISABLED_BY_DEFAULT);
+#endif
+
 #if BUILDFLAG(IS_WIN)
 // Enables the Windows speech recognition sandbox hardening.
 BASE_FEATURE(kSpeechRecognitionSandboxHardening,
@@ -125,6 +132,8 @@ BASE_FEATURE(kHigherRendererMemoryLimit, base::FEATURE_DISABLED_BY_DEFAULT);
 #if BUILDFLAG(IS_ANDROID)
 // Enables the experimental Android GPU sandbox using Landlock.
 BASE_FEATURE(kAndroidGpuSandbox, base::FEATURE_DISABLED_BY_DEFAULT);
+// Enables the seccomp-bpf filter sandbox for the GPU process on Android.
+BASE_FEATURE(kSeccompFilterGpuSandbox, base::FEATURE_DISABLED_BY_DEFAULT);
 // Enables the renderer on Android to use a separate seccomp policy.
 BASE_FEATURE(kUseRendererProcessPolicy, base::FEATURE_ENABLED_BY_DEFAULT);
 // When enabled, this features restricts a set of syscalls in

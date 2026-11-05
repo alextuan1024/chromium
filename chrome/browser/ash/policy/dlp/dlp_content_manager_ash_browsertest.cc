@@ -36,7 +36,6 @@
 #include "chrome/browser/media/webrtc/desktop_capture_access_handler.h"
 #include "chrome/browser/media/webrtc/fake_desktop_media_picker_factory.h"
 #include "chrome/browser/media/webrtc/tab_capture_access_handler.h"
-#include "chrome/browser/notifications/notification_display_service_tester.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/ash/capture_mode/chrome_capture_mode_delegate.h"
 #include "chrome/browser/ui/browser_commands.h"
@@ -69,6 +68,7 @@
 #include "ui/aura/window.h"
 #include "ui/events/test/event_generator.h"
 #include "ui/gfx/geometry/rect.h"
+#include "ui/message_center/message_center.h"
 
 using testing::_;
 
@@ -119,6 +119,11 @@ class DlpContentManagerAshBrowserTest : public InProcessBrowserTest {
  public:
   DlpContentManagerAshBrowserTest() = default;
   ~DlpContentManagerAshBrowserTest() override = default;
+
+  bool HasNotification(const std::string& notification_id) {
+    return message_center::MessageCenter::Get()->FindNotificationById(
+               notification_id) != nullptr;
+  }
 
   MockDlpWarnNotifier* CreateAndSetMockDlpWarnNotifier(bool should_proceed) {
     std::unique_ptr<MockDlpWarnNotifier> mock_notifier =
@@ -961,6 +966,72 @@ IN_PROC_BROWSER_TEST_F(DlpContentManagerAshBrowserTest,
   capture_mode_delegate->StopObservingRestrictedContent(base::DoNothing());
 }
 
+IN_PROC_BROWSER_TEST_F(
+    DlpContentManagerAshBrowserTest,
+    VideoCaptureStoppedWhenConfidentialWindowBlockedBeforeStart) {
+  SetupReporting();
+  aura::Window* root_window =
+      browser()->GetWindow()->GetNativeWindow()->GetRootWindow();
+
+  chrome::NewTab(browser(), NewTabTypes::kNoUserAction);
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), GURL(kExampleUrl)));
+  content::WebContents* web_contents =
+      browser()->tab_strip_model()->GetActiveWebContents();
+
+  // Initial state is kWarn so the pre-recording DLP check shows a warning
+  // dialog instead of immediately blocking.
+  helper_->ChangeConfidentiality(web_contents, screenshot_warned_);
+
+  auto* capture_mode_delegate = ChromeCaptureModeDelegate::Get();
+  bool dlp_check_proceeded = false;
+  capture_mode_delegate->CheckCaptureOperationRestrictionByDlp(
+      root_window, root_window->bounds(),
+      base::BindLambdaForTesting(
+          [&](bool proceed) { dlp_check_proceeded = proceed; }));
+
+  EXPECT_EQ(helper_->ActiveWarningDialogsCount(), 1);
+  ASSERT_EQ(events_.size(), 1u);
+  EXPECT_THAT(events_[0],
+              data_controls::IsDlpPolicyEvent(CreateDlpPolicyEvent(
+                  web_contents->GetLastCommittedURL().spec(),
+                  DlpRulesManager::Restriction::kScreenshot, kRuleName, kRuleId,
+                  DlpRulesManager::Level::kWarn)));
+
+  // While the warning dialog is open and before video recording starts, the
+  // content transitions to kBlock.
+  helper_->ChangeConfidentiality(web_contents, screenshot_restricted_);
+  EXPECT_FALSE(helper_->GetRunningVideoCaptureInfo().has_value());
+
+  // User accepts the warning dialog to proceed with starting video recording.
+  ui::test::EventGenerator(root_window)
+      .PressAndReleaseKey(ui::VKEY_RETURN, ui::EF_NONE);
+  base::RunLoop().RunUntilIdle();
+  EXPECT_EQ(helper_->ActiveWarningDialogsCount(), 0);
+  EXPECT_TRUE(dlp_check_proceeded);
+
+  // Starting observation of restricted content at the beginning of video
+  // recording must immediately interrupt the recording and report the kBlock
+  // event.
+  testing::StrictMock<base::MockOnceClosure> stop_cb;
+  EXPECT_CALL(stop_cb, Run()).Times(1);
+  capture_mode_delegate->StartObservingRestrictedContent(
+      root_window, root_window->bounds(), stop_cb.Get());
+
+  EXPECT_FALSE(helper_->GetRunningVideoCaptureInfo().has_value());
+  histogram_tester_.ExpectUniqueSample(
+      data_controls::GetDlpHistogramPrefix() +
+          data_controls::dlp::kVideoCaptureInterruptedUMA,
+      true, 1);
+  ASSERT_EQ(events_.size(), 2u);
+  EXPECT_THAT(events_[1],
+              data_controls::IsDlpPolicyEvent(CreateDlpPolicyEvent(
+                  web_contents->GetLastCommittedURL().spec(),
+                  DlpRulesManager::Restriction::kScreenshot, kRuleName, kRuleId,
+                  DlpRulesManager::Level::kBlock)));
+
+  capture_mode_delegate->StopObservingRestrictedContent(base::DoNothing());
+}
+
 class DlpContentManagerAshScreenShareBrowserTest
     : public DlpContentManagerAshBrowserTest {
  protected:
@@ -1215,8 +1286,6 @@ IN_PROC_BROWSER_TEST_F(DlpContentManagerAshScreenShareBrowserTest,
                        ScreenShareNotification) {
   helper_->SetScreenShareResumeDelay(kScreenShareResumeDelayForTesting);
   SetupReporting();
-  NotificationDisplayServiceTester display_service_tester(
-      browser()->GetProfile());
   ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), GURL(kExampleUrl)));
   content::WebContents* web_contents =
       browser()->tab_strip_model()->GetActiveWebContents();
@@ -1231,10 +1300,8 @@ IN_PROC_BROWSER_TEST_F(DlpContentManagerAshScreenShareBrowserTest,
 
   auto media_id = MaybeStartFullScreenShare(web_contents);
 
-  EXPECT_FALSE(
-      display_service_tester.GetNotification(kScreenSharePausedNotificationId));
-  EXPECT_FALSE(display_service_tester.GetNotification(
-      kScreenShareResumedNotificationId));
+  EXPECT_FALSE(HasNotification(kScreenSharePausedNotificationId));
+  EXPECT_FALSE(HasNotification(kScreenShareResumedNotificationId));
   histogram_tester_.ExpectBucketCount(
       data_controls::GetDlpHistogramPrefix() +
           data_controls::dlp::kScreenSharePausedOrResumedUMA,
@@ -1249,10 +1316,8 @@ IN_PROC_BROWSER_TEST_F(DlpContentManagerAshScreenShareBrowserTest,
   CheckEvents(DlpRulesManager::Restriction::kScreenShare,
               web_contents->GetLastCommittedURL().spec(),
               DlpRulesManager::Level::kBlock, 1u);
-  EXPECT_TRUE(
-      display_service_tester.GetNotification(kScreenSharePausedNotificationId));
-  EXPECT_FALSE(display_service_tester.GetNotification(
-      kScreenShareResumedNotificationId));
+  EXPECT_TRUE(HasNotification(kScreenSharePausedNotificationId));
+  EXPECT_FALSE(HasNotification(kScreenShareResumedNotificationId));
   histogram_tester_.ExpectBucketCount(
       data_controls::GetDlpHistogramPrefix() +
           data_controls::dlp::kScreenSharePausedOrResumedUMA,
@@ -1265,10 +1330,8 @@ IN_PROC_BROWSER_TEST_F(DlpContentManagerAshScreenShareBrowserTest,
   helper_->ChangeConfidentiality(web_contents, empty_restriction_set_);
   WaitForScreenShareResume();
 
-  EXPECT_FALSE(
-      display_service_tester.GetNotification(kScreenSharePausedNotificationId));
-  EXPECT_TRUE(display_service_tester.GetNotification(
-      kScreenShareResumedNotificationId));
+  EXPECT_FALSE(HasNotification(kScreenSharePausedNotificationId));
+  EXPECT_TRUE(HasNotification(kScreenShareResumedNotificationId));
   histogram_tester_.ExpectBucketCount(
       data_controls::GetDlpHistogramPrefix() +
           data_controls::dlp::kScreenSharePausedOrResumedUMA,
@@ -1280,10 +1343,8 @@ IN_PROC_BROWSER_TEST_F(DlpContentManagerAshScreenShareBrowserTest,
 
   StopScreenShare(media_id);
 
-  EXPECT_FALSE(
-      display_service_tester.GetNotification(kScreenSharePausedNotificationId));
-  EXPECT_FALSE(display_service_tester.GetNotification(
-      kScreenShareResumedNotificationId));
+  EXPECT_FALSE(HasNotification(kScreenSharePausedNotificationId));
+  EXPECT_FALSE(HasNotification(kScreenShareResumedNotificationId));
   histogram_tester_.ExpectBucketCount(
       data_controls::GetDlpHistogramPrefix() +
           data_controls::dlp::kScreenSharePausedOrResumedUMA,
@@ -1300,8 +1361,6 @@ IN_PROC_BROWSER_TEST_F(DlpContentManagerAshScreenShareBrowserTest,
 IN_PROC_BROWSER_TEST_F(DlpContentManagerAshScreenShareBrowserTest,
                        ScreenShareStoppedForSourceChange) {
   SetupReporting();
-  NotificationDisplayServiceTester display_service_tester(
-      browser()->GetProfile());
   DlpContentManagerAsh* manager =
       static_cast<DlpContentManagerAsh*>(helper_->GetContentManager());
   ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), GURL(kExampleUrl)));
@@ -1326,10 +1385,8 @@ IN_PROC_BROWSER_TEST_F(DlpContentManagerAshScreenShareBrowserTest,
   CheckEvents(DlpRulesManager::Restriction::kScreenShare,
               web_contents->GetLastCommittedURL().spec(),
               DlpRulesManager::Level::kBlock, 1u);
-  EXPECT_TRUE(
-      display_service_tester.GetNotification(kScreenSharePausedNotificationId));
-  EXPECT_FALSE(display_service_tester.GetNotification(
-      kScreenShareResumedNotificationId));
+  EXPECT_TRUE(HasNotification(kScreenSharePausedNotificationId));
+  EXPECT_FALSE(HasNotification(kScreenShareResumedNotificationId));
   histogram_tester_.ExpectBucketCount(
       data_controls::GetDlpHistogramPrefix() +
           data_controls::dlp::kScreenSharePausedOrResumedUMA,
@@ -1357,17 +1414,14 @@ IN_PROC_BROWSER_TEST_F(DlpContentManagerAshScreenShareBrowserTest,
   manager->OnScreenShareSourceChanging(
       kLabel, media_id, new_media_id,
       /*captured_surface_control_active=*/false);
-  EXPECT_FALSE(display_service_tester.GetNotification(
-      kScreenShareResumedNotificationId));
+  EXPECT_FALSE(HasNotification(kScreenShareResumedNotificationId));
   manager->OnScreenShareStopped(kLabel, media_id);
   manager->OnScreenShareStarted(kLabel, {new_media_id}, application_title_,
                                 base::DoNothing(), base::DoNothing(),
                                 base::DoNothing());
 
-  EXPECT_FALSE(
-      display_service_tester.GetNotification(kScreenSharePausedNotificationId));
-  EXPECT_TRUE(display_service_tester.GetNotification(
-      kScreenShareResumedNotificationId));
+  EXPECT_FALSE(HasNotification(kScreenSharePausedNotificationId));
+  EXPECT_TRUE(HasNotification(kScreenShareResumedNotificationId));
   histogram_tester_.ExpectBucketCount(
       data_controls::GetDlpHistogramPrefix() +
           data_controls::dlp::kScreenSharePausedOrResumedUMA,
@@ -1433,8 +1487,6 @@ using CheckRunningScreenShareTest = CheckAndStartScreenShareTest;
 IN_PROC_BROWSER_TEST_P(CheckAndStartScreenShareTest, FullScreenShare) {
   const ScreenShareTestParams& param = GetParam();
   SetupReporting();
-  NotificationDisplayServiceTester display_service_tester(
-      browser()->GetProfile());
   ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), GURL(kExampleUrl)));
   content::WebContents* web_contents =
       browser()->tab_strip_model()->GetActiveWebContents();
@@ -1444,10 +1496,8 @@ IN_PROC_BROWSER_TEST_P(CheckAndStartScreenShareTest, FullScreenShare) {
                             /*expect_warning=*/param.warned_count > 0);
 
   // Notification is only shown in block mode.
-  EXPECT_EQ(
-      display_service_tester.GetNotification(kScreenShareBlockedNotificationId)
-          .has_value(),
-      param.blocked_count > 0);
+  EXPECT_EQ(HasNotification(kScreenShareBlockedNotificationId),
+            param.blocked_count > 0);
 
   VerifyHistogramCounts(
       param.blocked_count, param.warned_count, param.total_count,
@@ -1483,8 +1533,6 @@ IN_PROC_BROWSER_TEST_P(CheckAndStartScreenShareTest, FullScreenShare) {
 IN_PROC_BROWSER_TEST_P(CheckAndStartScreenShareTest, TabShare) {
   const ScreenShareTestParams& param = GetParam();
   SetupReporting();
-  NotificationDisplayServiceTester display_service_tester(
-      browser()->GetProfile());
   ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), GURL(kExampleUrl)));
   content::WebContents* web_contents =
       browser()->tab_strip_model()->GetActiveWebContents();
@@ -1494,10 +1542,8 @@ IN_PROC_BROWSER_TEST_P(CheckAndStartScreenShareTest, TabShare) {
                      /*expect_warning=*/param.warned_count > 0);
 
   // Notification is only shown in block mode.
-  EXPECT_EQ(
-      display_service_tester.GetNotification(kScreenShareBlockedNotificationId)
-          .has_value(),
-      param.blocked_count > 0);
+  EXPECT_EQ(HasNotification(kScreenShareBlockedNotificationId),
+            param.blocked_count > 0);
 
   VerifyHistogramCounts(
       param.blocked_count, param.warned_count, param.total_count,
@@ -1534,8 +1580,6 @@ IN_PROC_BROWSER_TEST_P(CheckRunningScreenShareTest, FullScreenShare) {
   const ScreenShareTestParams& param = GetParam();
   helper_->SetScreenShareResumeDelay(kScreenShareResumeDelayForTesting);
   SetupReporting();
-  NotificationDisplayServiceTester display_service_tester(
-      browser()->GetProfile());
   ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), GURL(kExampleUrl)));
   content::WebContents* web_contents =
       browser()->tab_strip_model()->GetActiveWebContents();
@@ -1569,10 +1613,8 @@ IN_PROC_BROWSER_TEST_P(CheckRunningScreenShareTest, FullScreenShare) {
     DismissDialog(param.expect_allowed);
 
   // Paused notification is only shown in block mode.
-  EXPECT_EQ(
-      display_service_tester.GetNotification(kScreenSharePausedNotificationId)
-          .has_value(),
-      param.blocked_count > 0);
+  EXPECT_EQ(HasNotification(kScreenSharePausedNotificationId),
+            param.blocked_count > 0);
 
   if (param.expect_warning_proceeded) {
     EXPECT_THAT(
@@ -1607,8 +1649,6 @@ IN_PROC_BROWSER_TEST_P(CheckRunningScreenShareTest, TabShare) {
   const ScreenShareTestParams& param = GetParam();
   helper_->SetScreenShareResumeDelay(kScreenShareResumeDelayForTesting);
   SetupReporting();
-  NotificationDisplayServiceTester display_service_tester(
-      browser()->GetProfile());
   ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), GURL(kExampleUrl)));
   content::WebContents* web_contents =
       browser()->tab_strip_model()->GetActiveWebContents();
@@ -1642,10 +1682,8 @@ IN_PROC_BROWSER_TEST_P(CheckRunningScreenShareTest, TabShare) {
     DismissDialog(param.expect_allowed);
 
   // Paused notification is only shown in block mode.
-  EXPECT_EQ(
-      display_service_tester.GetNotification(kScreenSharePausedNotificationId)
-          .has_value(),
-      param.blocked_count > 0);
+  EXPECT_EQ(HasNotification(kScreenSharePausedNotificationId),
+            param.blocked_count > 0);
 
   if (param.expect_warning_proceeded) {
     EXPECT_THAT(
@@ -1681,8 +1719,6 @@ IN_PROC_BROWSER_TEST_P(CheckRunningScreenShareTest, TabShare) {
 IN_PROC_BROWSER_TEST_F(DlpContentManagerAshScreenShareBrowserTest,
                        ScreenShareResumedWhenNavigatingToBypassedContent) {
   SetupReporting();
-  NotificationDisplayServiceTester display_service_tester(
-      browser()->GetProfile());
   ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), GURL(kExampleUrl)));
   content::WebContents* web_contents =
       browser()->tab_strip_model()->GetActiveWebContents();
@@ -1722,9 +1758,7 @@ IN_PROC_BROWSER_TEST_F(DlpContentManagerAshScreenShareBrowserTest,
               Run(testing::_, blink::mojom::MediaStreamStateChange::PLAY))
       .Times(1);
   helper_->ChangeConfidentiality(web_contents, screen_share_restricted_);
-  EXPECT_TRUE(
-      display_service_tester.GetNotification(kScreenSharePausedNotificationId)
-          .has_value());
+  EXPECT_TRUE(HasNotification(kScreenSharePausedNotificationId));
   VerifyHistogramCounts(
       /*blocked_count=*/1,
       /*warned_count=*/1,
@@ -1758,8 +1792,6 @@ IN_PROC_BROWSER_TEST_F(DlpContentManagerAshScreenShareBrowserTest,
 IN_PROC_BROWSER_TEST_F(DlpContentManagerAshScreenShareBrowserTest,
                        ScreenShareWarnDialogDismissedOnBlockedContent) {
   SetupReporting();
-  NotificationDisplayServiceTester display_service_tester(
-      browser()->GetProfile());
   ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), GURL(kExampleUrl)));
   content::WebContents* web_contents =
       browser()->tab_strip_model()->GetActiveWebContents();
@@ -1776,17 +1808,13 @@ IN_PROC_BROWSER_TEST_F(DlpContentManagerAshScreenShareBrowserTest,
 
   helper_->ChangeConfidentiality(web_contents, screen_share_warned_);
   ASSERT_EQ(helper_->ActiveWarningDialogsCount(), 1);
-  EXPECT_FALSE(
-      display_service_tester.GetNotification(kScreenSharePausedNotificationId)
-          .has_value());
+  EXPECT_FALSE(HasNotification(kScreenSharePausedNotificationId));
 
   // While the dialog is open, blocked content appears.
   helper_->ChangeConfidentiality(web_contents, screen_share_restricted_);
   base::RunLoop().RunUntilIdle();
   EXPECT_EQ(helper_->ActiveWarningDialogsCount(), 0);
-  EXPECT_TRUE(
-      display_service_tester.GetNotification(kScreenSharePausedNotificationId)
-          .has_value());
+  EXPECT_TRUE(HasNotification(kScreenSharePausedNotificationId));
 
   VerifyHistogramCounts(
       /*blocked_count=*/1,
@@ -1880,7 +1908,7 @@ IN_PROC_BROWSER_TEST_F(DlpContentManagerAshScreenShareBrowserTest,
   helper_->ChangeConfidentiality(web_contents2, screen_share_restricted_);
 
   // Resize both contents to be visible so that visibility state won't change.
-  browser1->GetWindow()->SetBounds(gfx::Rect(0, 00, 500, 500));
+  browser1->GetWindow()->SetBounds(gfx::Rect(0, 0, 500, 500));
   browser2->GetWindow()->SetBounds(gfx::Rect(150, 150, 500, 500));
 
   EXPECT_CALL(state_change_cb_,
@@ -1913,10 +1941,67 @@ IN_PROC_BROWSER_TEST_F(DlpContentManagerAshScreenShareBrowserTest,
 }
 
 IN_PROC_BROWSER_TEST_F(DlpContentManagerAshScreenShareBrowserTest,
+                       ScreenSharePausedWhenConfidentialTabMovedAndActivated) {
+  SetupReporting();
+  DlpContentManagerAsh* manager =
+      static_cast<DlpContentManagerAsh*>(helper_->GetContentManager());
+
+  // Open first browser window.
+  BrowserWindowInterface* browser1 = browser();
+  chrome::NewTab(browser1, NewTabTypes::kNoUserAction);
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser1, GURL(kExampleUrl)));
+  aura::Window* browser1_window = browser()->GetWindow()->GetNativeWindow();
+
+  // Open second browser window.
+  BrowserWindowInterface* browser2 =
+      CreateBrowserWindow(BrowserWindowCreateParams(
+          browser()->GetProfile(), /*from_user_gesture=*/true));
+  chrome::NewTab(browser2, NewTabTypes::kNoUserAction);
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser2, GURL(kGoogleUrl)));
+  content::WebContents* web_contents2 =
+      browser2->tab_strip_model()->GetActiveWebContents();
+
+  // Make second window content as confidential.
+  helper_->ChangeConfidentiality(web_contents2, screen_share_restricted_);
+
+  // Resize both contents to be visible so that visibility state won't change.
+  browser1->GetWindow()->SetBounds(gfx::Rect(0, 0, 500, 500));
+  browser2->GetWindow()->SetBounds(gfx::Rect(150, 150, 500, 500));
+
+  EXPECT_CALL(state_change_cb_,
+              Run(testing::_, blink::mojom::MediaStreamStateChange::PAUSE))
+      .Times(1);
+
+  // Start screen share of the first window.
+  const auto media_id = content::DesktopMediaID::RegisterNativeWindow(
+      content::DesktopMediaID::TYPE_WINDOW, browser1_window);
+  manager->OnScreenShareStarted(kLabel, {media_id}, application_title_,
+                                stop_cb_.Get(), state_change_cb_.Get(),
+                                /*source_callback=*/base::DoNothing());
+
+  // Move restricted tab from second window to shared first window and activate
+  // it during insertion.
+  const int tab_index =
+      browser2->tab_strip_model()->GetIndexOfWebContents(web_contents2);
+  std::unique_ptr<tabs::TabModel> detached_tab =
+      browser2->tab_strip_model()->DetachTabAtForInsertion(tab_index);
+  browser1->tab_strip_model()->InsertDetachedTabAt(0, std::move(detached_tab),
+                                                   AddTabTypes::ADD_ACTIVE);
+
+  // Cleanup and check reporting.
+  browser2->GetWindow()->Close();
+  histogram_tester_.ExpectUniqueSample(
+      data_controls::GetDlpHistogramPrefix() +
+          data_controls::dlp::kScreenSharePausedOrResumedUMA,
+      true, 1);
+  CheckEvents(DlpRulesManager::Restriction::kScreenShare,
+              web_contents2->GetLastCommittedURL().spec(),
+              DlpRulesManager::Level::kBlock, 1u);
+}
+
+IN_PROC_BROWSER_TEST_F(DlpContentManagerAshScreenShareBrowserTest,
                        WarningIsShownOnlyOnce) {
   SetupReporting();
-  NotificationDisplayServiceTester display_service_tester(
-      browser()->GetProfile());
 
   ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), GURL(kExampleUrl)));
   content::WebContents* web_contents =
@@ -1969,8 +2054,6 @@ IN_PROC_BROWSER_TEST_F(DlpContentManagerAshScreenShareBrowserTest,
 IN_PROC_BROWSER_TEST_F(DlpContentManagerAshScreenShareBrowserTest,
                        ScreenShareWarnedFromLacrosDuringAllowed) {
   SetupReporting();
-  NotificationDisplayServiceTester display_service_tester(
-      browser()->GetProfile());
 
   ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), GURL(kExampleUrl)));
   aura::Window* root_window =
@@ -2013,8 +2096,6 @@ IN_PROC_BROWSER_TEST_F(DlpContentManagerAshScreenShareBrowserTest,
                        ScreenShareReporting) {
   SetupReporting();
   const GURL origin(kExampleUrl);
-  NotificationDisplayServiceTester display_service_tester(
-      browser()->GetProfile());
   ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), origin));
   content::WebContents* web_contents =
       browser()->tab_strip_model()->GetActiveWebContents();
@@ -2024,8 +2105,7 @@ IN_PROC_BROWSER_TEST_F(DlpContentManagerAshScreenShareBrowserTest,
   CheckEvents(DlpRulesManager::Restriction::kScreenShare,
               web_contents->GetLastCommittedURL().spec(),
               DlpRulesManager::Level::kReport, 1u);
-  EXPECT_FALSE(display_service_tester.GetNotification(
-      kScreenShareBlockedNotificationId));
+  EXPECT_FALSE(HasNotification(kScreenShareBlockedNotificationId));
   VerifyHistogramCounts(
       /*blocked_count=*/0, /*warned_count=*/0,
       /*total_count=*/2,
@@ -2054,16 +2134,13 @@ IN_PROC_BROWSER_TEST_F(DlpContentManagerAshScreenShareBrowserTest,
   CheckEvents(DlpRulesManager::Restriction::kScreenShare,
               web_contents->GetLastCommittedURL().spec(),
               DlpRulesManager::Level::kReport, 1u);
-  EXPECT_FALSE(display_service_tester.GetNotification(
-      kScreenShareBlockedNotificationId));
+  EXPECT_FALSE(HasNotification(kScreenShareBlockedNotificationId));
 }
 
 IN_PROC_BROWSER_TEST_F(DlpContentManagerAshScreenShareBrowserTest,
                        ScreenShareWithoutLabelNotReported) {
   SetupReporting();
   const GURL origin(kExampleUrl);
-  NotificationDisplayServiceTester display_service_tester(
-      browser()->GetProfile());
   ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), origin));
   content::WebContents* web_contents =
       browser()->tab_strip_model()->GetActiveWebContents();
@@ -2116,8 +2193,6 @@ IN_PROC_BROWSER_TEST_P(ScreenShareNavigateWebContentsTest, Reporting) {
   const GURL reported_url(kExampleUrl);
   const GURL unrestricted_url(kChromeUrl);
 
-  NotificationDisplayServiceTester display_service_tester(
-      browser()->GetProfile());
   content::WebContents* web_contents =
       browser()->tab_strip_model()->GetActiveWebContents();
 
@@ -2161,8 +2236,7 @@ IN_PROC_BROWSER_TEST_P(ScreenShareNavigateWebContentsTest, Reporting) {
   helper_->CheckRunningScreenShares();
   ASSERT_EQ(events_.size(), 1u);
 
-  EXPECT_FALSE(
-      display_service_tester.GetNotification(kScreenSharePausedNotificationId));
+  EXPECT_FALSE(HasNotification(kScreenSharePausedNotificationId));
   histogram_tester_.ExpectBucketCount(
       data_controls::GetDlpHistogramPrefix() +
           data_controls::dlp::kScreenShareBlockedUMA,
@@ -2188,8 +2262,7 @@ IN_PROC_BROWSER_TEST_P(ScreenShareNavigateWebContentsTest, Reporting) {
     DismissDialog(/*allow=*/true);
   } else {
     // Paused notification is only shown in block mode.
-    EXPECT_TRUE(display_service_tester.GetNotification(
-        kScreenSharePausedNotificationId));
+    EXPECT_TRUE(HasNotification(kScreenSharePausedNotificationId));
   }
   histogram_tester_.ExpectBucketCount(
       data_controls::GetDlpHistogramPrefix() + param.histogram_suffix, true, 1);
@@ -2206,8 +2279,7 @@ IN_PROC_BROWSER_TEST_P(ScreenShareNavigateWebContentsTest, Reporting) {
   WaitForScreenShareResume();
 
   // Expect resume notification.
-  EXPECT_TRUE(display_service_tester.GetNotification(
-      kScreenShareResumedNotificationId));
+  EXPECT_TRUE(HasNotification(kScreenShareResumedNotificationId));
   histogram_tester_.ExpectBucketCount(
       data_controls::GetDlpHistogramPrefix() + param.histogram_suffix, true, 1);
 }

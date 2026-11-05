@@ -4,6 +4,8 @@
 
 package org.jni_zero;
 
+import org.jni_zero.internal.Nullable;
+
 import java.util.Collections;
 
 /** Core APIs. */
@@ -11,10 +13,27 @@ import java.util.Collections;
 public class JniZero {
     private static ClassLoader sPendingJniClassLoader;
     private static boolean sInitialized;
-    private static boolean sRawPtrHooksEnabled;
 
-    static boolean isRawPtrHooksEnabled() {
-        return sRawPtrHooksEnabled;
+    /** Seam for //base's LifetimeAssert to attach leak tracking without a //base dep. */
+    public interface SafePointersTrackerFactory {
+        /**
+         * @param creationContext Names the JNI method that handed the pointer to Java, or null.
+         */
+        SafePointersTracker create(Object target, @Nullable String creationContext);
+    }
+
+    public interface SafePointersTracker {
+        void destroy();
+    }
+
+    public static void setSafePointersTrackerFactory(SafePointersTrackerFactory factory) {
+        JniPtrImplBase.sTrackerFactory =
+                factory == null
+                        ? null
+                        : (target, creationContext) -> {
+                            SafePointersTracker tracker = factory.create(target, creationContext);
+                            return tracker == null ? null : tracker::destroy;
+                        };
     }
 
     /** Sets the ClassLoader used to resolve classes by JNI Zero. */
@@ -27,14 +46,15 @@ public class JniZero {
     }
 
     @CalledByNative
-    private static long getNativePtr(JniPtrInner<?> ptr) {
+    private static long getNativePtr(JniPtrImplBase<?> ptr) {
         return JniZeroInternal.getNativePtr(ptr);
     }
 
     @CalledByNative
     private static Object[] init(boolean rawPtrHooksEnabled) {
         sInitialized = true;
-        sRawPtrHooksEnabled = rawPtrHooksEnabled;
+        JniPtrImplBase.sRawPtrReleaser =
+                rawPtrHooksEnabled ? (ptr) -> CommonApisJni.get().releaseRawPtr(ptr) : null;
         // For JVM (works fine on ART), cannot call from Java -> Native during InitVM because the
         // System.loadLibrary() call has not yet completed. Could work around this by using
         // RegisterNatives(), but simpler to return an array than to make Java->Native work.

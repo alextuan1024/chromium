@@ -3,12 +3,13 @@
 # found in the LICENSE file.
 
 import("//build/config/android/config.gni")
+import("//build/config/android/jdk.gni")
 import("//build/config/compiler/compiler.gni")
 if (is_android) {
   import("//build/config/android/rules.gni")
 }
 
-_JAVAP_PATH = "//third_party/jdk/current/bin/javap"
+_JAVAP_PATH = "$android_jdk_home/bin/javap"
 
 declare_args() {
   # Enables JNI multiplexing to reduce JNI native methods overhead. Component
@@ -87,15 +88,18 @@ template("_invoke_jni_zero") {
                             "codegen/placeholder_gen_jni_java.py",
                             "codegen/placeholder_java_type.py",
                             "codegen/proxy_impl_java.py",
+                            "codegen/proxy_impl_kotlin.py",
                             "codegen/register_natives.py",
                             "common.py",
                             "gen_register_natives.py",
                             "java_lang_classes.py",
+                            "java_parse.py",
                             "java_types.py",
                             "jni_generator.py",
                             "jni_registration_generator.py",
                             "jni_zero.py",
-                            "parse.py",
+                            "kotlin_parse.py",
+                            "parse_common.py",
                             "proxy.py",
                           ],
                           ".",
@@ -471,10 +475,11 @@ template("generate_jni_impl") {
       }
     }
 
+    _subdir = rebase_path(target_gen_dir, root_gen_dir)
+    _jni_output_dir = "$jni_headers_dir/$_subdir/$_target_name"
+
     _invoke_jni_zero(_jni_zero_action_target_name) {
       forward_variables_from(invoker, [ "testonly" ])
-      _subdir = rebase_path(target_gen_dir, root_gen_dir)
-      _jni_output_dir = "$jni_headers_dir/$_subdir/$_target_name"
 
       # The sources aren't compiled so don't check their dependencies.
       check_includes = false
@@ -650,10 +655,8 @@ template("generate_jni_impl") {
       java_library("${_target_name}_java") {
         forward_variables_from(invoker, TESTONLY_AND_VISIBILITY)
 
-        srcjars = [
-          _srcjar_output,
-          _placeholder_srcjar_output,
-        ]
+        srcjars = [ _placeholder_srcjar_output ]
+        srcjar_deps = [ ":$_target_name" ]
         supports_android = true
         jar_included_patterns = [
           "*Jni.class",
@@ -664,6 +667,10 @@ template("generate_jni_impl") {
           ":$_jni_zero_action_target_name",
           "//third_party/jni_zero:gendeps_java",
         ]
+        if (filter_include(invoker.sources, [ "*.kt" ]) != []) {
+          kotlin_srcjar_deps = [ ":$_target_name" ]
+          deps += [ "//third_party/android_deps:kotlin_stdlib_java" ]
+        }
         if (defined(invoker.public_deps)) {
           public_deps = []
           foreach(_dep, invoker.public_deps) {
@@ -684,19 +691,25 @@ template("generate_jni_impl") {
       public_deps = [ ":$_jni_zero_action_target_name" ]
       forward_variables_from(invoker, TESTONLY_AND_VISIBILITY)
       if (defined(visibility)) {
-        visibility += [ ":$target_name" ]
+        visibility += [
+          ":$target_name",
+          ":${_target_name}_java__compile_java",
+          ":${_target_name}_java__compile_kt",
+          ":${_target_name}_java__header",
+        ]
       }
     }
   }
 }
 
-# Given a set of Java files, generates a header file to call into Java for all
-# @CalledByNative functions. If @NativeMethods is present, also generates a
-# .srcjar containing <ClassName>Jni.java, which should be depended on via the
-# generated GN target <generate_jni's target name>_java.
+# Given a set of Java or Kotlin files, generates a header file to call into Java
+# for all @CalledByNative functions. If @NativeMethods is present, also
+# generates a .srcjar containing <ClassName>Jni.java or <ClassName>Jni.kt files,
+# which should be depended on via the generated GN target
+# <generate_jni's target name>_java.
 #
 # Variables
-#   sources: List of .java files to generate JNI bindings for.
+#   sources: List of .java or .kt files to generate JNI bindings for.
 #   use_weak_called_by_natives: (Optional) Emits @CalledByNative stubs with
 #     [[gnu::weak]] fallback implementations. Allows the bindings to be used
 #     with or without a generate_final_jni() target.

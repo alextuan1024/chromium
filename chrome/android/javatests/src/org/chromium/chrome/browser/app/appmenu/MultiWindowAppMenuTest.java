@@ -4,6 +4,12 @@
 
 package org.chromium.chrome.browser.app.appmenu;
 
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertNotEquals;
+import static org.junit.Assert.assertNotNull;
+
+import android.os.Build;
+
 import androidx.test.filters.LargeTest;
 
 import org.junit.Rule;
@@ -11,11 +17,11 @@ import org.junit.Test;
 import org.junit.runner.RunWith;
 
 import org.chromium.base.ThreadUtils;
+import org.chromium.base.Token;
 import org.chromium.base.test.transit.TransitAsserts;
 import org.chromium.base.test.util.CommandLineFlags;
 import org.chromium.base.test.util.DisableIf;
 import org.chromium.base.test.util.DoNotBatch;
-import org.chromium.base.test.util.Features.DisableFeatures;
 import org.chromium.base.test.util.Features.EnableFeatures;
 import org.chromium.base.test.util.Restriction;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
@@ -27,9 +33,11 @@ import org.chromium.chrome.browser.tabmodel.TabGroupMergeNotificationType;
 import org.chromium.chrome.browser.tabmodel.TabModel;
 import org.chromium.chrome.browser.tabmodel.TabModelUtils;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
+import org.chromium.chrome.test.transit.AddToGroupSubmenuFacility;
 import org.chromium.chrome.test.transit.ChromeTransitTestRules;
 import org.chromium.chrome.test.transit.FreshCtaTransitTestRule;
 import org.chromium.chrome.test.transit.Journeys;
+import org.chromium.chrome.test.transit.TabGroupsSubmenuFacility;
 import org.chromium.chrome.test.transit.hub.RegularTabSwitcherStation;
 import org.chromium.chrome.test.transit.hub.TabSwitcherGroupCardFacility;
 import org.chromium.chrome.test.transit.ntp.IncognitoNewTabPageStation;
@@ -48,9 +56,6 @@ import java.util.List;
 // In phones, the New Window option in the app menu is only enabled when already in multi-window or
 // multi-display mode with Chrome not running in an adjacent window.
 @Restriction({DeviceFormFactor.TABLET_OR_DESKTOP, DeviceRestriction.RESTRICTION_TYPE_NON_AUTO})
-@EnableFeatures(ChromeFeatureList.TOOLBAR_TABLET_RESIZE_REFACTOR)
-// TODO(b/555414915): Update Android tests with WebUI NTP enabled on AL.
-@DisableFeatures(ChromeFeatureList.USE_WEB_UI_NTP_ANDROID)
 public class MultiWindowAppMenuTest {
     @Rule
     public FreshCtaTransitTestRule mCtaTestRule =
@@ -127,11 +132,6 @@ public class MultiWindowAppMenuTest {
 
     @Test
     @LargeTest
-    @DisableFeatures({
-        ChromeFeatureList.SETTINGS_MULTI_COLUMN,
-        ChromeFeatureList.SETTINGS_IN_TAB, // crbug.com/521895796
-        ChromeFeatureList.SETTINGS_IN_TAB_DESKTOP // crbug.com/556881398
-    })
     @DisableIf.Device(DeviceFormFactor.DESKTOP_FREEFORM) // crbug.com/511288091
     public void testInteractWithBothWindows() {
         doTestInteractWithBothWindows();
@@ -154,6 +154,7 @@ public class MultiWindowAppMenuTest {
         ChromeFeatureList.CROSS_WINDOW_TAB_GROUP_OPERATIONS
     })
     @DisableIf.Device(DeviceFormFactor.DESKTOP_FREEFORM)
+    @DisableIf.Build(sdk_equals = Build.VERSION_CODES.S_V2, message = "crbug.com/576757597")
     public void testAddToGroup_showsGroupsFromOtherWindow() {
         WebPageStation page1InFirstWindow = mCtaTestRule.startOnBlankPage();
         RegularNewTabPageStation pageInSecondWindow =
@@ -162,9 +163,17 @@ public class MultiWindowAppMenuTest {
         WebPageStation window2Page =
                 Journeys.prepareTabs(
                         pageInSecondWindow, 2, 0, "about:blank", WebPageStation::newBuilder);
-        RegularTabSwitcherStation tabSwitcher2 = window2Page.openRegularTabSwitcher();
-        TabSwitcherGroupCardFacility groupCardWindow2 =
-                Journeys.mergeAllTabsToNewGroup(tabSwitcher2);
+
+        // Group Window 2's tabs programmatically rather than through Window 2's UI. On Android
+        // 12L split-screen, Window 2's app menu can be cropped out by the platform when the IME
+        // belongs to Window 1 (crbug.com/576757597).
+        TabModel tabModel2 = window2Page.getTabModel();
+        ThreadUtils.runOnUiThreadBlocking(
+                () -> {
+                    List<Tab> tabs2 = TabModelUtils.convertTabListToListOfTabs(tabModel2);
+                    tabModel2.mergeListOfTabsToGroup(
+                            tabs2, tabs2.get(0), TabGroupMergeNotificationType.DONT_NOTIFY);
+                });
 
         MultiWindowTestHelper.moveActivityToFront(page1InFirstWindow.getActivity());
 
@@ -173,9 +182,8 @@ public class MultiWindowAppMenuTest {
 
         RegularWebPageAppMenuFacility appMenu = page2InFirstWindow.openRegularTabAppMenu();
         appMenu.openTabGroupsSubmenu(
-                /* expectedGroups= */ List.of(groupCardWindow2.getTitle()),
-                /* excludedGroups= */ List.of());
-        TransitAsserts.assertFinalDestinations(page2InFirstWindow, tabSwitcher2);
+                /* expectedGroups= */ List.of("2 tabs"), /* excludedGroups= */ List.of());
+        TransitAsserts.assertFinalDestinations(page2InFirstWindow, window2Page);
     }
 
     @Test
@@ -242,5 +250,55 @@ public class MultiWindowAppMenuTest {
                 /* excludedGroups= */ List.of("2 tabs"));
 
         TransitAsserts.assertFinalDestinations(page1, tabSwitcher2);
+    }
+
+    @Test
+    @LargeTest
+    @Restriction(DeviceFormFactor.ONLY_TABLET)
+    @EnableFeatures({
+        ChromeFeatureList.SUBMENUS_IN_APP_MENU,
+        ChromeFeatureList.CROSS_WINDOW_TAB_GROUP_OPERATIONS + ":remote_group_operations/true"
+    })
+    @DisableIf.Device(DeviceFormFactor.DESKTOP_FREEFORM)
+    public void testAddToGroupSubmenu_showsRemoteGroupAndExcludesCurrentGroup() {
+        WebPageStation page1 = mCtaTestRule.startOnBlankPage();
+
+        RegularTabSwitcherStation tabSwitcher =
+                Journeys.createAndHideSavedTabGroup(page1, "RemoteSavedGroup", /* numTabs= */ 2);
+
+        WebPageStation activeGroupedPage =
+                tabSwitcher.selectTabAtIndex(0, WebPageStation.newBuilder());
+        activeGroupedPage
+                .openRegularTabAppMenu()
+                .openTabGroupsSubmenu(
+                        /* expectedGroups= */ List.of("RemoteSavedGroup"),
+                        /* excludedGroups= */ List.of())
+                .clickNewTabGroup()
+                .pressDoneToExit();
+
+        Token initialGroupId = activeGroupedPage.getTab().getTabGroupId();
+        assertNotNull(initialGroupId);
+
+        RegularWebPageAppMenuFacility appMenu = activeGroupedPage.openRegularTabAppMenu();
+        TabGroupsSubmenuFacility<WebPageStation> tabGroupsSubmenu =
+                appMenu.openTabGroupsSubmenu(
+                        /* expectedGroups= */ List.of("RemoteSavedGroup", "1 tab"),
+                        /* excludedGroups= */ List.of());
+        AddToGroupSubmenuFacility<WebPageStation> addToGroupSubmenu =
+                tabGroupsSubmenu.openAddToGroupSubmenu(
+                        /* expectedGroups= */ List.of("RemoteSavedGroup"),
+                        /* excludedGroups= */ List.of("1 tab"));
+        addToGroupSubmenu.selectGroup("RemoteSavedGroup");
+
+        ThreadUtils.runOnUiThreadBlocking(
+                () -> {
+                    Token mergedGroupId = activeGroupedPage.getTab().getTabGroupId();
+                    assertNotNull(mergedGroupId);
+                    assertNotEquals(initialGroupId, mergedGroupId);
+                    assertEquals(
+                            3,
+                            activeGroupedPage.getTabModel().getTabsInGroup(mergedGroupId).size());
+                });
+        TransitAsserts.assertFinalDestinations(activeGroupedPage);
     }
 }

@@ -140,10 +140,14 @@ std::string_view ConvertIconToPrintableString(Suggestion::Icon icon) {
       return "kLocation";
     case Suggestion::Icon::kLocationSpark:
       return "kLocationSpark";
-    case Suggestion::Icon::kLoyalty:
-      return "kLoyalty";
+    case Suggestion::Icon::kLoyaltyPrograms:
+      return "kLoyaltyPrograms";
+    case Suggestion::Icon::kLoyaltyProgramsSpark:
+      return "kLoyaltyProgramsSpark";
     case Suggestion::Icon::kMagic:
       return "kMagic";
+    case Suggestion::Icon::kMailAsterisk:
+      return "kMailAsterisk";
     case Suggestion::Icon::kOfferTag:
       return "kOfferTag";
     case Suggestion::Icon::kOpenInNew:
@@ -278,8 +282,11 @@ Suggestion::PersonalContextSourceCitation::PersonalContextSourceCitation() =
 
 Suggestion::PersonalContextSourceCitation::PersonalContextSourceCitation(
     GURL url,
-    gfx::Range range)
-    : url(std::move(url)), range(range) {}
+    gfx::Range range,
+    std::u16string accessible_name)
+    : url(std::move(url)),
+      range(range),
+      accessible_name(std::move(accessible_name)) {}
 
 Suggestion::PersonalContextSourceCitation::PersonalContextSourceCitation(
     const PersonalContextSourceCitation&) = default;
@@ -546,7 +553,7 @@ bool Suggestion::IsAcceptable() const {
   // LINT.IfChange(UnacceptableSuggestionTypes)
   static constexpr auto kUnacceptableItemIds =
       DenseSet({kSeparator, kInsecureContextPaymentDisabledMessage, kTitle,
-                kAtMemorySourceAttribution});
+                kAtMemorySourceAttribution, kAutofillAiSourceAttribution});
   // LINT.ThenChange(/components/autofill/android/java/src/org/chromium/components/autofill/AutofillSuggestion.java:UnacceptableSuggestionTypes)
   if (kUnacceptableItemIds.contains(type)) {
     return false;

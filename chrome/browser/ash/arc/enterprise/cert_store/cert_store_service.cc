@@ -29,8 +29,6 @@
 #include "chrome/browser/ash/platform_keys/platform_keys_service.h"
 #include "chrome/browser/ash/platform_keys/platform_keys_service_factory.h"
 #include "chrome/browser/net/nss_service.h"
-#include "chrome/browser/net/nss_service_factory.h"
-#include "chrome/browser/profiles/profile.h"
 #include "chrome/common/net/x509_certificate_model_nss.h"
 #include "chromeos/ash/components/platform_keys/platform_keys.h"
 #include "chromeos/ash/experiences/arc/arc_browser_context_keyed_service_factory_base.h"
@@ -178,10 +176,10 @@ void ListCertsWithDbGetterOnIO(
 // Returns the list of certificates in |slot|, making sure to fetch the cert
 // database and list certs from the IO thread, while posting |callback| with the
 // output list to the original caller thread.
-void ListCerts(content::BrowserContext* const context,
+void ListCerts(NssService* const nss_service,
                keymanagement::mojom::ChapsSlot slot,
                net::NSSCertDatabase::ListCertsCallback callback) {
-  // |context| must be accessed on the UI thread.
+  // |nss_service| must be accessed on the UI thread.
   CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M160);
   // The NssCertDatabaseGetter must be posted to the IO thread immediately.
   content::GetIOThreadTaskRunner({})->PostTask(
@@ -189,8 +187,7 @@ void ListCerts(content::BrowserContext* const context,
       base::BindOnce(&ListCertsWithDbGetterOnIO,
                      base::SingleThreadTaskRunner::GetCurrentDefault(), slot,
                      std::move(callback),
-                     NssServiceFactory::GetForContext(context)
-                         ->CreateNSSCertDatabaseGetterForIOThread()));
+                     nss_service->CreateNSSCertDatabaseGetterForIOThread()));
 }
 
 using IsCertificateAllowedCallback = base::OnceCallback<void(bool allowed)>;
@@ -344,15 +341,25 @@ std::vector<keymint::mojom::ChromeOsKeyPtr> PrepareChromeOsKeysForKeyMint(
 
 }  // namespace
 
-CertStoreService::CertStoreService(content::BrowserContext* context)
-    : CertStoreService(context, std::make_unique<ArcCertInstaller>(context)) {}
+CertStoreService::CertStoreService(content::BrowserContext* context,
+                                   NssService* nss_service)
+    : CertStoreService(context,
+                       nss_service,
+                       std::make_unique<ArcCertInstaller>(context)) {}
 
 CertStoreService::CertStoreService(content::BrowserContext* context,
+                                   NssService* nss_service,
                                    std::unique_ptr<ArcCertInstaller> installer)
-    : context_(context), installer_(std::move(installer)) {
+    : context_(context),
+      nss_service_(nss_service),
+      installer_(std::move(installer)) {
   // Do not perform any actions if context is nullptr for unit tests.
   if (!context_)
     return;
+
+  // Past this point the service is live, and NssServiceFactory always has an
+  // instance for the profiles ARC services are built for.
+  CHECK(nss_service_);
 
   net::CertDatabase::GetInstance()->AddObserver(this);
 
@@ -369,7 +376,7 @@ void CertStoreService::OnClientCertStoreChanged() {
 }
 
 void CertStoreService::UpdateCertificates() {
-  ListCerts(context_, keymanagement::mojom::ChapsSlot::kSystem,
+  ListCerts(nss_service_, keymanagement::mojom::ChapsSlot::kSystem,
             base::BindOnce(&CertStoreService::OnCertificatesListed,
                            weak_ptr_factory_.GetWeakPtr(),
                            keymanagement::mojom::ChapsSlot::kSystem,
@@ -525,7 +532,7 @@ void CertStoreService::OnBuiltAllowedCertDescriptionsForKeymaster(
 
 void CertStoreService::ListCertsInSystemSlot(
     std::vector<CertDescription> cert_descriptions) const {
-  ListCerts(context_, keymanagement::mojom::ChapsSlot::kSystem,
+  ListCerts(nss_service_, keymanagement::mojom::ChapsSlot::kSystem,
             base::BindOnce(&CertStoreService::OnCertificatesListed,
                            weak_ptr_factory_.GetMutableWeakPtr(),
                            keymanagement::mojom::ChapsSlot::kSystem,
@@ -534,7 +541,7 @@ void CertStoreService::ListCertsInSystemSlot(
 
 void CertStoreService::ListCertsInUserSlot(
     std::vector<CertDescription> cert_descriptions) const {
-  ListCerts(context_, keymanagement::mojom::ChapsSlot::kUser,
+  ListCerts(nss_service_, keymanagement::mojom::ChapsSlot::kUser,
             base::BindOnce(&CertStoreService::OnCertificatesListed,
                            weak_ptr_factory_.GetMutableWeakPtr(),
                            keymanagement::mojom::ChapsSlot::kUser,

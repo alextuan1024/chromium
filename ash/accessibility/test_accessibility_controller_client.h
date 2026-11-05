@@ -11,13 +11,15 @@
 #include "ash/public/cpp/accessibility_controller_enums.h"
 #include "chromeos/ash/components/audio/sounds.h"
 #include "ui/accessibility/ax_enums.mojom.h"
+#include "ui/gfx/geometry/point.h"
 
 namespace ash {
 
 // Implement AccessibilityControllerClient mojo interface to simulate chrome
 // behavior in tests. This breaks the ash/chrome dependency to allow testing ash
 // code in isolation.
-class TestAccessibilityControllerClient : public AccessibilityControllerClient {
+class TestAccessibilityControllerClient final
+    : public AccessibilityControllerClient {
  public:
   TestAccessibilityControllerClient();
 
@@ -53,8 +55,11 @@ class TestAccessibilityControllerClient : public AccessibilityControllerClient {
   void OnSelectToSpeakPanelAction(SelectToSpeakPanelAction action,
                                   double value) override;
   void SetA11yOverrideWindow(aura::Window* a11y_override_window) override;
-  std::string GetDictationDefaultLocale(bool new_user) override;
+  base::i18n::LanguageTag GetDictationDefaultLocale(bool new_user) override;
   void SendFaceGazeDisableDialogResultToSettings(bool accepted) override;
+  void OnHoverTextPointUpdated(const gfx::Point& point_in_screen,
+                               HoverTextPointerType pointer_type) override;
+  void OnHoverTextKeyEvent(bool is_active, bool stop_speech) override;
 
   std::optional<Sound> GetPlayedEarconAndReset();
 
@@ -70,6 +75,22 @@ class TestAccessibilityControllerClient : public AccessibilityControllerClient {
   double last_select_to_speak_panel_action_value() const {
     return last_select_to_speak_panel_action_value_;
   }
+  const gfx::Point& last_hover_text_point() const {
+    return last_hover_text_point_;
+  }
+  HoverTextPointerType last_hover_text_pointer_type() const {
+    return last_hover_text_pointer_type_;
+  }
+  int hover_text_point_update_count() const {
+    return hover_text_point_update_count_;
+  }
+  bool last_hover_text_activation_key_held() const {
+    return last_hover_text_activation_key_held_;
+  }
+  bool last_hover_text_stop_speech() const {
+    return last_hover_text_stop_speech_;
+  }
+  int hover_text_key_event_count() const { return hover_text_key_event_count_; }
 
  private:
   AccessibilityAlert last_a11y_alert_ = AccessibilityAlert::NONE;
@@ -83,6 +104,14 @@ class TestAccessibilityControllerClient : public AccessibilityControllerClient {
   ax::mojom::Gesture last_a11y_gesture_ = ax::mojom::Gesture::kNone;
 
   int select_to_speak_state_change_requests_ = 0;
+
+  gfx::Point last_hover_text_point_;
+  HoverTextPointerType last_hover_text_pointer_type_ =
+      HoverTextPointerType::kMouse;
+  int hover_text_point_update_count_ = 0;
+  bool last_hover_text_activation_key_held_ = false;
+  bool last_hover_text_stop_speech_ = false;
+  int hover_text_key_event_count_ = 0;
 };
 
 }  // namespace ash

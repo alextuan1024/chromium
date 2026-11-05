@@ -9,32 +9,21 @@
 
 #import "base/check_op.h"
 #import "base/functional/bind.h"
-#import "base/functional/callback_helpers.h"
-#import "base/ios/block_types.h"
 #import "base/metrics/user_metrics.h"
 #import "base/notreached.h"
 #import "base/strings/sys_string_conversions.h"
-#import "base/time/time.h"
-#import "base/timer/timer.h"
 #import "components/policy/core/browser/signin/profile_separation_policies.h"
 #import "components/policy/core/browser/signin/user_cloud_signin_restriction_policy_fetcher.h"
-#import "components/policy/core/common/policy_pref_names.h"
-#import "components/prefs/pref_service.h"
 #import "components/signin/public/identity_manager/identity_manager.h"
-#import "components/strings/grit/components_strings.h"
 #import "components/sync/service/sync_service.h"
-#import "google_apis/gaia/gaia_auth_util.h"
 #import "google_apis/gaia/gaia_id.h"
-#import "google_apis/gaia/gaia_urls.h"
 #import "ios/chrome/app/change_profile_commands.h"
 #import "ios/chrome/app/change_profile_continuation.h"
 #import "ios/chrome/browser/authentication/age_mismatch_signout/coordinator/age_mismatch_signout_coordinator.h"
 #import "ios/chrome/browser/authentication/age_mismatch_signout/ui/age_mismatch_prompt_mode.h"
 #import "ios/chrome/browser/authentication/enterprise/managed_profile_creation/coordinator/managed_profile_creation_coordinator.h"
 #import "ios/chrome/browser/authentication/enterprise/public/managed_profile_creation_constants.h"
-#import "ios/chrome/browser/authentication/history_sync/model/history_sync_utils.h"
 #import "ios/chrome/browser/authentication/signin/reauth/coordinator/signin_reauth_coordinator.h"
-#import "ios/chrome/browser/authentication/ui_bundled/authentication_constants.h"
 #import "ios/chrome/browser/authentication/ui_bundled/authentication_flow/age_mismatch_capabilities_fetcher.h"
 #import "ios/chrome/browser/authentication/ui_bundled/authentication_flow/authentication_flow_delegate.h"
 #import "ios/chrome/browser/authentication/ui_bundled/authentication_flow/authentication_flow_performer_base+protected.h"
@@ -42,34 +31,17 @@
 #import "ios/chrome/browser/authentication/ui_bundled/authentication_ui_util.h"
 #import "ios/chrome/browser/authentication/ui_bundled/signin/signin_utils.h"
 #import "ios/chrome/browser/policy/model/browser_policy_connector_ios.h"
-#import "ios/chrome/browser/policy/model/cloud/user_policy_signin_service.h"
-#import "ios/chrome/browser/policy/model/cloud/user_policy_signin_service_factory.h"
-#import "ios/chrome/browser/policy/model/management_state.h"
-#import "ios/chrome/browser/policy/ui_bundled/management_util.h"
 #import "ios/chrome/browser/shared/coordinator/alert/action_sheet_coordinator.h"
 #import "ios/chrome/browser/shared/coordinator/scene/scene_state.h"
 #import "ios/chrome/browser/shared/model/application_context/application_context.h"
 #import "ios/chrome/browser/shared/model/browser/browser.h"
-#import "ios/chrome/browser/shared/model/browser/browser_provider_interface.h"
 #import "ios/chrome/browser/shared/model/profile/profile_ios.h"
-#import "ios/chrome/browser/shared/model/web_state_list/web_state_list.h"
-#import "ios/chrome/browser/shared/public/commands/command_dispatcher.h"
 #import "ios/chrome/browser/shared/public/commands/show_signin_command.h"
-#import "ios/chrome/browser/shared/public/features/features.h"
-#import "ios/chrome/browser/shared/public/features/system_flags.h"
-#import "ios/chrome/browser/shared/ui/util/uikit_ui_util.h"
 #import "ios/chrome/browser/signin/model/account_profile_mapper.h"
-#import "ios/chrome/browser/signin/model/authentication_service_factory.h"
 #import "ios/chrome/browser/signin/model/constants.h"
 #import "ios/chrome/browser/signin/model/identity_manager_factory.h"
 #import "ios/chrome/browser/signin/model/system_identity.h"
 #import "ios/chrome/browser/signin/model/system_identity_manager.h"
-#import "ios/chrome/browser/sync/model/sync_service_factory.h"
-#import "ios/chrome/grit/ios_branded_strings.h"
-#import "ios/chrome/grit/ios_strings.h"
-#import "ios/web/public/web_state.h"
-#import "services/network/public/cpp/shared_url_loader_factory.h"
-#import "ui/base/l10n/l10n_util.h"
 
 namespace {
 
@@ -192,11 +164,12 @@ policy::ProfileSeparationPolicies GetFakePolicyResponseForTesting() {
 }
 
 - (void)fetchUnsyncedDataWithSyncService:(syncer::SyncService*)syncService {
+  __weak __typeof(self) weakSelf = self;
   auto callback = base::BindOnce(
-      [](__typeof(_delegate) delegate, syncer::DataTypeSet set) {
-        [delegate didFetchUnsyncedDataWithUnsyncedDataTypes:set];
+      [](__typeof(self) strongSelf, syncer::DataTypeSet set) {
+        [strongSelf didFetchUnsyncedDataWithUnsyncedDataTypes:set];
       },
-      _delegate);
+      weakSelf);
   signin::FetchUnsyncedDataForSignOutOrProfileSwitching(syncService,
                                                         std::move(callback));
 }
@@ -232,7 +205,8 @@ policy::ProfileSeparationPolicies GetFakePolicyResponseForTesting() {
       GetApplicationContext()->GetSystemIdentityManager();
   if (NSString* hostedDomain =
           systemIdentityManager->GetCachedHostedDomainForIdentity(identity)) {
-    [_delegate didFetchManagedStatus:hostedDomain];
+    [_delegate authenticationFlowPerformer:self
+                     didFetchManagedStatus:hostedDomain];
     return;
   }
 
@@ -305,7 +279,7 @@ policy::ProfileSeparationPolicies GetFakePolicyResponseForTesting() {
       GetApplicationContext()
           ->GetAccountProfileMapper()
           ->FindProfileNameForGaiaID(identity.gaiaId);
-  CHECK(profileName.has_value(), base::NotFatalUntil::M150);
+  CHECK(profileName.has_value());
 
   __weak __typeof(self) weakSelf = self;
   auto profileSwitchReadyCompletion = base::BindOnce(
@@ -332,7 +306,7 @@ policy::ProfileSeparationPolicies GetFakePolicyResponseForTesting() {
   GetApplicationContext()
       ->GetAccountProfileMapper()
       ->MakePersonalProfileManagedWithGaiaID(identity.gaiaId);
-  [_delegate didMakePersonalProfileManaged];
+  [_delegate authenticationFlowPerformerDidMakePersonalProfileManaged:self];
 }
 
 - (void)showManagedConfirmationForHostedDomain:(NSString*)hostedDomain
@@ -380,19 +354,20 @@ policy::ProfileSeparationPolicies GetFakePolicyResponseForTesting() {
   [self stopReauthCoordinator];
 
   BOOL success = (result == ReauthResult::kSuccess);
-  [_delegate didCompleteReauthWithSuccess:success];
+  [_delegate authenticationFlowPerformer:self
+            didCompleteReauthWithSuccess:success];
 }
 
 - (void)confirmChangeProfile:
             (SigninChangeProfileConfirmationBlock)confirmChangeProfile
                  forIdentity:(id<SystemIdentity>)identity {
   if (!confirmChangeProfile) {
-    [_delegate didConfirmChangeProfileCanProceed:YES];
+    [self didConfirmChangeProfileCanProceed:YES];
     return;
   }
-  __weak __typeof(_delegate) delegate = _delegate;
+  __weak __typeof(self) weakSelf = self;
   confirmChangeProfile(^(BOOL canProceed) {
-    [delegate didConfirmChangeProfileCanProceed:canProceed];
+    [weakSelf didConfirmChangeProfileCanProceed:canProceed];
   });
 }
 
@@ -405,6 +380,17 @@ policy::ProfileSeparationPolicies GetFakePolicyResponseForTesting() {
 }
 
 #pragma mark - Private
+
+- (void)didFetchUnsyncedDataWithUnsyncedDataTypes:
+    (syncer::DataTypeSet)unsyncedDataTypes {
+  [_delegate authenticationFlowPerformer:self
+      didFetchUnsyncedDataWithUnsyncedDataTypes:unsyncedDataTypes];
+}
+
+- (void)didConfirmChangeProfileCanProceed:(BOOL)canProceed {
+  [_delegate authenticationFlowPerformer:self
+       didConfirmChangeProfileCanProceed:canProceed];
+}
 
 - (void)didFetchCanSignInToChromeCapability:(signin::Tribool)capability {
   [_delegate authenticationFlowPerformer:self
@@ -429,7 +415,8 @@ policy::ProfileSeparationPolicies GetFakePolicyResponseForTesting() {
 - (void)leavingPrimaryAccountConfirmationDone:(BOOL)continueFlow {
   [_leavingPrimaryAccountConfirmationDialogCoordinator stop];
   _leavingPrimaryAccountConfirmationDialogCoordinator = nil;
-  [_delegate didAcceptToLeavePrimaryAccount:continueFlow];
+  [_delegate authenticationFlowPerformer:self
+          didAcceptToLeavePrimaryAccount:continueFlow];
 }
 
 // Called when the user closed the "Managed profile creation" view.
@@ -440,7 +427,7 @@ policy::ProfileSeparationPolicies GetFakePolicyResponseForTesting() {
       base::RecordAction(
           base::UserMetricsAction("Signin_AuthenticationFlowPerformer_"
                                   "ManagedConfirmationDialog_Canceled"));
-      [_delegate didCancelManagedConfirmation];
+      [_delegate authenticationFlowPerformerDidCancelManagedConfirmation:self];
       return;
     case ManagedProfileCreationResult::kMerge:
       separate = NO;
@@ -452,7 +439,8 @@ policy::ProfileSeparationPolicies GetFakePolicyResponseForTesting() {
   base::RecordAction(
       base::UserMetricsAction("Signin_AuthenticationFlowPerformer_"
                               "ManagedConfirmationDialog_Confirmed"));
-  [_delegate didAcceptManagedConfirmationWithBrowsingDataSeparate:separate];
+  [_delegate authenticationFlowPerformer:self
+      didAcceptManagedConfirmationWithBrowsingDataSeparate:separate];
 }
 
 // Called when separation policies have been fetched, and calls the delegate.
@@ -467,8 +455,9 @@ policy::ProfileSeparationPolicies GetFakePolicyResponseForTesting() {
         static_cast<policy::ProfileSeparationDataMigrationSettings>(
             *policies.profile_separation_data_migration_settings());
   }
-  [_delegate didFetchProfileSeparationPolicies:
-                 profile_separation_data_migration_settings];
+  [_delegate authenticationFlowPerformer:self
+       didFetchProfileSeparationPolicies:
+           profile_separation_data_migration_settings];
 }
 
 - (void)handleGetHostedDomain:(NSString*)hostedDomain error:(NSError*)error {
@@ -477,10 +466,12 @@ policy::ProfileSeparationPolicies GetFakePolicyResponseForTesting() {
     return;
   }
   if (error) {
-    [_delegate didFailFetchManagedStatus:error];
+    [_delegate authenticationFlowPerformer:self
+                 didFailFetchManagedStatus:error];
     return;
   }
-  [_delegate didFetchManagedStatus:hostedDomain];
+  [_delegate authenticationFlowPerformer:self
+                   didFetchManagedStatus:hostedDomain];
 }
 
 // Starts the watchdog timer with a timeout of
@@ -502,7 +493,7 @@ policy::ProfileSeparationPolicies GetFakePolicyResponseForTesting() {
                                    userInfo:nil];
 
   [self stopWatchdogTimer];
-  [_delegate didFailFetchManagedStatus:error];
+  [_delegate authenticationFlowPerformer:self didFailFetchManagedStatus:error];
 }
 
 #pragma mark - ManagedProfileCreationCoordinatorDelegate
@@ -538,7 +529,8 @@ policy::ProfileSeparationPolicies GetFakePolicyResponseForTesting() {
 - (void)managedProfileCreationCoordinatorWantsToBeStopped:
     (ManagedProfileCreationCoordinator*)coordinator {
   CHECK_EQ(_managedConfirmationScreenCoordinator, coordinator);
-  [_delegate managedConfirmationCouldNotProceed];
+  [_delegate
+      authenticationFlowPerformerDidFailToProceedWithManagedConfirmation:self];
   [self stopManagedConfirmation];
 }
 
@@ -548,7 +540,7 @@ policy::ProfileSeparationPolicies GetFakePolicyResponseForTesting() {
     (AgeMismatchSignoutCoordinator*)coordinator {
   CHECK_EQ(coordinator, _ageMismatchSignoutCoordinator);
   [self stopAgeMismatchSignoutCoordinator];
-  [_delegate
+  [_delegate authenticationFlowPerformer:self
       didDismissAgeMismatchDialogWithCancelationReason:
           signin_ui::CancelationReason::kAgeMismatchCanceledStaySignedOut];
 }
@@ -557,8 +549,9 @@ policy::ProfileSeparationPolicies GetFakePolicyResponseForTesting() {
     (AgeMismatchSignoutCoordinator*)coordinator {
   CHECK_EQ(coordinator, _ageMismatchSignoutCoordinator);
   [self stopAgeMismatchSignoutCoordinator];
-  [_delegate didDismissAgeMismatchDialogWithCancelationReason:
-                 signin_ui::CancelationReason::kAgeMismatchCanceled];
+  [_delegate authenticationFlowPerformer:self
+      didDismissAgeMismatchDialogWithCancelationReason:
+          signin_ui::CancelationReason::kAgeMismatchCanceled];
 }
 
 - (void)stopAgeMismatchSignoutCoordinator {

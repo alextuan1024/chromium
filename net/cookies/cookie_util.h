@@ -5,6 +5,7 @@
 #ifndef NET_COOKIES_COOKIE_UTIL_H_
 #define NET_COOKIES_COOKIE_UTIL_H_
 
+#include <cstddef>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -17,8 +18,6 @@
 #include "net/cookies/cookie_constants.h"
 #include "net/cookies/cookie_options.h"
 #include "net/cookies/site_for_cookies.h"
-#include "net/first_party_sets/first_party_set_metadata.h"
-#include "net/first_party_sets/first_party_sets_cache_filter.h"
 #include "net/storage_access_api/status.h"
 #include "url/origin.h"
 
@@ -30,9 +29,7 @@ class CanonicalCookie;
 class CookieAccessDelegate;
 class CookieInclusionStatus;
 class CookiePartitionKey;
-class IsolationInfo;
 class ParsedCookie;
-class SchemefulSite;
 
 struct CookieAccessResult;
 struct CookieWithAccessResult;
@@ -121,6 +118,13 @@ NET_EXPORT std::optional<std::string> GetCookieDomainWithString(
     const GURL& url,
     std::string_view domain_string,
     CookieInclusionStatus& status);
+
+// Returns true if `url`'s host is valid for setting or retrieving cookies per
+// rfc6265bis §5.1.2. For HTTP/HTTPS/WS/WSS URLs with non-IP hosts, requires a
+// DNS-compliant canonicalized host (via `net::IsCanonicalizedHostCompliant()`).
+// Non-web schemes (e.g. `file://`, `chrome-extension://`) and IP literals are
+// considered valid.
+NET_EXPORT bool IsCookieUrlHostValid(const GURL& url);
 
 // Returns true if a domain string represents a host-only cookie,
 // i.e. it doesn't begin with a leading '.' character.
@@ -352,15 +356,6 @@ NET_EXPORT bool IsOriginBoundCookiesPartiallyEnabled();
 
 NET_EXPORT bool IsTimeLimitedInsecureCookiesEnabled();
 
-// Computes the First-Party Sets metadata and cache match information.
-// `isolation_info` must be fully populated.
-[[nodiscard]] NET_EXPORT
-    std::pair<FirstPartySetMetadata, FirstPartySetsCacheFilter::MatchInfo>
-    ComputeFirstPartySetMetadata(
-        const SchemefulSite& request_site,
-        const IsolationInfo& isolation_info,
-        const CookieAccessDelegate* cookie_access_delegate);
-
 // Converts a string representing the http request method to its enum
 // representation.
 NET_EXPORT CookieOptions::SameSiteCookieContext::ContextMetadata::HttpMethod
@@ -403,6 +398,9 @@ NET_EXPORT bool IsForceThirdPartyCookieBlockingEnabled();
     const GURL& url,
     StorageAccessApiStatus api_status,
     base::optional_ref<const url::Origin> request_initiator);
+
+// Returns the combined size in bytes of `cc`'s name and value.
+NET_EXPORT size_t NameValueSizeBytes(const CanonicalCookie& cc);
 
 }  // namespace cookie_util
 

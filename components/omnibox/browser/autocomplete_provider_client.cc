@@ -12,11 +12,6 @@ AutocompleteProviderClient::GetHistoryClustersService() {
   return nullptr;
 }
 
-history_embeddings::HistoryEmbeddingsSearch*
-AutocompleteProviderClient::GetHistoryEmbeddingsSearch() {
-  return nullptr;
-}
-
 GeolocationHeaderService*
 AutocompleteProviderClient::GetGeolocationHeaderService() const {
   return nullptr;
@@ -24,6 +19,11 @@ AutocompleteProviderClient::GetGeolocationHeaderService() const {
 
 DocumentSuggestionsService*
 AutocompleteProviderClient::GetDocumentSuggestionsService() const {
+  return nullptr;
+}
+
+sessions::TabRestoreService* AutocompleteProviderClient::GetTabRestoreService()
+    const {
   return nullptr;
 }
 
@@ -45,14 +45,6 @@ bool AutocompleteProviderClient::IsIncognitoModeAvailable() const {
 }
 
 bool AutocompleteProviderClient::IsSharingHubAvailable() const {
-  return false;
-}
-
-bool AutocompleteProviderClient::IsHistoryEmbeddingsEnabled() const {
-  return false;
-}
-
-bool AutocompleteProviderClient::IsHistoryEmbeddingsSettingVisible() const {
   return false;
 }
 

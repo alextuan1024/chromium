@@ -116,7 +116,8 @@ class MirroringGpuFactoriesFactoryTest : public ::testing::Test {
     void EstablishGpuChannel(EstablishGpuChannelCallback callback) override {
       if (!channel_handle_valid_) {
         std::move(callback).Run(
-            /*client_id=*/0, mojo::ScopedMessagePipeHandle(), gpu::GPUInfo(),
+            /*client_id=*/1, viz::mojom::GpuClientType::kCastMirroring,
+            mojo::ScopedMessagePipeHandle(), gpu::GPUInfo(),
             gpu::GpuFeatureInfo(), gpu::SharedImageCapabilities());
         return;
       }
@@ -126,19 +127,15 @@ class MirroringGpuFactoriesFactoryTest : public ::testing::Test {
       info.gl_implementation_parts.gl = gl_disabled_
                                             ? gl::kGLImplementationDisabled
                                             : gl::kGLImplementationEGLGLES2;
-      std::move(callback).Run(/*client_id=*/1, std::move(pipe.handle0), info,
-                              gpu::GpuFeatureInfo(),
-                              gpu::SharedImageCapabilities());
+      std::move(callback).Run(
+          /*client_id=*/1, viz::mojom::GpuClientType::kCastMirroring,
+          std::move(pipe.handle0), info, gpu::GpuFeatureInfo(),
+          gpu::SharedImageCapabilities());
     }
 
     void CreateVideoEncodeAcceleratorProvider(
         mojo::PendingReceiver<media::mojom::VideoEncodeAcceleratorProvider>
             receiver) override {}
-#if BUILDFLAG(IS_CHROMEOS)
-    void CreateJpegDecodeAccelerator(
-        mojo::PendingReceiver<chromeos_camera::mojom::MjpegDecodeAccelerator>
-            jda_receiver) override {}
-#endif
 
     void set_gl_disabled(bool disabled) { gl_disabled_ = disabled; }
     void set_channel_handle_valid(bool valid) { channel_handle_valid_ = valid; }

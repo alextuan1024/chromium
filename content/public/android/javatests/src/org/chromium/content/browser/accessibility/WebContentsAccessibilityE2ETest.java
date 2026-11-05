@@ -44,7 +44,6 @@ import org.chromium.base.test.util.MinAndroidSdkLevel;
 import org.chromium.base.test.util.Restriction;
 import org.chromium.base.test.util.UrlUtils;
 import org.chromium.content.common.ContentInternalFeatures;
-import org.chromium.content_public.browser.ContentFeatureList;
 import org.chromium.content_public.browser.test.ContentJUnit4ClassRunner;
 import org.chromium.content_public.common.ContentFeatures;
 import org.chromium.ui.accessibility.testservice.EventMatcher;
@@ -506,7 +505,6 @@ WebView focusable focused actions:[CLEAR_FOCUS, AX_FOCUS] bundle:[chromeRole="ro
     @Test
     @SmallTest
     @MinAndroidSdkLevel(Build.VERSION_CODES.BAKLAVA)
-    @EnableFeatures({ContentFeatureList.ACCESSIBILITY_EXTENDED_SELECTION})
     public void testDumpTreeWithInitialSelection() throws Throwable {
         Assume.assumeTrue(
                 "Requires Android 16 QPR2 (36.1) or higher",
@@ -710,10 +708,7 @@ WebView focusable focused actions:[CLEAR_FOCUS, AX_FOCUS] bundle:[chromeRole="ro
     @Test
     @SmallTest
     @MinAndroidSdkLevel(Build.VERSION_CODES.BAKLAVA)
-    @EnableFeatures({
-        ContentInternalFeatures.ACCESSIBILITY_EXPOSE_NON_ATOMIC_TEXT_FIELD_CHILDREN,
-        ContentFeatureList.ACCESSIBILITY_EXTENDED_SELECTION
-    })
+    @EnableFeatures({ContentInternalFeatures.ACCESSIBILITY_EXPOSE_NON_ATOMIC_TEXT_FIELD_CHILDREN})
     public void testSelectionInContentEditable() throws Throwable {
         Assume.assumeTrue(
                 "Requires Android 16 QPR2 (36.1) or higher",
@@ -773,7 +768,6 @@ WebView focusable actions:[FOCUS, AX_FOCUS] bundle:[chromeRole="rootWebArea"]
     @Test
     @SmallTest
     @MinAndroidSdkLevel(Build.VERSION_CODES.UPSIDE_DOWN_CAKE) // API Level 34
-    @DisabledTest(message = "https://crbug.com/549382408")
     public void fireGeneratedEvent_ariaInvalidTrue_firesContentInvalid() throws Throwable {
         // Create an HTML document where there is an input element and an element containing the
         // text for the input's aria-errormessage.
@@ -812,7 +806,6 @@ WebView focusable actions:[FOCUS, AX_FOCUS] bundle:[chromeRole="rootWebArea"]
     @Test
     @SmallTest
     @MinAndroidSdkLevel(Build.VERSION_CODES.UPSIDE_DOWN_CAKE) // API Level 34
-    @DisabledTest(message = "https://crbug.com/549382408")
     public void fireGeneratedEvent_ariaInvalidChangesToFalse_firesContentInvalid()
             throws Throwable {
         // Create an HTML document where there is an input element and an element containing
@@ -921,13 +914,8 @@ WebView focusable actions:[FOCUS, AX_FOCUS] bundle:[chromeRole="rootWebArea"]
 
     @Test
     @SmallTest
-    @MinAndroidSdkLevel(Build.VERSION_CODES.BAKLAVA)
-    @EnableFeatures({ContentFeatureList.ACCESSIBILITY_EXTENDED_SELECTION})
+    @MinAndroidSdkLevel(Build.VERSION_CODES.CINNAMON_BUN)
     public void testExtendedSelection() throws Throwable {
-        Assume.assumeTrue(
-                "Requires Android 16 QPR2 (36.1) or higher",
-                Build.VERSION.SDK_INT_FULL >= Build.VERSION_CODES_FULL.BAKLAVA_1);
-
         String html =
                 """
                 <p id="p1">Paragraph1</p>

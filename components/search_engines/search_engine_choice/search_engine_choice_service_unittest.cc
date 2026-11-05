@@ -98,6 +98,17 @@ void ExpectHistogramsSampleCount(const base::HistogramTester& histogram_tester,
 }  // namespace
 
 class SearchEngineChoiceServiceTest : public SearchEngineChoiceServiceTestBase {
+ protected:
+  void SetUp() override {
+    SearchEngineChoiceServiceTestBase::SetUp();
+    // TODO(crbug.com/570916277): use better plumbing than empty data.
+    // Empty (default) value for this pref is equivalent to a situation where
+    // the prefs were just reset by anti-tampering mechanisms. Any value
+    // (including empty) is valid, untampered state.
+    pref_service()->SetDict(
+        DefaultSearchManager::kDefaultSearchProviderDataPrefName,
+        base::DictValue());
+  }
 };
 
 #if !BUILDFLAG(IS_IOS) && !BUILDFLAG(IS_ANDROID)
@@ -160,15 +171,10 @@ TEST_F(SearchEngineChoiceServiceTest, PreserveImportedChoice) {
   base::CommandLine::ForCurrentProcess()->RemoveSwitch(
       switches::kSearchEngineChoiceCountry);
 
-  base::test::ScopedFeatureList scoped_feature_list;
-  scoped_feature_list.InitWithFeatures(
-      /*enabled_features=*/
-      {
 #if !BUILDFLAG(IS_IOS)
-          switches::kInvalidateSearchEngineChoiceOnDeviceRestoreDetection,
+  base::test::ScopedFeatureList scoped_feature_list{
+      switches::kInvalidateSearchEngineChoiceOnDeviceRestoreDetection};
 #endif
-          switches::kWipeChoicePrefsOnMissingDefaultSearchEngine},
-      /*disabled_features=*/{});
 
   InitServiceArgs args = {
       .force_reset = true,
@@ -356,7 +362,8 @@ TEST_F(SearchEngineChoiceServiceTest, RecordChoiceMade_NotOverwritten) {
       kSearchEngineChoiceWipeReasonHistogram, 0);
 }
 
-TEST_F(SearchEngineChoiceServiceTest, RecordChoiceMade_DeviceChoiceImport_Initial) {
+TEST_F(SearchEngineChoiceServiceTest,
+       RecordChoiceMade_DeviceChoiceImport_Initial) {
   base::CommandLine::ForCurrentProcess()->RemoveSwitch(
       switches::kSearchEngineChoiceCountry);
   base::CommandLine::ForCurrentProcess()->AppendSwitchASCII(
@@ -371,11 +378,12 @@ TEST_F(SearchEngineChoiceServiceTest, RecordChoiceMade_DeviceChoiceImport_Initia
       histogram_tester_,
       search_engines::kSearchEngineChoiceScreenDefaultSearchEngineTypeHistogram,
       SearchEngineType::SEARCH_ENGINE_GOOGLE, 1);
+  // Recorded for DeviceChoiceImport based on alignment
   ExpectHistogramsSampleCount(
       histogram_tester_,
       search_engines::
           kSearchEngineChoiceScreenDefaultSearchEngineType2Histogram,
-      SearchEngineType::SEARCH_ENGINE_GOOGLE, 1);  // Recorded for DeviceChoiceImport based on alignment
+      SearchEngineType::SEARCH_ENGINE_GOOGLE, 1);
 
   EXPECT_NEAR(pref_service()->GetInt64(
                   prefs::kDefaultSearchProviderChoiceScreenCompletionTimestamp),
@@ -386,7 +394,8 @@ TEST_F(SearchEngineChoiceServiceTest, RecordChoiceMade_DeviceChoiceImport_Initia
             version_info::GetVersionNumber());
 }
 
-TEST_F(SearchEngineChoiceServiceTest, RecordChoiceMade_DeviceChoiceImport_Redundant) {
+TEST_F(SearchEngineChoiceServiceTest,
+       RecordChoiceMade_DeviceChoiceImport_Redundant) {
   base::CommandLine::ForCurrentProcess()->RemoveSwitch(
       switches::kSearchEngineChoiceCountry);
   base::CommandLine::ForCurrentProcess()->AppendSwitchASCII(
@@ -407,7 +416,8 @@ TEST_F(SearchEngineChoiceServiceTest, RecordChoiceMade_DeviceChoiceImport_Redund
 
   base::HistogramTester scoped_histogram_tester;
 
-  // Test that redundant DeviceChoiceImport calls are dropped safely (no crash) and do not overwrite prefs or log duplicate metrics.
+  // Test that redundant DeviceChoiceImport calls are dropped safely (no crash)
+  // and do not overwrite prefs or log duplicate metrics.
   search_engine_choice_service().RecordChoiceMade(
       search_engines::ChoiceMadeLocation::kDeviceChoiceImport,
       &template_url_service());
@@ -1686,23 +1696,7 @@ TEST_F(SearchEngineChoiceServiceChoiceScreenDataTest,
       choice_screen_data->display_state().includes_non_regional_set_engine);
 }
 
-class SearchEngineChoiceServiceWipeOnMissingDSETest
-    : public SearchEngineChoiceServiceTest,
-      public testing::WithParamInterface<bool> {
- public:
-  SearchEngineChoiceServiceWipeOnMissingDSETest() {
-    scoped_feature_list_.InitWithFeatureState(
-        switches::kWipeChoicePrefsOnMissingDefaultSearchEngine,
-        IsFeatureEnabled());
-  }
-
-  bool IsFeatureEnabled() const { return GetParam(); }
-
- private:
-  base::test::ScopedFeatureList scoped_feature_list_;
-};
-
-TEST_P(SearchEngineChoiceServiceWipeOnMissingDSETest, WipeOnMissingDSE) {
+TEST_F(SearchEngineChoiceServiceTest, WipeOnMissingDSE) {
   {
     // Set up services and make some DSE choice.
     std::unique_ptr<TemplateURLData> data =
@@ -1727,35 +1721,17 @@ TEST_P(SearchEngineChoiceServiceWipeOnMissingDSETest, WipeOnMissingDSE) {
   pref_service()->ClearPref(
       DefaultSearchManager::kDefaultSearchProviderDataPrefName);
 
-  // Instantiating the service should wipe the choice prefs when the feature is
-  // enabled.
+  // Instantiating the service should wipe the choice prefs.
   search_engine_choice_service();
 
-  if (IsFeatureEnabled()) {
-    EXPECT_FALSE(pref_service()->HasPrefPath(
-        prefs::kDefaultSearchProviderChoiceScreenCompletionTimestamp));
-    EXPECT_FALSE(pref_service()->HasPrefPath(
-        prefs::kDefaultSearchProviderChoiceScreenCompletionVersion));
-    histogram_tester_.ExpectUniqueSample(
-        search_engines::kSearchEngineChoiceWipeReasonHistogram,
-        SearchEngineChoiceWipeReason::kMissingDefaultSearchEngine, 1);
-    histogram_tester_.ExpectUniqueSample(
-        "Search.ChoicePrefsCheck.WipeOnMissingDse", true, 1);
-  } else {
-    EXPECT_TRUE(pref_service()->HasPrefPath(
-        prefs::kDefaultSearchProviderChoiceScreenCompletionTimestamp));
-    EXPECT_TRUE(pref_service()->HasPrefPath(
-        prefs::kDefaultSearchProviderChoiceScreenCompletionVersion));
-    histogram_tester_.ExpectTotalCount(
-        search_engines::kSearchEngineChoiceWipeReasonHistogram, 0);
-    histogram_tester_.ExpectUniqueSample(
-        "Search.ChoicePrefsCheck.WipeOnMissingDse", false, 1);
-  }
+  EXPECT_FALSE(pref_service()->HasPrefPath(
+      prefs::kDefaultSearchProviderChoiceScreenCompletionTimestamp));
+  EXPECT_FALSE(pref_service()->HasPrefPath(
+      prefs::kDefaultSearchProviderChoiceScreenCompletionVersion));
+  histogram_tester_.ExpectUniqueSample(
+      search_engines::kSearchEngineChoiceWipeReasonHistogram,
+      SearchEngineChoiceWipeReason::kMissingDefaultSearchEngine, 1);
 }
-
-INSTANTIATE_TEST_SUITE_P(,
-                         SearchEngineChoiceServiceWipeOnMissingDSETest,
-                         ::testing::Bool());
 
 #if !BUILDFLAG(IS_IOS)
 struct DeviceRestoreTestParam {

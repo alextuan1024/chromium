@@ -31,6 +31,7 @@
 #include "ash/accessibility/magnifier/fullscreen_magnifier_controller.h"
 #include "ash/accessibility/magnifier/partial_magnifier_controller.h"
 #include "ash/accessibility/mouse_keys/mouse_keys_controller.h"
+#include "ash/accessibility/mouse_locator/mouse_shake_to_locate_controller.h"
 #include "ash/accessibility/sticky_keys/sticky_keys_controller.h"
 #include "ash/accessibility/ui/accessibility_focus_ring_controller_impl.h"
 #include "ash/ambient/ambient_controller.h"
@@ -60,7 +61,6 @@
 #include "ash/detachable_base/detachable_base_notification_controller.h"
 #include "ash/display/cros_display_config.h"
 #include "ash/display/cursor_window_controller.h"
-#include "ash/display/display_alignment_controller.h"
 #include "ash/display/display_color_manager.h"
 #include "ash/display/display_configuration_controller.h"
 #include "ash/display/display_configuration_observer.h"
@@ -364,11 +364,7 @@ Shell* Shell::instance_ = nullptr;
 Shell* Shell::CreateInstance(ShellInitParams init_params) {
   CHECK(!instance_);
   instance_ = new Shell(std::move(init_params.delegate));
-  instance_->Init(init_params.context_factory, init_params.local_state,
-                  std::move(init_params.keyboard_ui_factory),
-                  std::move(init_params.quick_pair_mediator_factory),
-                  init_params.dbus_bus,
-                  std::move(init_params.native_display_delegate));
+  instance_->Init(std::move(init_params));
   return instance_;
 }
 
@@ -827,7 +823,6 @@ Shell::~Shell() {
   cros_display_config_.reset();
   display_configuration_observer_.reset();
   display_prefs_.reset();
-  display_alignment_controller_.reset();
 
   // Remove the focus from any window and set ShutdowFocusRules. This will
   // prevent overhead and side effects (e.g. crashes) from changing focus
@@ -875,6 +870,11 @@ Shell::~Shell() {
   // Resets the text context menu implementation factory.
   views::ViewsTextServicesContextMenuChromeos::SetImplFactory(
       base::NullCallback());
+
+  // Cancel any active or pending Alt+Tab window cycling before closing app
+  // windows and resetting `event_rewriter_controller_`, which
+  // `WindowCycleList::~WindowCycleList()` depends on.
+  window_cycle_controller_->CancelCycling();
 
   // Close and destroy all application windows here, so that the window manager
   // related objects, which app windows relies on, can be sefely deleted.
@@ -932,6 +932,8 @@ Shell::~Shell() {
   AccelerometerReader::GetInstance()->StopListenToTabletModeController();
 
   ambient_controller_.reset();
+
+  mouse_shake_to_locate_controller_.reset();
 
   // Because this function will call |TabletModeController::RemoveObserver|, do
   // it before destroying |tablet_mode_controller_|.
@@ -1170,6 +1172,8 @@ Shell::~Shell() {
   // `autozoom_controller_` since they will destruct `SystemNudgeController`.
   system_nudge_pause_manager_.reset();
 
+  partial_magnifier_controller_.reset();
+
   // This also deletes all RootWindows. Note that we invoke Shutdown() on
   // WindowTreeHostManager before resetting |window_tree_host_manager_|, since
   // destruction of its owned RootWindowControllers relies on the value.
@@ -1191,8 +1195,6 @@ Shell::~Shell() {
 
   display_color_manager_.reset();
   projecting_observer_.reset();
-
-  partial_magnifier_controller_.reset();
 
   laser_pointer_controller_.reset();
 
@@ -1278,15 +1280,15 @@ Shell::~Shell() {
   instance_ = nullptr;
 }
 
-void Shell::Init(
-    ui::ContextFactory* context_factory,
-    PrefService* local_state,
-    std::unique_ptr<keyboard::KeyboardUIFactory> keyboard_ui_factory,
-    std::unique_ptr<ash::quick_pair::Mediator::Factory>
-        quick_pair_mediator_factory,
-    scoped_refptr<dbus::Bus> dbus_bus,
-    std::unique_ptr<display::NativeDisplayDelegate> native_display_delegate) {
-  native_display_delegate_ = std::move(native_display_delegate);
+void Shell::Init(ShellInitParams init_params) {
+  ui::ContextFactory* context_factory = init_params.context_factory;
+  PrefService* local_state = init_params.local_state;
+  std::unique_ptr<keyboard::KeyboardUIFactory> keyboard_ui_factory =
+      std::move(init_params.keyboard_ui_factory);
+  std::unique_ptr<quick_pair::Mediator::Factory> quick_pair_mediator_factory =
+      std::move(init_params.quick_pair_mediator_factory);
+  scoped_refptr<dbus::Bus> dbus_bus = std::move(init_params.dbus_bus);
+  native_display_delegate_ = std::move(init_params.native_display_delegate);
   login_unlock_throughput_recorder_ =
       std::make_unique<LoginUnlockThroughputRecorder>();
   unlock_throughput_recorder_ = std::make_unique<UnlockThroughputRecorder>();
@@ -1686,6 +1688,11 @@ void Shell::Init(
   mouse_keys_controller_ = std::make_unique<MouseKeysController>();
   AddPreTargetHandler(mouse_keys_controller_.get());
 
+  if (::features::IsAccessibilityShakeToLocateEnabled()) {
+    mouse_shake_to_locate_controller_ =
+        std::make_unique<MouseShakeToLocateController>();
+  }
+
   color_enhancement_controller_ =
       std::make_unique<ColorEnhancementController>();
 
@@ -1825,15 +1832,8 @@ void Shell::Init(
   // is started.
   display_manager_->CreateMirrorWindowAsyncIfAny();
 
-  // TODO(1091497): Consider combining DisplayHighlightController and
-  // DisplayAlignmentController.
   display_highlight_controller_ =
       std::make_unique<DisplayHighlightController>();
-
-  if (features::IsDisplayAlignmentAssistanceEnabled()) {
-    display_alignment_controller_ =
-        std::make_unique<DisplayAlignmentController>();
-  }
 
   if (features::AreAnyGlanceablesTimeManagementViewsEnabled()) {
     glanceables_controller_ = std::make_unique<GlanceablesController>();
@@ -1849,10 +1849,8 @@ void Shell::Init(
   multitask_menu_nudge_delegate_ =
       std::make_unique<MultitaskMenuNudgeDelegateAsh>();
 
-  if (features::IsUserEducationEnabled()) {
-    user_education_controller_ = std::make_unique<UserEducationController>(
-        shell_delegate_->CreateUserEducationDelegate());
-  }
+  user_education_controller_ = std::make_unique<UserEducationController>(
+      shell_delegate_->CreateUserEducationDelegate());
 
   quick_insert_controller_ = std::make_unique<QuickInsertController>();
 

@@ -32,6 +32,7 @@
 #include "content/browser/renderer_host/ipc_utils.h"
 #include "content/browser/renderer_host/navigation_metrics_utils.h"
 #include "content/browser/renderer_host/navigator.h"
+#include "content/browser/renderer_host/page_lifecycle_state_manager.h"
 #include "content/browser/renderer_host/policy_container_host.h"
 #include "content/browser/renderer_host/render_frame_host_delegate.h"
 #include "content/browser/renderer_host/render_frame_host_impl.h"
@@ -53,11 +54,13 @@
 #include "services/network/public/cpp/web_sandbox_flags.h"
 #include "third_party/abseil-cpp/absl/container/flat_hash_map.h"
 #include "third_party/blink/public/common/associated_interfaces/associated_interface_provider.h"
+#include "third_party/blink/public/common/features.h"
 #include "third_party/blink/public/common/storage_key/storage_key.h"
 #include "third_party/blink/public/mojom/frame/frame_owner_properties.mojom.h"
 #include "third_party/blink/public/mojom/messaging/transferable_message.mojom.h"
 #include "third_party/blink/public/mojom/scroll/scroll_into_view_params.mojom.h"
 #include "third_party/perfetto/include/perfetto/tracing/track.h"
+#include "ui/base/mojom/window_open_disposition.mojom-shared.h"
 #include "ui/gfx/geometry/rect_f.h"
 
 namespace content {
@@ -512,10 +515,13 @@ void RenderFrameProxyHost::Detach() {
   RenderFrameHostImpl* current_rfh = frame_tree_node_->current_frame_host();
   if (current_rfh->IsInBackForwardCache()) {
     if (render_view_host_ &&
-        render_view_host_->DidReceiveBackForwardCacheAck()) {
+        !render_view_host_->GetPageLifecycleStateManager()
+             ->RendererExpectedToSendChannelAssociatedIpcs()) {
       bad_message::ReceivedBadMessage(GetProcess(),
                                       bad_message::RFH_DETACH_WHILE_BFCACHED);
     } else {
+      // See RenderFrameHostImpl::Detach() for when the renderer can
+      // legitimately send this while the page is in BFCache.
       current_rfh->IsInactiveAndDisallowActivation(
           DisallowActivationReasonId::kDetach);
     }
@@ -549,11 +555,11 @@ void RenderFrameProxyHost::DisableAutoResize() {
   GetAssociatedRemoteFrame()->DisableAutoResize();
 }
 
-void RenderFrameProxyHost::DidUpdateVisualProperties(
-    const cc::RenderFrameMetadata& metadata) {
+void RenderFrameProxyHost::DidUpdateChildLocalSurfaceId(
+    const viz::LocalSurfaceId& local_surface_id) {
   if (!is_render_frame_proxy_live())
     return;
-  GetAssociatedRemoteFrame()->DidUpdateVisualProperties(metadata);
+  GetAssociatedRemoteFrame()->DidUpdateChildLocalSurfaceId(local_surface_id);
 }
 
 void RenderFrameProxyHost::ChildProcessGone() {
@@ -671,6 +677,18 @@ void RenderFrameProxyHost::RouteMessageEvent(
 
   if (message.delegated_capability !=
       blink::mojom::DelegatedCapability::kNone) {
+    // The popup capability can only be delegated by a Service Worker to one of
+    // its window clients (see
+    // ServiceWorkerContainerHostForClient::PostMessageToClient); frames can
+    // never delegate it. Reject it here, before the message is routed to the
+    // target renderer.
+    if (message.delegated_capability ==
+        blink::mojom::DelegatedCapability::kPopup) {
+      bad_message::ReceivedBadMessage(
+          GetProcess(),
+          bad_message::RFPH_POST_MESSAGE_INVALID_DELEGATED_CAPABILITY);
+      return;
+    }
     if (!source_frame_token) {
       bad_message::ReceivedBadMessage(
           GetProcess(),
@@ -965,8 +983,8 @@ void RenderFrameProxyHost::OpenURL(blink::mojom::OpenURLParamsPtr params) {
         GetProcess()->GetID(), params->initiator_frame_token.value());
     if (current_rfh->IsOutermostMainFrame()) {
       MaybeRecordAdClickMainFrameNavigationMetrics(
-          /*initiator_frame=*/initiator_frame, /*target_frame=*/current_rfh,
-          validated_url, params->user_gesture, params->started_by_ad);
+          /*initiator_frame=*/initiator_frame, params->user_gesture,
+          params->started_by_ad);
     }
   }
 
@@ -1024,7 +1042,7 @@ void RenderFrameProxyHost::OpenURL(blink::mojom::OpenURLParamsPtr params) {
 
   // Since this navigation targeted a specific RenderFrameProxy, it should stay
   // in the current tab.
-  CHECK_EQ(WindowOpenDisposition::CURRENT_TAB, params->disposition,
+  CHECK_EQ(ui::mojom::WindowOpenDisposition::kCurrentTab, params->disposition,
            base::NotFatalUntil::M152);
 
   // Augment |download_policy| for situations that were not covered on the
@@ -1045,6 +1063,30 @@ void RenderFrameProxyHost::OpenURL(blink::mojom::OpenURLParamsPtr params) {
   // the navigation start will be updated when the BeforeUnload ack is received.
   const auto navigation_start_time = base::TimeTicks::Now();
 
+  // Navigations from an isolated world (e.g., an extension content script) may
+  // ask to bypass the main world's CSP, just like they can for navigations of
+  // local frames (see FrameLoader::StartNavigation()). Since skipping this
+  // check waives the *parent* document's 'frame-src', only honor the request
+  // if it comes from the parent document's own SiteInstanceGroup; otherwise,
+  // an unrelated (possibly compromised) renderer could waive a CSP that
+  // doesn't belong to it.
+  network::mojom::CSPDisposition should_check_main_world_csp =
+      network::mojom::CSPDisposition::CHECK;
+  if (params->should_check_main_world_csp ==
+      network::mojom::CSPDisposition::DO_NOT_CHECK) {
+    // Note that when there is no parent, no 'frame-src' is enforced for this
+    // navigation, and the only policy that gets skipped is the initiator's own
+    // 'form-action'. The initiator is always in this proxy's SiteInstanceGroup
+    // (see the InitiatorNavigationState check above), so it is only waiving
+    // its own policy.
+    RenderFrameHostImpl* parent = frame_tree_node_->parent();
+    if (!parent ||
+        parent->GetSiteInstance()->group() == site_instance_group()) {
+      should_check_main_world_csp =
+          network::mojom::CSPDisposition::DO_NOT_CHECK;
+    }
+  }
+
   // TODO(lfg, lukasza): Remove |extra_headers| parameter from
   // RequestTransferURL method once both RenderFrameProxyHost and
   // RenderFrameHostImpl call RequestOpenURL from their OnOpenURL handlers.
@@ -1064,7 +1106,7 @@ void RenderFrameProxyHost::OpenURL(blink::mojom::OpenURLParamsPtr params) {
       /*is_embedder_initiated_fenced_frame_navigation=*/false,
       /*is_unfenced_top_navigation=*/false,
       /*force_new_browsing_instance=*/false, params->is_container_initiated,
-      params->has_rel_opener);
+      params->has_rel_opener, should_check_main_world_csp);
 }
 
 void RenderFrameProxyHost::UpdateViewportIntersection(
@@ -1177,6 +1219,17 @@ void RenderFrameProxyHost::BindRemoteFrameInterfaces(
 
   if (g_observer_for_testing)
     g_observer_for_testing->OnRemoteFrameBound(this);
+}
+
+void RenderFrameProxyHost::RebindRemoteFrameInterfaces(
+    mojo::PendingAssociatedRemote<blink::mojom::RemoteFrame> remote_frame,
+    mojo::PendingAssociatedReceiver<blink::mojom::RemoteFrameHost>
+        remote_frame_host_receiver) {
+  CHECK(base::FeatureList::IsEnabled(blink::features::kPersistentWidgetAPI));
+  remote_frame_.reset();
+  remote_frame_host_receiver_.reset();
+  BindRemoteFrameInterfaces(std::move(remote_frame),
+                            std::move(remote_frame_host_receiver));
 }
 
 void RenderFrameProxyHost::BindRemoteMainFrameInterfaces(

@@ -448,7 +448,7 @@ class PictureInPictureBrowserFrameViewTestBase : public WebRtcTestBase {
               child_web_contents));
       ASSERT_TRUE(browser_view);
       ASSERT_EQ(browser_view->browser()->GetType(),
-                BrowserWindowInterface::Type::TYPE_PICTURE_IN_PICTURE);
+                BrowserWindowInterface::Type::TYPE_FLOATING);
 
       pip_frame_view_ = static_cast<PictureInPictureBrowserFrameView*>(
           browser_view->browser_widget()->GetFrameView());
@@ -635,6 +635,14 @@ class PictureInPictureFrameControlsTestBase
     }
   }
 
+  bool WaitForTopBarActiveStatus(bool active) {
+    return base::test::RunUntil([&] {
+      return (UseStandaloneDocumentPip()
+                  ? GetStandaloneAnimationController()->is_top_bar_active()
+                  : pip_frame_view()->IsTopBarActiveForTesting()) == active;
+    });
+  }
+
   std::vector<raw_ptr<gfx::Animation>> GetTopBarAnimations(bool active) {
     if (!UseStandaloneDocumentPip()) {
       return active ? pip_frame_view()->GetRenderActiveAnimationsForTesting()
@@ -693,6 +701,7 @@ IN_PROC_BROWSER_TEST_P(PictureInPictureTitleActivationTest,
   gfx::Point center = GetPipFrameView()->GetLocalBounds().CenterPoint();
   views::View::ConvertPointToScreen(GetPipFrameView(), &center);
   ASSERT_TRUE(ui_test_utils::SendMouseMoveSync(center));
+  ASSERT_TRUE(WaitForTopBarActiveStatus(/*active=*/true));
   WaitForTopBarAnimations(GetTopBarAnimations(/*active=*/true));
   ASSERT_TRUE(IsButtonVisible(GetBackToTabButton()));
   ASSERT_TRUE(IsButtonVisible(GetCloseButton()));
@@ -704,12 +713,14 @@ IN_PROC_BROWSER_TEST_P(PictureInPictureTitleActivationTest,
       BrowserView::GetBrowserViewForBrowser(browser()), &outside);
   ASSERT_FALSE(IsPointInPIPFrameView(outside));
   ASSERT_TRUE(ui_test_utils::SendMouseMoveSync(outside));
+  ASSERT_TRUE(WaitForTopBarActiveStatus(/*active=*/false));
   WaitForTopBarAnimations(GetTopBarAnimations(/*active=*/false));
   ASSERT_FALSE(IsButtonVisible(GetBackToTabButton()));
   ASSERT_FALSE(IsButtonVisible(GetCloseButton()));
 
   // Move mouse back in pip window should activate title.
   ASSERT_TRUE(ui_test_utils::SendMouseMoveSync(center));
+  ASSERT_TRUE(WaitForTopBarActiveStatus(/*active=*/true));
   WaitForTopBarAnimations(GetTopBarAnimations(/*active=*/true));
   ASSERT_TRUE(IsButtonVisible(GetBackToTabButton()));
   ASSERT_TRUE(IsButtonVisible(GetCloseButton()));
@@ -1345,12 +1356,9 @@ IN_PROC_BROWSER_TEST_P(PictureInPictureTitleActivationTest,
   // Pretend that we're in auto-pip so that we get an overlay view.
   content::WebContents* web_contents =
       browser()->GetTabStripModel()->GetActiveWebContents();
-  // Ensure that there is a helper for `web_contents`.  This will no-op if
-  // something has already created it, but right now it's dependent on having
-  // the feature enabled.
-  AutoPictureInPictureTabHelper::CreateForWebContents(web_contents);
   auto* auto_pip_tab_helper =
       AutoPictureInPictureTabHelper::FromWebContents(web_contents);
+  ASSERT_TRUE(auto_pip_tab_helper);
   auto_pip_tab_helper->set_is_in_auto_picture_in_picture_for_testing(true);
   ASSERT_NO_FATAL_FAILURE(SetUpDocumentPIP());
 
@@ -1668,7 +1676,8 @@ IN_PROC_BROWSER_TEST_P(PictureInPictureAnimationTimingTest,
     show_animation_waiter.WaitForAnimationInterval(
         show_expectations.time_delta);
     if (test_case.disallow_return_to_opener) {
-      DCHECK(!show_expectations.expected_back_to_tab_button_is_visible);
+      CHECK(!show_expectations.expected_back_to_tab_button_is_visible,
+            base::NotFatalUntil::M162);
       ASSERT_EQ(nullptr, GetBackToTabButton());
     } else {
       ASSERT_EQ(show_expectations.expected_back_to_tab_button_is_visible,
@@ -1693,7 +1702,8 @@ IN_PROC_BROWSER_TEST_P(PictureInPictureAnimationTimingTest,
     hide_animation_waiter.WaitForAnimationInterval(
         hide_expectations.time_delta);
     if (test_case.disallow_return_to_opener) {
-      DCHECK(!hide_expectations.expected_back_to_tab_button_is_visible);
+      CHECK(!hide_expectations.expected_back_to_tab_button_is_visible,
+            base::NotFatalUntil::M162);
       ASSERT_EQ(nullptr, GetBackToTabButton());
     } else {
       ASSERT_EQ(hide_expectations.expected_back_to_tab_button_is_visible,
@@ -1990,7 +2000,8 @@ IN_PROC_BROWSER_TEST_P(PictureInPictureNativeWindowTest,
   EXPECT_TRUE(pip_widget->GetWindowBoundsInScreen().Contains(bounds));
 }
 
-class PiPIndicatorsBrowsertest : public PictureInPictureBrowserFrameViewTest {
+class PiPIndicatorsBrowsertest : public PictureInPictureFrameControlsTestBase,
+                                 public testing::WithParamInterface<bool> {
  public:
   PiPIndicatorsBrowsertest() = default;
 
@@ -2003,17 +2014,24 @@ class PiPIndicatorsBrowsertest : public PictureInPictureBrowserFrameViewTest {
   const gfx::AnimationTestApi::RenderModeResetter disable_rich_animations_ =
       gfx::AnimationTestApi::SetRichAnimationRenderMode(
           gfx::Animation::RichAnimationRenderMode::FORCE_DISABLED);
+
+ protected:
+  bool UseStandaloneDocumentPip() const override { return GetParam(); }
 };
 
-IN_PROC_BROWSER_TEST_F(PiPIndicatorsBrowsertest, TestMediaBlockedIndicators) {
+INSTANTIATE_TEST_SUITE_P(All,
+                         PiPIndicatorsBrowsertest,
+                         testing::Bool(),
+                         [](const testing::TestParamInfo<bool>& info) {
+                           return info.param ? "Standalone" : "BrowserBacked";
+                         });
+
+IN_PROC_BROWSER_TEST_P(PiPIndicatorsBrowsertest, TestMediaBlockedIndicators) {
   ASSERT_NO_FATAL_FAILURE(
       SetUpDocumentPIP({}, kPictureInPictureDocumentPipPage));
 
-  content::WebContents* pip_web_contents = pip_frame_view()
-                                               ->GetBrowserView()
-                                               ->browser()
-                                               ->GetTabStripModel()
-                                               ->GetActiveWebContents();
+  content::WebContents* pip_web_contents =
+      PictureInPictureWindowManager::GetInstance()->GetChildWebContents();
   ASSERT_TRUE(pip_web_contents);
 
   BrowserView* browser_view = BrowserView::GetBrowserViewForBrowser(browser());
@@ -2062,7 +2080,7 @@ resolve('denied')
   EXPECT_TRUE(permission_dashboard->GetVisible());
   // Blocked media indicator is not supported by PiP window, hence it should not
   // be shown.
-  EXPECT_FALSE(pip_frame_view()->HasAnyVisibleContentSettingViews());
+  EXPECT_FALSE(HasAnyVisibleContentSettingViews());
 
   // Wait for the LHS indicator to disappear.
   {
@@ -2079,7 +2097,7 @@ resolve('denied')
   EXPECT_FALSE(permission_dashboard->GetVisible());
   // The indicator should not be visible in PiP window because it is not
   // supported.
-  EXPECT_FALSE(pip_frame_view()->HasAnyVisibleContentSettingViews());
+  EXPECT_FALSE(HasAnyVisibleContentSettingViews());
 }
 
 }  // namespace

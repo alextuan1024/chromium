@@ -43,7 +43,6 @@
 #include "ui/base/l10n/time_format.h"
 #include "ui/base/mojom/window_open_disposition.mojom.h"
 #include "ui/base/page_transition_types.h"
-#include "ui/base/window_open_disposition.h"
 #include "ui/base/window_open_disposition_utils.h"
 #include "ui/menus/simple_menu_model.h"
 #include "url/gurl.h"
@@ -98,7 +97,7 @@ class ReadLaterItemContextMenu : public ui::SimpleMenuModel,
       case IDC_CONTENT_CONTEXT_OPENLINKNEWTAB: {
         content::OpenURLParams params =
             content::OpenURLParams::CreateBrowserInitiated(
-                url_, WindowOpenDisposition::NEW_BACKGROUND_TAB,
+                url_, ui::mojom::WindowOpenDisposition::kNewBackgroundTab,
                 ui::PAGE_TRANSITION_AUTO_BOOKMARK);
         browser_->OpenURL(params, /*navigation_handle_callback=*/{});
         break;
@@ -107,7 +106,7 @@ class ReadLaterItemContextMenu : public ui::SimpleMenuModel,
       case IDC_CONTENT_CONTEXT_OPENLINKNEWWINDOW: {
         content::OpenURLParams params =
             content::OpenURLParams::CreateBrowserInitiated(
-                url_, WindowOpenDisposition::NEW_WINDOW,
+                url_, ui::mojom::WindowOpenDisposition::kNewWindow,
                 ui::PAGE_TRANSITION_AUTO_BOOKMARK);
         browser_->OpenURL(params, /*navigation_handle_callback=*/{});
         break;
@@ -116,7 +115,7 @@ class ReadLaterItemContextMenu : public ui::SimpleMenuModel,
       case IDC_CONTENT_CONTEXT_OPENLINKOFFTHERECORD: {
         content::OpenURLParams params =
             content::OpenURLParams::CreateBrowserInitiated(
-                url_, WindowOpenDisposition::OFF_THE_RECORD,
+                url_, ui::mojom::WindowOpenDisposition::kOffTheRecord,
                 ui::PAGE_TRANSITION_AUTO_BOOKMARK);
         browser_->OpenURL(params, /*navigation_handle_callback=*/{});
         break;
@@ -168,7 +167,7 @@ ReadingListPageHandler::ReadingListPageHandler(
       web_ui_(web_ui),
       clock_(base::DefaultClock::GetInstance()) {
   Profile* profile = Profile::FromWebUI(web_ui);
-  DCHECK(profile);
+  CHECK(profile, base::NotFatalUntil::M162);
 
   reading_list_model_ = ReadingListModelFactory::GetForBrowserContext(profile);
   reading_list_model_scoped_observation_.Observe(reading_list_model_.get());
@@ -192,7 +191,7 @@ void ReadingListPageHandler::OpenURL(
   }
 
   // Open in active tab if the user is on the NTP.
-  WindowOpenDisposition open_location = ui::DispositionFromClick(
+  ui::mojom::WindowOpenDisposition open_location = ui::DispositionFromClick(
       click_modifiers->middle_button, click_modifiers->alt_key,
       click_modifiers->ctrl_key, click_modifiers->meta_key,
       click_modifiers->shift_key);
@@ -228,7 +227,7 @@ void ReadingListPageHandler::UpdateReadStatus(const GURL& url, bool read) {
 
 void ReadingListPageHandler::MarkCurrentTabAsRead() {
   BrowserWindowInterface* browser =
-      GlobalBrowserCollection::GetInstance()->GetLastActiveBrowser();
+      webui::GetBrowserWindowInterface(web_contents());
   if (!browser) {
     return;
   }
@@ -239,7 +238,7 @@ void ReadingListPageHandler::MarkCurrentTabAsRead() {
 
 void ReadingListPageHandler::AddCurrentTab() {
   BrowserWindowInterface* browser =
-      GlobalBrowserCollection::GetInstance()->GetLastActiveBrowser();
+      webui::GetBrowserWindowInterface(web_contents());
   if (!browser) {
     return;
   }
@@ -261,7 +260,10 @@ void ReadingListPageHandler::ShowContextMenuForURL(const GURL& url,
                                                    int32_t y) {
   auto embedder = reading_list_ui_->embedder();
   BrowserWindowInterface* browser =
-      GlobalBrowserCollection::GetInstance()->GetLastActiveBrowser();
+      webui::GetBrowserWindowInterface(web_contents());
+  if (!browser) {
+    return;
+  }
   if (embedder) {
     embedder->ShowContextMenu(gfx::Point(x, y),
                               std::make_unique<ReadLaterItemContextMenu>(
@@ -316,7 +318,7 @@ void ReadingListPageHandler::WebContentsDestroyed() {
 void ReadingListPageHandler::ReadingListModelCompletedBatchUpdates(
     const ReadingListModel* model) {
   CHECK(web_contents());
-  DCHECK(model == reading_list_model_);
+  CHECK(model == reading_list_model_, base::NotFatalUntil::M162);
 
   if (web_contents()->GetVisibility() == content::Visibility::HIDDEN) {
     return;
@@ -329,9 +331,10 @@ void ReadingListPageHandler::ReadingListModelCompletedBatchUpdates(
 
 void ReadingListPageHandler::ReadingListModelBeingDeleted(
     const ReadingListModel* model) {
-  DCHECK(model == reading_list_model_);
-  DCHECK(reading_list_model_scoped_observation_.IsObservingSource(
-      reading_list_model_.get()));
+  CHECK(model == reading_list_model_, base::NotFatalUntil::M162);
+  CHECK(reading_list_model_scoped_observation_.IsObservingSource(
+            reading_list_model_.get()),
+        base::NotFatalUntil::M162);
   reading_list_model_scoped_observation_.Reset();
   reading_list_model_ = nullptr;
 }
@@ -339,7 +342,7 @@ void ReadingListPageHandler::ReadingListModelBeingDeleted(
 void ReadingListPageHandler::ReadingListDidApplyChanges(
     ReadingListModel* model) {
   CHECK(web_contents());
-  DCHECK(model == reading_list_model_);
+  CHECK(model == reading_list_model_, base::NotFatalUntil::M162);
 
   if (web_contents()->GetVisibility() == content::Visibility::HIDDEN ||
       reading_list_model_->IsPerformingBatchUpdates()) {
@@ -400,7 +403,7 @@ ReadingListPageHandler::CreateReadLaterEntriesByStatusData() {
   for (const auto& url : reading_list_model_->GetKeys()) {
     scoped_refptr<const ReadingListEntry> entry =
         reading_list_model_->GetEntryByURL(url);
-    DCHECK(entry);
+    CHECK(entry, base::NotFatalUntil::M162);
     if (entry->IsRead()) {
       entries->read_entries.push_back(GetEntryData(entry.get()));
     } else {

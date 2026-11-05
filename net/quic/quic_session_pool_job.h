@@ -6,6 +6,7 @@
 #define NET_QUIC_QUIC_SESSION_POOL_JOB_H_
 
 #include "base/memory/raw_ptr.h"
+#include "base/time/time.h"
 #include "net/base/load_timing_internal_info.h"
 #include "net/base/net_error_details.h"
 #include "net/base/request_priority.h"
@@ -70,6 +71,12 @@ class QuicSessionPool::Job : public QuicSessionAttempt::Delegate {
   }
   RequestPriority priority() const { return priority_; }
   QuicSessionPool* pool() const { return pool_.get(); }
+  MultiplexedSessionCreationInitiator session_creation_initiator() const {
+    return session_creation_initiator_;
+  }
+  // Records the time taken for this Job to complete. `session` must be non-null
+  // when the job succeeded, and nullptr when it failed.
+  void RecordCompleteTime(const QuicChromiumClientSession* session) const;
 
   // Associate this job with another source.
   void AssociateWithNetLogSource(
@@ -106,6 +113,7 @@ class QuicSessionPool::Job : public QuicSessionAttempt::Delegate {
 
  private:
   bool is_deleting_ = false;
+  const base::TimeTicks creation_time_ = base::TimeTicks::Now();
 };
 
 }  // namespace net

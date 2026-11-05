@@ -31,6 +31,7 @@ import org.chromium.base.test.util.Criteria;
 import org.chromium.base.test.util.CriteriaHelper;
 import org.chromium.base.test.util.DoNotBatch;
 import org.chromium.base.test.util.Features.EnableFeatures;
+import org.chromium.base.test.util.Restriction;
 import org.chromium.chrome.browser.ChromeTabbedActivity;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.preferences.ChromeSharedPreferences;
@@ -45,12 +46,14 @@ import org.chromium.chrome.browser.tab.TabStateStorageService;
 import org.chromium.chrome.browser.tab.TabStateStorageServiceFactory;
 import org.chromium.chrome.browser.tabmodel.PersistentStoreMigrationManager.StoreType;
 import org.chromium.chrome.browser.tabmodel.TabClosureParams;
+import org.chromium.chrome.browser.tabmodel.TabGroupMergeNotificationType;
 import org.chromium.chrome.browser.tabmodel.TabModel;
 import org.chromium.chrome.browser.tabmodel.TabModelSelector;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
 import org.chromium.chrome.test.transit.ChromeTransitTestRules;
 import org.chromium.chrome.test.transit.FreshCtaTransitTestRule;
 import org.chromium.components.tab_groups.TabGroupColorId;
+import org.chromium.ui.test.util.DeviceRestriction;
 
 import java.util.List;
 
@@ -232,7 +235,10 @@ public class TabbedModeTabModelStoreTest {
         Token groupId =
                 runOnUiThreadBlocking(
                         () -> {
-                            mTabModel.mergeTabsToGroup(tabId2, tabId1);
+                            mTabModel.mergeListOfTabsToGroup(
+                                    List.of(mTabModel.getTabByIdChecked(tabId2)),
+                                    mTabModel.getTabByIdChecked(tabId1),
+                                    TabGroupMergeNotificationType.NOTIFY_IF_NOT_NEW_GROUP);
                             return mTabModel.getTabById(tabId1).getTabGroupId();
                         });
         assertNotNull(groupId);
@@ -273,7 +279,10 @@ public class TabbedModeTabModelStoreTest {
         Token groupId =
                 runOnUiThreadBlocking(
                         () -> {
-                            mTabModel.mergeTabsToGroup(tabId2, tabId1);
+                            mTabModel.mergeListOfTabsToGroup(
+                                    List.of(mTabModel.getTabByIdChecked(tabId2)),
+                                    mTabModel.getTabByIdChecked(tabId1),
+                                    TabGroupMergeNotificationType.NOTIFY_IF_NOT_NEW_GROUP);
                             Token id = mTabModel.getTabById(tabId1).getTabGroupId();
                             mTabModel.setTabGroupTitle(id, newTitle);
                             mTabModel.setTabGroupColor(id, newColor);
@@ -310,7 +319,10 @@ public class TabbedModeTabModelStoreTest {
         Token groupId =
                 runOnUiThreadBlocking(
                         () -> {
-                            mTabModel.mergeTabsToGroup(tabId2, tabId1);
+                            mTabModel.mergeListOfTabsToGroup(
+                                    List.of(mTabModel.getTabByIdChecked(tabId2)),
+                                    mTabModel.getTabByIdChecked(tabId1),
+                                    TabGroupMergeNotificationType.NOTIFY_IF_NOT_NEW_GROUP);
                             Token id = mTabModel.getTabById(tabId1).getTabGroupId();
                             assertNotNull(id);
                             Tab tab2 = mTabModel.getTabById(tabId2);
@@ -397,7 +409,10 @@ public class TabbedModeTabModelStoreTest {
         Token groupId =
                 runOnUiThreadBlocking(
                         () -> {
-                            mTabModel.mergeTabsToGroup(tabId2, tabId1);
+                            mTabModel.mergeListOfTabsToGroup(
+                                    List.of(mTabModel.getTabByIdChecked(tabId2)),
+                                    mTabModel.getTabByIdChecked(tabId1),
+                                    TabGroupMergeNotificationType.NOTIFY_IF_NOT_NEW_GROUP);
 
                             Token groupIdInternal = mTabModel.getTabById(tabId1).getTabGroupId();
                             assertNotNull(groupIdInternal);
@@ -446,7 +461,10 @@ public class TabbedModeTabModelStoreTest {
         Token groupId =
                 runOnUiThreadBlocking(
                         () -> {
-                            mTabModel.mergeTabsToGroup(tabId2, tabId1);
+                            mTabModel.mergeListOfTabsToGroup(
+                                    List.of(mTabModel.getTabByIdChecked(tabId2)),
+                                    mTabModel.getTabByIdChecked(tabId1),
+                                    TabGroupMergeNotificationType.NOTIFY_IF_NOT_NEW_GROUP);
                             Token id = mTabModel.getTabById(tabId1).getTabGroupId();
                             mTabModel.setTabGroupCollapsed(id, true);
                             return id;
@@ -505,7 +523,10 @@ public class TabbedModeTabModelStoreTest {
         Token groupId =
                 runOnUiThreadBlocking(
                         () -> {
-                            mTabModel.mergeTabsToGroup(tabId2, tabId1);
+                            mTabModel.mergeListOfTabsToGroup(
+                                    List.of(mTabModel.getTabByIdChecked(tabId2)),
+                                    mTabModel.getTabByIdChecked(tabId1),
+                                    TabGroupMergeNotificationType.NOTIFY_IF_NOT_NEW_GROUP);
                             Token id = mTabModel.getTabById(tabId1).getTabGroupId();
                             assertNotNull(id);
                             TabClosureParams params =
@@ -586,8 +607,12 @@ public class TabbedModeTabModelStoreTest {
 
         runOnUiThreadBlocking(
                 () -> {
-                    mTabModel.mergeTabsToGroup(tabId1, tabId0);
-                    mTabModel.moveRelatedTabs(tabId0, 2);
+                    mTabModel.mergeListOfTabsToGroup(
+                            List.of(mTabModel.getTabByIdChecked(tabId1)),
+                            mTabModel.getTabByIdChecked(tabId0),
+                            TabGroupMergeNotificationType.NOTIFY_IF_NOT_NEW_GROUP);
+                    Token tabGroupId = mTabModel.getTabById(tabId0).getTabGroupId();
+                    mTabModel.moveGroupToIndex(tabGroupId, 2);
                 });
 
         StorageLoadedData data = loadAllDataSync(WINDOW_TAG, false);
@@ -625,6 +650,7 @@ public class TabbedModeTabModelStoreTest {
 
     @Test
     @MediumTest
+    @Restriction(DeviceRestriction.RESTRICTION_TYPE_NON_AUTO) // crbug.com/567031910
     @EnableFeatures(
             ChromeFeatureList.TAB_STORAGE_SQLITE_PROTOTYPE
                     + ":phase/"
@@ -684,6 +710,7 @@ public class TabbedModeTabModelStoreTest {
             ChromeFeatureList.TAB_STORAGE_SQLITE_PROTOTYPE
                     + ":phase/"
                     + TabStateStorageFlagHelper.PHASE_AUTHORITATIVE_READ_SOURCE)
+    @Restriction(DeviceRestriction.RESTRICTION_TYPE_NON_AUTO) // crbug.com/565238230
     public void testAuthoritativeStoreActivityRecreationCrash() throws Exception {
         setupActivityStore(StoreType.TAB_STATE_STORE);
 

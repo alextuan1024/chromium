@@ -99,7 +99,7 @@ void CreateMediaDrmStorage(
     content::RenderFrameHost* render_frame_host,
     mojo::PendingReceiver<media::mojom::MediaDrmStorage> receiver) {
   DVLOG(1) << __func__;
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
   CHECK(render_frame_host);
 
   content::BrowserContext* browser_context =
@@ -108,6 +108,10 @@ void CreateMediaDrmStorage(
 
   Profile* profile = Profile::FromBrowserContext(browser_context);
   DCHECK(profile) << "Profile not available.";
+  if (profile->IsOffTheRecord()) {
+    DVLOG(1) << __func__ << ": MediaDrm storage not available off the record.";
+    return;
+  }
 
   PrefService* pref_service = profile->GetPrefs();
   DCHECK(pref_service) << "PrefService not available.";
@@ -127,6 +131,6 @@ void CreateMediaDrmStorage(
 
   // The object will be deleted on connection error, or when the frame navigates
   // away. See DocumentService for details.
-  new cdm::MediaDrmStorageImpl(*render_frame_host, pref_service,
-                               get_origin_id_cb, std::move(receiver));
+  base::MakeSelfDeleting<cdm::MediaDrmStorageImpl>(
+      *render_frame_host, pref_service, get_origin_id_cb, std::move(receiver));
 }

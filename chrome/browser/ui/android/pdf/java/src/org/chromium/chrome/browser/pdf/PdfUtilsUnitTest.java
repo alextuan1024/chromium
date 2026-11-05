@@ -7,6 +7,8 @@ package org.chromium.chrome.browser.pdf;
 import static org.junit.Assert.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.doReturn;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import static org.chromium.chrome.browser.url_constants.UrlConstantResolver.getOriginalHistoryUrl;
@@ -39,6 +41,7 @@ import org.robolectric.shadows.ShadowParcelFileDescriptor;
 
 import org.chromium.base.ContextUtils;
 import org.chromium.base.test.BaseRobolectricTestRunner;
+import org.chromium.base.test.RobolectricUtil;
 import org.chromium.base.test.util.Features.DisableFeatures;
 import org.chromium.base.test.util.Features.EnableFeatures;
 import org.chromium.base.test.util.HistogramWatcher;
@@ -48,6 +51,8 @@ import org.chromium.chrome.browser.ui.native_page.NativePage;
 import org.chromium.chrome.browser.util.ChromeFileProvider;
 import org.chromium.content_public.browser.LoadUrlParams;
 import org.chromium.ui.base.MimeTypeUtils;
+import org.chromium.url.JUnitTestOrigins;
+import org.chromium.url.Origin;
 
 import java.io.File;
 import java.io.IOException;
@@ -91,6 +96,7 @@ public class PdfUtilsUnitTest {
 
     @Before
     public void setUp() {
+        ContextUtils.initApplicationContextForTests(mContext);
         PdfUtils.setShouldOpenPdfInlineForTesting(true);
         ChromeFileProvider.setGeneratedUriForTesting(Uri.parse(CONTENT_URL));
         mPdfPageUrl = PdfUtils.encodePdfPageUrl(PDF_LINK);
@@ -204,52 +210,70 @@ public class PdfUtilsUnitTest {
     }
 
     @Test
-    public void testRecordIsPdfFrozen_NativePageNull() {
+    public void testRecordPdfFrozenStateWhenDisplayed_NativePageNull() {
         HistogramWatcher histogramExpectation =
                 HistogramWatcher.newBuilder()
-                        .expectNoRecords("Android.Pdf.IsFrozenWhenDisplayed")
+                        .expectNoRecords("Android.Pdf.FrozenStateWhenDisplayed")
                         .build();
-        PdfUtils.recordIsPdfFrozen(null);
+        PdfUtils.recordPdfFrozenStateWhenDisplayed(null);
         histogramExpectation.assertExpected(
                 "The histogram should not be recorded when the native page is null.");
     }
 
     @Test
-    public void testRecordIsPdfFrozen_NativePageIsNotPdf() {
+    public void testRecordPdfFrozenStateWhenDisplayed_NativePageIsNotPdf() {
         doReturn(false).when(mNativePage).isPdf();
         HistogramWatcher histogramExpectation =
                 HistogramWatcher.newBuilder()
-                        .expectNoRecords("Android.Pdf.IsFrozenWhenDisplayed")
+                        .expectNoRecords("Android.Pdf.FrozenStateWhenDisplayed")
                         .build();
-        PdfUtils.recordIsPdfFrozen(mNativePage);
+        PdfUtils.recordPdfFrozenStateWhenDisplayed(mNativePage);
         histogramExpectation.assertExpected(
                 "The histogram should not be recorded when the native page is not pdf page.");
     }
 
     @Test
-    public void testRecordIsPdfFrozen_PdfIsFrozen() {
-        doReturn(true).when(mNativePage).isPdf();
-        doReturn(true).when(mNativePage).isFrozen();
-        HistogramWatcher histogramExpectation =
-                HistogramWatcher.newBuilder()
-                        .expectBooleanRecord("Android.Pdf.IsFrozenWhenDisplayed", true)
-                        .build();
-        PdfUtils.recordIsPdfFrozen(mNativePage);
-        histogramExpectation.assertExpected(
-                "The recorded value should be true when the pdf page is frozen.");
-    }
-
-    @Test
-    public void testRecordIsPdfFrozen_PdfIsNotFrozen() {
+    public void testRecordPdfFrozenStateWhenDisplayed_NotFrozen() {
         doReturn(true).when(mNativePage).isPdf();
         doReturn(false).when(mNativePage).isFrozen();
         HistogramWatcher histogramExpectation =
-                HistogramWatcher.newBuilder()
-                        .expectBooleanRecord("Android.Pdf.IsFrozenWhenDisplayed", false)
-                        .build();
-        PdfUtils.recordIsPdfFrozen(mNativePage);
+                HistogramWatcher.newSingleRecordWatcher(
+                        "Android.Pdf.FrozenStateWhenDisplayed",
+                        PdfUtils.AndroidPdfFrozenStateWhenDisplayed.NOT_FROZEN);
+        PdfUtils.recordPdfFrozenStateWhenDisplayed(mNativePage);
         histogramExpectation.assertExpected(
-                "The recorded value should be false when the pdf page is not frozen.");
+                "The recorded value should be NOT_FROZEN when the pdf page is not frozen.");
+        verify(mNativePage, never()).hasUnsavedChanges();
+    }
+
+    @Test
+    public void testRecordPdfFrozenStateWhenDisplayed_FrozenNoUnsavedChanges() {
+        doReturn(true).when(mNativePage).isPdf();
+        doReturn(true).when(mNativePage).isFrozen();
+        doReturn(false).when(mNativePage).hasUnsavedChanges();
+        HistogramWatcher histogramExpectation =
+                HistogramWatcher.newSingleRecordWatcher(
+                        "Android.Pdf.FrozenStateWhenDisplayed",
+                        PdfUtils.AndroidPdfFrozenStateWhenDisplayed.FROZEN_NO_UNSAVED_CHANGES);
+        PdfUtils.recordPdfFrozenStateWhenDisplayed(mNativePage);
+        histogramExpectation.assertExpected(
+                "The recorded value should be FROZEN_NO_UNSAVED_CHANGES when the frozen pdf has no"
+                        + " unsaved changes.");
+    }
+
+    @Test
+    public void testRecordPdfFrozenStateWhenDisplayed_FrozenWithUnsavedChanges() {
+        doReturn(true).when(mNativePage).isPdf();
+        doReturn(true).when(mNativePage).isFrozen();
+        doReturn(true).when(mNativePage).hasUnsavedChanges();
+        HistogramWatcher histogramExpectation =
+                HistogramWatcher.newSingleRecordWatcher(
+                        "Android.Pdf.FrozenStateWhenDisplayed",
+                        PdfUtils.AndroidPdfFrozenStateWhenDisplayed.FROZEN_WITH_UNSAVED_CHANGES);
+        PdfUtils.recordPdfFrozenStateWhenDisplayed(mNativePage);
+        histogramExpectation.assertExpected(
+                "The recorded value should be FROZEN_WITH_UNSAVED_CHANGES when the frozen pdf has"
+                        + " unsaved changes.");
     }
 
     @Test
@@ -801,6 +825,37 @@ public class PdfUtilsUnitTest {
     }
 
     @Test
+    public void testMaybeDeleteTransientFile_WebPdf_DeletesFile() throws Exception {
+        File tempFile = File.createTempFile("test_transient_web", ".pdf");
+        tempFile.deleteOnExit();
+        Assert.assertTrue(tempFile.exists());
+
+        PdfUtils.maybeDeleteTransientFile(tempFile.getAbsolutePath(), mPdfPageUrl);
+        RobolectricUtil.runAllBackgroundAndUi();
+
+        Assert.assertFalse("Transient file should be deleted for web PDF", tempFile.exists());
+    }
+
+    @Test
+    public void testMaybeDeleteTransientFile_LocalPdf_DoesNotDeleteFile() throws Exception {
+        File tempFile = File.createTempFile("test_transient_local", ".pdf");
+        tempFile.deleteOnExit();
+        Assert.assertTrue(tempFile.exists());
+
+        PdfUtils.maybeDeleteTransientFile(tempFile.getAbsolutePath(), CONTENT_URL);
+        RobolectricUtil.runAllBackgroundAndUi();
+
+        Assert.assertTrue("File should not be deleted for local PDF", tempFile.exists());
+        tempFile.delete();
+    }
+
+    @Test
+    public void testMaybeDeleteTransientFile_ContentUriPath_DoesNothing() {
+        PdfUtils.maybeDeleteTransientFile("content://downloads/1", mPdfPageUrl);
+        // Should not throw or perform file operations.
+    }
+
+    @Test
     public void testRecordRecoveredFragmentUriMatches() {
         HistogramWatcher histogramExpectationTrue =
                 HistogramWatcher.newSingleRecordWatcher(
@@ -813,5 +868,59 @@ public class PdfUtilsUnitTest {
                         "Android.Pdf.RecoveredFragmentUriMatches", false);
         PdfUtils.recordRecoveredFragmentUriMatches(false);
         histogramExpectationFalse.assertExpected();
+    }
+
+    @Test
+    public void testGetPageNumberFromUrl() {
+        Assert.assertEquals("Null url should return 0.", 0, PdfUtils.getPageNumberFromUrl(null));
+        Assert.assertEquals(
+                "Url without a fragment should return 0.",
+                0,
+                PdfUtils.getPageNumberFromUrl(PDF_LINK));
+        Assert.assertEquals(
+                "Direct http url with #page should return the page number.",
+                10,
+                PdfUtils.getPageNumberFromUrl(PDF_LINK + "#page=10"));
+        Assert.assertEquals(
+                "File url with #page should return the page number.",
+                2,
+                PdfUtils.getPageNumberFromUrl(FILE_URL + "#page=2"));
+        Assert.assertEquals(
+                "Wrapped pdf page url should return the page from the encoded download url.",
+                3,
+                PdfUtils.getPageNumberFromUrl(PdfUtils.encodePdfPageUrl(PDF_LINK + "#page=3")));
+        Assert.assertEquals(
+                "The page parameter should be parsed among other open parameters.",
+                5,
+                PdfUtils.getPageNumberFromUrl(PDF_LINK + "#nameddest=chapter1&page=5&zoom=100"));
+        Assert.assertEquals(
+                "page=0 is invalid and should return 0.",
+                0,
+                PdfUtils.getPageNumberFromUrl(PDF_LINK + "#page=0"));
+        Assert.assertEquals(
+                "Negative page should return 0.",
+                0,
+                PdfUtils.getPageNumberFromUrl(PDF_LINK + "#page=-1"));
+        Assert.assertEquals(
+                "Non-numeric page should return 0.",
+                0,
+                PdfUtils.getPageNumberFromUrl(PDF_LINK + "#page=abc"));
+    }
+
+    @Test
+    public void testGetPdfInfo_PreservesInitiatorOrigin() {
+        Origin initiatorOrigin = JUnitTestOrigins.createTuple("https", "initiator.example", 443);
+        doReturn(true).when(mNativePage).isPdf();
+        doReturn(FILE_NAME).when(mNativePage).getTitle();
+        doReturn(FILE_PATH).when(mNativePage).getCanonicalFilepath();
+        doReturn(true).when(mNativePage).isDownloadSafe();
+        doReturn(initiatorOrigin).when(mNativePage).getInitiatorOrigin();
+
+        PdfInfo pdfInfo = PdfUtils.getPdfInfo(mNativePage);
+        Assert.assertNotNull(pdfInfo);
+        Assert.assertEquals(FILE_NAME, pdfInfo.filename);
+        Assert.assertEquals(FILE_PATH, pdfInfo.filepath);
+        Assert.assertTrue(pdfInfo.isDownloadSafe);
+        Assert.assertEquals(initiatorOrigin, pdfInfo.initiatorOrigin);
     }
 }

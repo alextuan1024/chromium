@@ -426,7 +426,6 @@ IN_PROC_BROWSER_TEST_F(ExtensionPolicyTest,
   extensions::ComponentLoader::EnableBackgroundExtensionsForTesting();
   auto* loader = extensions::ComponentLoader::Get(browser()->GetProfile());
   loader->AddDefaultComponentExtensions(false);
-  base::RunLoop().RunUntilIdle();
 
   extensions::ExtensionRegistry* registry = extension_registry();
   ASSERT_TRUE(
@@ -557,6 +556,8 @@ IN_PROC_BROWSER_TEST_F(ExtensionPolicyTest, ExtensionInstallBlocklistWildcard) {
 IN_PROC_BROWSER_TEST_F(ExtensionPolicyTest,
                        ExtensionInstallBlocklistSharedModules) {
   // Verifies that shared_modules are not affected by the blocklist.
+  auto disable_publisher_key =
+      extensions::DisablePublisherKeyVerificationForTests();
 
   base::FilePath base_path;
   GetTestDataDirectory(&base_path);
@@ -1872,6 +1873,8 @@ IN_PROC_BROWSER_TEST_F(ExtensionPolicyTest,
                        ExtensionInstallForcelist_DefaultedUpdateUrl) {
   // Verifies the ExtensionInstallForcelist policy with an empty (defaulted)
   // "update" URL.
+  auto disable_publisher_key =
+      extensions::DisablePublisherKeyVerificationForTests();
 
   ExtensionRequestInterceptor interceptor;
 

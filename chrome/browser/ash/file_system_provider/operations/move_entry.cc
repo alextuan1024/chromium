@@ -35,25 +35,27 @@ bool MoveEntry::Execute(int request_id) {
   options.source_path = source_path_.AsUTF8Unsafe();
   options.target_path = target_path_.AsUTF8Unsafe();
 
+  auto event_args = base::MakeRefCounted<extensions::EventArgs>(
+      extensions::api::file_system_provider::OnMoveEntryRequested::Create(
+          options));
   return SendEvent(
       request_id,
       extensions::events::FILE_SYSTEM_PROVIDER_ON_MOVE_ENTRY_REQUESTED,
       extensions::api::file_system_provider::OnMoveEntryRequested::kEventName,
-      extensions::api::file_system_provider::OnMoveEntryRequested::Create(
-          options));
+      std::move(event_args));
 }
 
 void MoveEntry::OnSuccess(/*request_id=*/int,
                           /*result=*/const RequestValue&,
                           bool has_more) {
-  DCHECK(callback_);
+  CHECK(callback_, base::NotFatalUntil::M160);
   std::move(callback_).Run(base::File::FILE_OK);
 }
 
 void MoveEntry::OnError(/*request_id=*/int,
                         /*result=*/const RequestValue&,
                         base::File::Error error) {
-  DCHECK(callback_);
+  CHECK(callback_, base::NotFatalUntil::M160);
   std::move(callback_).Run(error);
 }
 

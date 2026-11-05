@@ -47,6 +47,7 @@ import org.chromium.ui.modaldialog.ModalDialogManager;
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
 import java.lang.ref.WeakReference;
+import java.util.function.BooleanSupplier;
 
 /** Hosts settings preference fragments inside a native page. See {@link SettingsPage}. */
 @NullMarked
@@ -91,6 +92,7 @@ public class SettingsHostFragment extends Fragment
     private @Nullable String mInitialUrl;
     private @Nullable Bundle mSavedInstanceState;
     private @Nullable Callback<Bundle> mSaveInstanceStateCallback;
+    private @Nullable BooleanSupplier mSearchOpenSupplier;
     private int mPendingPopBackCount;
 
     /** Public constructor needed for Fragment re-instantiation. */
@@ -171,8 +173,7 @@ public class SettingsHostFragment extends Fragment
         // correct fragment.
         FragmentManager fragmentManager = getDetailFragmentManager();
         if (fragmentManager.getBackStackEntryCount() <= mPendingPopBackCount) {
-            // Show the main settings UI (which is represented by null).
-            showFragment(null, /* addToBackStack= */ false, /* tag= */ null);
+            showMainSettingsAndRedirectIfNeeded();
         } else {
             var backStackEntry =
                     fragmentManager.getBackStackEntryAt(
@@ -313,6 +314,11 @@ public class SettingsHostFragment extends Fragment
         mSaveInstanceStateCallback = callback;
     }
 
+    /** Returns whether a save-instance-state callback is currently registered on this host. */
+    boolean hasSaveInstanceStateCallback() {
+        return mSaveInstanceStateCallback != null;
+    }
+
     @Override
     public View onCreateView(
             LayoutInflater inflater,
@@ -396,6 +402,27 @@ public class SettingsHostFragment extends Fragment
         return mSettingsNavigation;
     }
 
+    /**
+     * Sets the source of truth for {@link #isSearchOpen}, owned by whoever owns the search UI.
+     *
+     * @param supplier Supplies whether search is open, or null to forget the previous one.
+     */
+    public void setSearchOpenSupplier(@Nullable BooleanSupplier supplier) {
+        mSearchOpenSupplier = supplier;
+    }
+
+    /**
+     * Returns whether the settings search UI is open.
+     *
+     * <p>Asked by navigation, which keeps pages on the fragment back stack for as long as search
+     * owns the screen. A page opened from search is a step inside that search rather than a place
+     * the user navigated the tab to, and navigating the tab would purge the back stack search is
+     * holding its own pages on.
+     */
+    public boolean isSearchOpen() {
+        return mSearchOpenSupplier != null && mSearchOpenSupplier.getAsBoolean();
+    }
+
     @Override
     public boolean onPreferenceStartFragment(
             PreferenceFragmentCompat caller, Preference preference) {
@@ -407,7 +434,9 @@ public class SettingsHostFragment extends Fragment
         // the target fragment into a canonical URL and loads it via Tab.loadUrl(), pushing a
         // new NavigationEntry to WebContents history, updating the Omnibox URL, and
         // integrating with browser Back/Forward navigation stack.
-        if (ChromeFeatureList.sSettingsInTabUrlNav.isEnabled() && mSettingsNavigation != null) {
+        if (ChromeFeatureList.sSettingsInTabUrlNav.isEnabled()
+                && mSettingsNavigation != null
+                && !isSearchOpen()) {
             try {
                 var fragmentClass = Class.forName(fragmentClassName).asSubclass(Fragment.class);
                 mSettingsNavigation.startSettings(
@@ -511,6 +540,18 @@ public class SettingsHostFragment extends Fragment
         Fragment activeFragment = getActiveFragment();
         if (activeFragment instanceof MultiColumnSettings multiColumnSettings) {
             if (fragment == null || fragment instanceof MainSettings) {
+                // Showing main settings can pop the detail back stack (see
+                // MultiColumnSettings.onCreateInitialDetailFragment()), which FragmentManager
+                // refuses once its state is saved. Defer the request until onResume(), as
+                // MultiColumnSettings.showDetailFragment() does for detail pages.
+                if (multiColumnSettings.getChildFragmentManager().isStateSaved()) {
+                    Intent intent = new Intent();
+                    intent.putExtra(
+                            SettingsIntentUtil.EXTRA_SHOW_FRAGMENT, MainSettings.class.getName());
+                    multiColumnSettings.setPendingFragmentIntent(intent);
+                    return true;
+                }
+
                 var slidingPane = multiColumnSettings.getSlidingPaneLayoutOrNull();
                 if (slidingPane != null && slidingPane.isSlideable()) {
                     slidingPane.closePane();
@@ -520,6 +561,15 @@ public class SettingsHostFragment extends Fragment
                 if (initialFragment != null) {
                     multiColumnSettings.showDetailFragment(
                             initialFragment, /* addToBackStack= */ false, /* tag= */ null);
+                    // showDetailFragment() opens the sliding pane. In two-column mode the pane is
+                    // not slideable, so opening it has no visual effect, but it still latches
+                    // SlidingPaneLayout's preserved open state. Leaving two-column mode would then
+                    // show this default detail fragment instead of the root settings that were
+                    // requested. Undo it, as MultiColumnSettings.ensureInitialDetailFragment()
+                    // does. https://crbug.com/563047017
+                    if (multiColumnSettings.isTwoColumn()) {
+                        multiColumnSettings.getSlidingPaneLayout().closePane();
+                    }
                 }
                 return true;
             }
@@ -607,10 +657,22 @@ public class SettingsHostFragment extends Fragment
             // transaction while stopped or backgrounded, so onStart() does it instead.
             ++mPendingPopBackCount;
         } else if (action == FinishAction.SHOW_MAIN_SETTINGS) {
-            // The main settings UI is represented by null.
-            showFragment(null, /* addToBackStack= */ false, /* tag= */ null);
+            showMainSettingsAndRedirectIfNeeded();
         } else {
             getDetailFragmentManager().popBackStack();
+        }
+    }
+
+    private void showMainSettingsAndRedirectIfNeeded() {
+        // The main settings UI is represented by null.
+        showFragment(null, /* addToBackStack= */ false, /* tag= */ null);
+        if (ChromeFeatureList.sSettingsInTabUrlNav.isEnabled()
+                && mSettingsNavigation instanceof SettingsInTabNavigationDelegate delegate) {
+            String mainSettingsUrl =
+                    SettingsFragmentRegistry.createUrlForFragment(MainSettings.class, null);
+            if (mainSettingsUrl != null) {
+                delegate.redirectFromNavigation(mainSettingsUrl);
+            }
         }
     }
 

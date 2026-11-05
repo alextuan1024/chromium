@@ -9,7 +9,6 @@
 #include "base/i18n/icubridge/icu_bridge.h"
 #include "base/i18n/language_tag.h"
 #include "base/i18n/time_formatting.h"
-#include "base/json/json_reader.h"
 #include "base/json/json_writer.h"
 #include "base/notreached.h"
 #include "base/strings/string_number_conversions.h"
@@ -22,20 +21,14 @@
 #include "components/enterprise/browser/reporting/report_scheduler.h"
 #include "components/enterprise/browser/reporting/report_util.h"
 #include "components/enterprise/buildflags/buildflags.h"
-
-#if !BUILDFLAG(IS_ANDROID)
+#include "components/enterprise/client_certificates/core/certificate_provisioning_service.h"
+#include "components/enterprise/client_certificates/core/private_key.h"
 #include "components/enterprise/device_trust/core/common_types.h"  // nogncheck
 #include "components/enterprise/device_trust/core/device_trust_connector_service.h"  // nogncheck
-#endif  // !BUILDFLAG(IS_ANDROID)
 #include "components/prefs/pref_service.h"
 #include "crypto/sha2.h"
-
-#if BUILDFLAG(ENTERPRISE_CLIENT_CERTIFICATES)
-#include "components/enterprise/client_certificates/core/certificate_provisioning_service.h"
-#include "components/enterprise/client_certificates/core/private_key.h"  // nogncheck
 #include "net/cert/x509_certificate.h"
 #include "net/ssl/ssl_private_key.h"
-#endif  // BUILDFLAG(ENTERPRISE_CLIENT_CERTIFICATES)
 
 #if BUILDFLAG(ENTERPRISE_PROXY)
 #include "components/enterprise/net/core/enterprise_proxy_service.h"
@@ -45,7 +38,6 @@ namespace enterprise_connectors::utils {
 
 namespace {
 
-#if BUILDFLAG(ENTERPRISE_CLIENT_CERTIFICATES)
 std::string BufferToString(base::span<const uint8_t> buffer) {
   return std::string(buffer.begin(), buffer.end());
 }
@@ -108,19 +100,20 @@ connectors_internals::mojom::CertificateMetadataPtr ConvertCertificate(
   using base::i18n::IcuBridge;
   using base::i18n::datetime_options::YMD;
 
+  const IcuBridge::DateTimeFormatter& formatter =
+      IcuBridge::GetInstance().date_time_formatter(
+          GetKnownLanguageTag("en-US"));
+
   return connectors_internals::mojom::CertificateMetadata::New(
       base::HexEncodeLower(certificate->serial_number()),
       base::HexEncodeLower(certificate->CalculateChainFingerprint256()),
-      base::UTF16ToUTF8(IcuBridge::GetInstance().date_time_formatter().Format(
-          certificate->valid_start(), GetKnownLanguageTag("en-US"),
-          YMD::Medium())),
-      base::UTF16ToUTF8(IcuBridge::GetInstance().date_time_formatter().Format(
-          certificate->valid_expiry(), GetKnownLanguageTag("en-US"),
-          YMD::Medium())),
+      base::UTF16ToUTF8(
+          formatter.Format(certificate->valid_start(), YMD::Medium())),
+      base::UTF16ToUTF8(
+          formatter.Format(certificate->valid_expiry(), YMD::Medium())),
       certificate->subject().GetDisplayName(),
       certificate->issuer().GetDisplayName());
 }
-#endif  // BUILDFLAG(ENTERPRISE_CLIENT_CERTIFICATES)
 
 }  // namespace
 
@@ -147,8 +140,6 @@ connectors_internals::mojom::KeyType AlgorithmToType(
       return connectors_internals::mojom::KeyType::UNKNOWN;
   }
 }
-
-#if BUILDFLAG(ENTERPRISE_CLIENT_CERTIFICATES)
 
 connectors_internals::mojom::ClientIdentityPtr GetIdentity(
     client_certificates::CertificateProvisioningService* provisioning_service,
@@ -210,8 +201,6 @@ CreateClientCertificateState(
       std::move(managed_browser_identity));
 }
 
-#endif  // BUILDFLAG(ENTERPRISE_CLIENT_CERTIFICATES)
-
 std::string HashAndEncodeString(const std::string& spki_bytes) {
   std::string encoded_string;
   base::Base64UrlEncode(crypto::SHA256HashString(spki_bytes),
@@ -227,44 +216,11 @@ connectors_internals::mojom::Int32ValuePtr ToMojomValue(
                        : nullptr;
 }
 
-std::string GetJsonForReportRequest(
+base::DictValue GetSignalsForReportRequest(
     const enterprise_reporting::ReportRequest& request) {
-  auto proto_request = request.GetChromeProfileReportRequest();
-
-  int policy_count = 0;
-  if (proto_request.has_browser_report()) {
-    for (const auto& profile_info :
-         proto_request.browser_report().chrome_user_profile_infos()) {
-      policy_count += profile_info.chrome_policies_size();
-    }
-  }
-
-  if (proto_request.has_attestation_payload() &&
-      !proto_request.attestation_payload().attestation_blob().empty()) {
-    proto_request.mutable_attestation_payload()->set_attestation_blob(
-        "[attestation blob collected but omitted for readability]");
-  }
-
-  std::string signals_json =
-      enterprise_reporting::GetSecuritySignalsInReport(proto_request);
-
-  if (policy_count > 0) {
-    std::optional<base::Value> parsed_value =
-        base::JSONReader::Read(signals_json, base::JSON_PARSE_RFC);
-
-    if (parsed_value && parsed_value->is_dict()) {
-      parsed_value->GetDict().Set(
-          "chrome_policies",
-          base::StringPrintf(
-              "[%d policies collected but omitted for readability]",
-              policy_count));
-
-      base::JSONWriter::WriteWithOptions(
-          *parsed_value, base::JSONWriter::OPTIONS_PRETTY_PRINT, &signals_json);
-    }
-  }
-
-  return signals_json;
+  return enterprise_reporting::GetSecuritySignalsDictInReport(
+      request.GetChromeProfileReportRequest(),
+      /*include_policy_summary=*/true);
 }
 
 std::string GetStringFromTimestamp(base::Time timestamp) {
@@ -276,13 +232,13 @@ std::string GetStringFromTimestamp(base::Time timestamp) {
   return (timestamp == base::Time())
              ? std::string()
              : base::UTF16ToUTF8(
-                   IcuBridge::GetInstance().date_time_formatter().Format(
-                       timestamp, GetKnownLanguageTag("en-US"),
-                       YMDT::Short().with_time_precision(
-                           DateTimeFormatterOptions::TimePrecision::kMinute)));
+                   IcuBridge::GetInstance()
+                       .date_time_formatter(GetKnownLanguageTag("en-US"))
+                       .Format(timestamp, YMDT::Short().with_time_precision(
+                                              DateTimeFormatterOptions::
+                                                  TimePrecision::kMinute)));
 }
 
-#if !BUILDFLAG(IS_ANDROID)
 std::string ConvertPolicyLevelToString(
     enterprise_connectors::DTCPolicyLevel level) {
   switch (level) {
@@ -306,7 +262,6 @@ std::vector<std::string> GetPolicyEnabledLevels(
   }
   return policy_enabled_levels;
 }
-#endif  // !BUILDFLAG(IS_ANDROID)
 
 connectors_internals::mojom::DeviceTrustStatePtr
 CreateUnsupportedDeviceTrustState() {
@@ -363,15 +318,25 @@ CreateSignalsReportingState(
   bool signals_report_enabled =
       report_scheduler && report_scheduler->AreSecurityReportsEnabled();
 
+  // Prefer showing exactly what was last uploaded, as some signals (e.g. client
+  // certificates) are only collected as part of an upload. Cached signals are
+  // not shown when signals reporting is disabled.
+  connectors_internals::mojom::SignalsPtr signals;
+  if (signals_report_enabled && report_scheduler->GetLastUploadedSignals()) {
+    signals = connectors_internals::mojom::Signals::New(
+        report_scheduler->GetLastUploadedSignals()->Clone(),
+        connectors_internals::mojom::SignalsSource::kLastUploadedReport);
+  }
+
   return connectors_internals::mojom::SignalsReportingState::New(
       std::move(error_info), status_report_enabled, signals_report_enabled,
       std::move(last_upload_attempt_time_string),
       std::move(last_upload_success_time_string),
       std::move(last_signals_upload_config), can_collect_all_signals,
-      /*signals_json=*/std::nullopt);
+      std::move(signals));
 }
 
-std::pair<std::optional<std::string>, std::optional<std::string>>
+std::pair<std::optional<std::string>, std::optional<base::DictValue>>
 ProcessReportGenerationResult(
     base::expected<enterprise_reporting::ReportRequestQueue,
                    enterprise_reporting::ReportGenerationError> result) {
@@ -387,7 +352,7 @@ ProcessReportGenerationResult(
   enterprise_reporting::ReportRequestQueue requests = std::move(result).value();
   std::unique_ptr<enterprise_reporting::ReportRequest> request =
       std::move(requests.front());
-  return {std::nullopt, GetJsonForReportRequest(*request)};
+  return {std::nullopt, GetSignalsForReportRequest(*request)};
 }
 
 #if BUILDFLAG(ENTERPRISE_PROXY)
@@ -443,10 +408,20 @@ GetProvisioningDomainState(
 
     const base::DictValue* fetched_dict =
         domain_dict.FindDict("fetched_config");
+    const base::DictValue* last_failure_dict =
+        domain_dict.FindDict("last_failure");
     std::string routes_json;
     if (fetched_dict) {
-      base::JSONWriter::WriteWithOptions(
-          *fetched_dict, base::JSONWriter::OPTIONS_PRETTY_PRINT, &routes_json);
+      if (last_failure_dict) {
+        base::DictValue routes_dict = fetched_dict->Clone();
+        routes_dict.Set("last_failure", last_failure_dict->Clone());
+        base::JSONWriter::WriteWithOptions(
+            routes_dict, base::JSONWriter::OPTIONS_PRETTY_PRINT, &routes_json);
+      } else {
+        base::JSONWriter::WriteWithOptions(
+            *fetched_dict, base::JSONWriter::OPTIONS_PRETTY_PRINT,
+            &routes_json);
+      }
     }
 
     pvd_configs.push_back(

@@ -4,6 +4,7 @@
 
 #include "chrome/browser/web_applications/web_install_manifest_fetcher.h"
 
+#include <optional>
 #include <string>
 
 #include "base/memory/scoped_refptr.h"
@@ -13,6 +14,7 @@
 #include "base/test/test_future.h"
 #include "base/types/expected.h"
 #include "chrome/browser/web_applications/model/web_install_manifest_fetch_error.h"
+#include "net/http/http_response_headers.h"
 #include "net/http/http_status_code.h"
 #include "services/network/public/cpp/shared_url_loader_factory.h"
 #include "services/network/public/cpp/weak_wrapper_shared_url_loader_factory.h"
@@ -49,10 +51,16 @@ class WebInstallManifestFetcherTest : public ::testing::Test {
  protected:
   void AddResponse(const std::string& url,
                    const std::string& content,
+                   std::optional<std::string> content_type,
                    net::HttpStatusCode http_status = net::HTTP_OK) {
     network::mojom::URLResponseHeadPtr head =
         network::CreateURLResponseHead(http_status);
     head->mime_type = "application/json";
+    if (content_type) {
+      head->headers->SetHeader("Content-Type", *content_type);
+    } else {
+      head->headers->RemoveHeader("Content-Type");
+    }
     network::URLLoaderCompletionStatus status;
     test_factory_.AddResponse(GURL(url), std::move(head), content, status);
   }
@@ -76,10 +84,9 @@ class WebInstallManifestFetcherTest : public ::testing::Test {
 };
 
 TEST_F(WebInstallManifestFetcherTest, FetchesManifestSuccessfully) {
-  AddResponse(kManifestUrl, kValidManifestJson);
+  AddResponse(kManifestUrl, kValidManifestJson, "application/json");
 
   WebInstallManifestFetcher fetcher(GURL(kManifestUrl),
-                                    url::Origin::Create(GURL(kManifestUrl)),
                                     shared_url_loader_factory_);
   base::test::TestFuture<
       base::expected<std::string, WebInstallManifestFetchError>>
@@ -88,6 +95,80 @@ TEST_F(WebInstallManifestFetcherTest, FetchesManifestSuccessfully) {
 
   ASSERT_TRUE(future.Wait());
   EXPECT_THAT(future.Take(), ValueIs(Eq(kValidManifestJson)));
+}
+
+struct ContentTypeTestCase {
+  const char* name;
+  std::optional<std::string> content_type;
+  bool is_json;
+};
+
+class WebInstallManifestFetcherContentTypeTest
+    : public WebInstallManifestFetcherTest,
+      public testing::WithParamInterface<ContentTypeTestCase> {};
+
+TEST_P(WebInstallManifestFetcherContentTypeTest, ValidatesContentTypeMetadata) {
+  const auto& test_case = GetParam();
+  // The derived MIME type is always JSON, even for missing or non-JSON HTTP
+  // metadata, to ensure it cannot bypass Content-Type validation.
+  AddResponse(kManifestUrl, kValidManifestJson, test_case.content_type);
+
+  WebInstallManifestFetcher fetcher(GURL(kManifestUrl),
+                                    shared_url_loader_factory_);
+  base::test::TestFuture<
+      base::expected<std::string, WebInstallManifestFetchError>>
+      future;
+  fetcher.Fetch(future.GetCallback());
+
+  ASSERT_TRUE(future.Wait());
+  if (test_case.is_json) {
+    EXPECT_THAT(future.Take(), ValueIs(Eq(kValidManifestJson)));
+  } else {
+    EXPECT_THAT(future.Take(),
+                ErrorIs(WebInstallManifestFetchError::kInvalidContentType));
+  }
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    All,
+    WebInstallManifestFetcherContentTypeTest,
+    testing::Values(
+        ContentTypeTestCase{"ApplicationJson", "application/json", true},
+        ContentTypeTestCase{"TextJson", "text/json", true},
+        ContentTypeTestCase{"ManifestJson", "application/manifest+json", true},
+        ContentTypeTestCase{"VendorJson", "application/vnd.example+json", true},
+        ContentTypeTestCase{"MixedCaseWithCharset",
+                            "Application/JSON; charset=utf-8", true},
+        ContentTypeTestCase{"JsonPrefixOnly", "application/jsonp", false},
+        ContentTypeTestCase{"JsonSuffixNotTerminal",
+                            "application/vnd.example+jsonx", false},
+        ContentTypeTestCase{"JsonInParameterOnly",
+                            "text/html; charset=application/json", false},
+        ContentTypeTestCase{"TextPlain", "text/plain", false},
+        ContentTypeTestCase{"TextHtml", "text/html", false},
+        ContentTypeTestCase{"Missing", std::nullopt, false},
+        ContentTypeTestCase{"Empty", "", false}),
+    [](const testing::TestParamInfo<ContentTypeTestCase>& info) {
+      return info.param.name;
+    });
+
+TEST_F(WebInstallManifestFetcherTest, FailsWhenResponseHeadersAreMissing) {
+  auto head = network::mojom::URLResponseHead::New();
+  head->mime_type = "application/json";
+  test_factory_.AddResponse(GURL(kManifestUrl), std::move(head),
+                            kValidManifestJson,
+                            network::URLLoaderCompletionStatus());
+
+  WebInstallManifestFetcher fetcher(GURL(kManifestUrl),
+                                    shared_url_loader_factory_);
+  base::test::TestFuture<
+      base::expected<std::string, WebInstallManifestFetchError>>
+      future;
+  fetcher.Fetch(future.GetCallback());
+
+  ASSERT_TRUE(future.Wait());
+  EXPECT_THAT(future.Take(),
+              ErrorIs(WebInstallManifestFetchError::kInvalidContentType));
 }
 
 TEST_F(WebInstallManifestFetcherTest, FailsOnNetworkError) {
@@ -100,7 +181,6 @@ TEST_F(WebInstallManifestFetcherTest, FailsOnNetworkError) {
       network::URLLoaderCompletionStatus(net::ERR_CONNECTION_REFUSED));
 
   WebInstallManifestFetcher fetcher(GURL(kManifestUrl),
-                                    url::Origin::Create(GURL(kManifestUrl)),
                                     shared_url_loader_factory_);
   base::test::TestFuture<
       base::expected<std::string, WebInstallManifestFetchError>>
@@ -116,7 +196,6 @@ TEST_F(WebInstallManifestFetcherTest, FailsOnRedirect) {
   AddRedirect(kRedirectUrl, kRedirectTargetUrl);
 
   WebInstallManifestFetcher fetcher(GURL(kRedirectUrl),
-                                    url::Origin::Create(GURL(kRedirectUrl)),
                                     shared_url_loader_factory_);
   base::test::TestFuture<
       base::expected<std::string, WebInstallManifestFetchError>>
@@ -132,7 +211,6 @@ TEST_F(WebInstallManifestFetcherTest, FailsOn404) {
   test_factory_.AddResponse(std::string(kManifestUrl), "", net::HTTP_NOT_FOUND);
 
   WebInstallManifestFetcher fetcher(GURL(kManifestUrl),
-                                    url::Origin::Create(GURL(kManifestUrl)),
                                     shared_url_loader_factory_);
   base::test::TestFuture<
       base::expected<std::string, WebInstallManifestFetchError>>
@@ -145,10 +223,9 @@ TEST_F(WebInstallManifestFetcherTest, FailsOn404) {
 }
 
 TEST_F(WebInstallManifestFetcherTest, FetchesEmptyManifest) {
-  AddResponse(kManifestUrl, "");
+  AddResponse(kManifestUrl, "", "application/json");
 
   WebInstallManifestFetcher fetcher(GURL(kManifestUrl),
-                                    url::Origin::Create(GURL(kManifestUrl)),
                                     shared_url_loader_factory_);
   base::test::TestFuture<
       base::expected<std::string, WebInstallManifestFetchError>>
@@ -167,10 +244,9 @@ TEST_F(WebInstallManifestFetcherTest, FailsWhenResponseExceedsMaxLength) {
   auto scoped_override =
       WebInstallManifestFetcher::SetMaxManifestLengthForTesting(10);
 
-  AddResponse(kManifestUrl, std::string(100, 'x'));
+  AddResponse(kManifestUrl, std::string(100, 'x'), "application/json");
 
   WebInstallManifestFetcher fetcher(GURL(kManifestUrl),
-                                    url::Origin::Create(GURL(kManifestUrl)),
                                     shared_url_loader_factory_);
   base::test::TestFuture<
       base::expected<std::string, WebInstallManifestFetchError>>
@@ -190,8 +266,7 @@ TEST_F(WebInstallManifestFetcherTest, DestroyedMidFlightDoesNotCrash) {
       }));
 
   auto fetcher = std::make_unique<WebInstallManifestFetcher>(
-      GURL(kManifestUrl), url::Origin::Create(GURL(kManifestUrl)),
-      shared_url_loader_factory_);
+      GURL(kManifestUrl), shared_url_loader_factory_);
 
   bool callback_called = false;
   fetcher->Fetch(base::BindLambdaForTesting(

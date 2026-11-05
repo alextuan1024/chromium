@@ -32,6 +32,12 @@
 #include "extensions/common/extension_id.h"
 #include "pdf/buildflags.h"
 #include "ui/base/resource/resource_bundle.h"
+#include "ui/webui/buildflags.h"
+
+#if BUILDFLAG(ENABLE_WEBUI_NTP)
+#include "chrome/grit/new_tab_page_extension_resources_map.h"
+#include "components/search/ntp_features.h"
+#endif  // BUILDFLAG(ENABLE_WEBUI_NTP)
 
 #if BUILDFLAG(IS_CHROMEOS)
 #include "ash/keyboard/ui/resources/keyboard_resource_util.h"
@@ -65,7 +71,8 @@ ExtensionConfigProvider* GetConfigProvider(const ExtensionId& extension_id,
     return nullptr;
   }
   auto* config_map = ExtensionConfigMapFactory::GetForBrowserContext(context);
-  return config_map ? config_map->GetConfigProvider(extension_id) : nullptr;
+  return config_map ? config_map->GetConfigProviderByExtensionId(extension_id)
+                    : nullptr;
 }
 
 }  // namespace
@@ -122,6 +129,11 @@ ChromeComponentExtensionResourceManager::Data::Data() {
           omnibox::kAimEligibilityComponentExtension)) {
     AddComponentResourceEntries(kAimEligibilityExtensionResources);
   }
+#if BUILDFLAG(ENABLE_WEBUI_NTP)
+  if (base::FeatureList::IsEnabled(ntp_features::kNtpComponentExtension)) {
+    AddComponentResourceEntries(kNewTabPageExtensionResources);
+  }
+#endif  // BUILDFLAG(ENABLE_WEBUI_NTP)
   if (base::FeatureList::IsEnabled(
           extensions_features::kApiContextualTasksPrivate)) {
     AddComponentResourceEntries(kContextualTasksExtensionResources);
@@ -153,7 +165,8 @@ ChromeComponentExtensionResourceManager::Data::Data() {
         base::FilePath("file_manager").AppendASCII(resource.path);
     resource_path = resource_path.NormalizePathSeparators();
 
-    DCHECK(!path_to_resource_id_.contains(resource_path));
+    CHECK(!path_to_resource_id_.contains(resource_path),
+          base::NotFatalUntil::M161);
     path_to_resource_id_[resource_path] = resource.id;
   }
 
@@ -197,7 +210,8 @@ void ChromeComponentExtensionResourceManager::Data::AddComponentResourceEntries(
     base::FilePath resource_path = base::FilePath().AppendASCII(entry.path);
     resource_path = resource_path.NormalizePathSeparators();
 
-    DCHECK(!path_to_resource_id_.contains(resource_path));
+    CHECK(!path_to_resource_id_.contains(resource_path),
+          base::NotFatalUntil::M161);
     path_to_resource_id_[resource_path] = entry.id;
   }
 }
@@ -212,7 +226,7 @@ bool ChromeComponentExtensionResourceManager::IsComponentExtensionResource(
     const base::FilePath& extension_path,
     const base::FilePath& resource_path,
     int* resource_id) const {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
 
   base::FilePath directory_path = extension_path;
   base::FilePath resources_dir;
@@ -238,7 +252,7 @@ const ui::TemplateReplacements*
 ChromeComponentExtensionResourceManager::GetTemplateReplacementsForExtension(
     const ExtensionId& extension_id,
     content::BrowserContext* context) const {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
 
   LazyInitData();
 
@@ -264,7 +278,7 @@ ChromeComponentExtensionResourceManager::GetTemplateReplacementsForExtension(
 }
 
 void ChromeComponentExtensionResourceManager::LazyInitData() const {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
 
   if (!data_)
     data_ = std::make_unique<Data>();

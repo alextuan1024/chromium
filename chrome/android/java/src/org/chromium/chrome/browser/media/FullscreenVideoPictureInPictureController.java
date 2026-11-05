@@ -173,6 +173,9 @@ public class FullscreenVideoPictureInPictureController {
     /** Was pip dismissed while the screen was off? */
     private boolean mDismissPending;
 
+    /** Is a dismiss deferred because pip was entered very recently? */
+    private boolean mIsDismissDeferred;
+
     /** Should media be suspended if the activity stops, i.e. was the pip window closed? */
     private boolean mShouldSuspendMediaOnStop;
 
@@ -219,10 +222,8 @@ public class FullscreenVideoPictureInPictureController {
             return false;
         }
 
-        if (!mActivity
-                .getPackageManager()
-                .hasSystemFeature(PackageManager.FEATURE_PICTURE_IN_PICTURE)) {
-            Log.d(TAG, "Activity does not have PiP feature.");
+        if (!PictureInPicture.isEnabled(mActivity)) {
+            Log.d(TAG, "Picture-in-Picture is not enabled.");
             return false;
         }
 
@@ -314,9 +315,7 @@ public class FullscreenVideoPictureInPictureController {
     public void attemptPictureInPicture() {
         // If there are already callbacks registered, then do nothing.
         final boolean allowed = canDoPictureInPicture();
-        Log.i(
-                TAG,
-                "Attempted picture-in-picture with result: " + (allowed ? "success" : "failure"));
+        Log.i(TAG, "Attempted picture-in-picture with result: %s", allowed ? "success" : "failure");
 
         if (!allowed) return;
 
@@ -530,7 +529,7 @@ public class FullscreenVideoPictureInPictureController {
      * It's okay if we're not currently in Picture in Picture mode.
      */
     private void onExitedPictureInPicture(@MetricsEndReason int reason) {
-        Log.i(TAG, "Exited picture in picture with reason: " + reason);
+        Log.i(TAG, "Exited picture in picture with reason: %d", reason);
 
         // Any pending dismiss is no longer pending.
         mDismissPending = true;
@@ -669,13 +668,18 @@ public class FullscreenVideoPictureInPictureController {
     private void dismissActivityIfNeeded(Activity activity, @MetricsEndReason int reason) {
         // Something interesting happened -- make sure we've updated our preference for auto-PiP
         // with the framework, if applicable.
-        Log.i(TAG, "Dismiss activity with reason " + reason);
+        Log.i(TAG, "Dismiss activity with reason %d", reason);
         updateAutoPictureInPictureStatusIfNeeded();
         mDismissPending = false;
 
         if (!isPipSessionActive()) {
             return;
         }
+
+        // If a dismiss is already deferred, then let it close PiP.  Otherwise, a later request that
+        // arrives before it runs, such as the WebContents reporting that it left fullscreen right
+        // after we were told that the tab left fullscreen, would record its own reason instead.
+        if (mIsDismissDeferred) return;
 
         // If we just entered PiP, then re-post this.  There are corner cases where we exit PiP via
         // some other way, then re-enter it that might go wrong if we don't cancel this, but all of
@@ -685,9 +689,13 @@ public class FullscreenVideoPictureInPictureController {
         // try to pro-rate the exit delay; it's short and arbitrary anyway.
         if (SystemClock.elapsedRealtime() - mLastOnEnteredTimeMillis < MIN_EXIT_DELAY_MILLIS) {
             Log.i(TAG, "Posting deferred callback to dismiss activity.");
+            mIsDismissDeferred = true;
             PostTask.postDelayedTask(
                     TaskTraits.UI_USER_BLOCKING,
-                    () -> dismissActivityIfNeeded(activity, reason),
+                    () -> {
+                        mIsDismissDeferred = false;
+                        dismissActivityIfNeeded(activity, reason);
+                    },
                     MIN_EXIT_DELAY_MILLIS);
             return;
         }
@@ -879,7 +887,7 @@ public class FullscreenVideoPictureInPictureController {
 
         @Override
         public void hasEffectivelyFullscreenVideoChange(boolean isFullscreen) {
-            Log.i(TAG, "Effective video fullscreen change: " + isFullscreen);
+            Log.i(TAG, "Effective video fullscreen change: %s", isFullscreen);
             if (isFullscreen) {
                 updateAutoPictureInPictureStatusIfNeeded();
                 // Also post a delayed handler to update the status again, once things have had some

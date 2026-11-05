@@ -5,7 +5,6 @@
 package org.chromium.chrome.browser.ntp_customization;
 
 import static org.chromium.build.NullUtil.assumeNonNull;
-import static org.chromium.chrome.browser.ntp_customization.NtpCustomizationUtils.NtpBackgroundType.CHROME_COLOR;
 import static org.chromium.chrome.browser.ntp_customization.NtpCustomizationUtils.NtpBackgroundType.IMAGE_FROM_DISK;
 import static org.chromium.chrome.browser.ntp_customization.NtpCustomizationUtils.NtpBackgroundType.THEME_COLLECTION;
 
@@ -24,6 +23,7 @@ import org.chromium.base.task.TaskTraits;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.ntp_customization.NtpCustomizationUtils.NtpBackgroundType;
+import org.chromium.chrome.browser.ntp_customization.theme.NtpSyncedThemeManager;
 import org.chromium.chrome.browser.ntp_customization.theme.NtpThemeStateProvider;
 import org.chromium.chrome.browser.ntp_customization.theme.chrome_colors.NtpThemeColorFromHexInfo;
 import org.chromium.chrome.browser.ntp_customization.theme.chrome_colors.NtpThemeColorInfo;
@@ -116,19 +116,6 @@ public class NtpCustomizationConfigManager {
         default void onBackgroundReset(@NtpBackgroundType int oldType) {}
     }
 
-    // TODO(crbug.com/488439751): NtpSyncedThemeManager is created per-window by the root UI
-    // coordinator, but only one instance is needed per process. Once it is a singleton, replace
-    // this observer with a direct call and delete ThemeSyncObserver.
-    /** Observer for committed NTP theme changes for outbound synchronization. */
-    public interface ThemeSyncObserver {
-        /**
-         * Dispatched when an NTP theme change is committed locally.
-         *
-         * @param backgroundData The newly chosen background data, or null for default reset.
-         */
-        void onThemeCommitted(@Nullable NtpBackgroundDataBase backgroundData);
-    }
-
     private static @Nullable NtpCustomizationConfigManager sInstanceForTesting;
 
     /** Static class that implements the initialization-on-demand holder idiom. */
@@ -137,8 +124,13 @@ public class NtpCustomizationConfigManager {
     }
 
     private final ObserverList<HomepageStateListener> mHomepageStateListeners;
-    private final ObserverList<ThemeSyncObserver> mThemeSyncObservers;
     private @Nullable NtpBackgroundDataBase mSyncedNtpBackgroundData;
+    // Whether a synced theme has replaced the persisted theme in this process and hasn't been
+    // applied yet. An Activity computes its dynamic colors from the persisted theme when it is
+    // created, so it is stale until maybeApplyBackgroundUpdateFromDeviceSync() recreates it. This
+    // can't be derived from the in-memory state: a color theme is initialized lazily from
+    // SharedPreferences, which the synced theme may have replaced by then.
+    private boolean mIsPersistedThemeReplacedBySync;
 
     /** Returns the singleton instance of NtpCustomizationConfigManager. */
     public static NtpCustomizationConfigManager getInstance() {
@@ -148,41 +140,9 @@ public class NtpCustomizationConfigManager {
         return NtpCustomizationConfigManager.LazyHolder.sInstance;
     }
 
-    /**
-     * Adds the given observer to receive theme sync commit events.
-     *
-     * @param observer The observer to add.
-     */
-    public void addThemeSyncObserver(ThemeSyncObserver observer) {
-        mThemeSyncObservers.addObserver(observer);
-    }
-
-    /**
-     * Removes the given observer from receiving theme sync commit events.
-     *
-     * @param observer The observer to remove.
-     */
-    public void removeThemeSyncObserver(ThemeSyncObserver observer) {
-        mThemeSyncObservers.removeObserver(observer);
-    }
-
-    /**
-     * Clears the pending synced background data and cleans up any unused image files from disk.
-     *
-     * @param context The context for managing synced background image files.
-     */
-    @VisibleForTesting
-    void clearSyncedNtpBackgroundData(Context context) {
-        if (mSyncedNtpBackgroundData instanceof NtpBackgroundDataImageBase imageBaseData) {
-            getNtpBackgroundDataManager(context).maybeCleanUpUnusedSyncedImageData(imageBaseData);
-        }
-        mSyncedNtpBackgroundData = null;
-    }
-
     @VisibleForTesting
     public NtpCustomizationConfigManager() {
         mHomepageStateListeners = new ObserverList<>();
-        mThemeSyncObservers = new ObserverList<>();
 
         mBackgroundType = NtpCustomizationUtils.getNtpBackgroundType();
         mIsNtpCustomizationSyncEnabled = NtpCustomizationUtils.isNTPCustomizationSyncEnabled();
@@ -192,8 +152,9 @@ public class NtpCustomizationConfigManager {
         if (mBackgroundType == NtpBackgroundType.IMAGE_FROM_DISK) {
             mIsInitialized = true;
             BackgroundImageInfo imageInfo = NtpCustomizationUtils.readNtpBackgroundImageInfo();
+            @Nullable
             @ColorInt
-            int primaryColor =
+            Integer primaryColor =
                     NtpCustomizationUtils.getCustomizedPrimaryColorFromSharedPreference();
             mNtpBackgroundData =
                     new NtpBackgroundDataUploadImage(
@@ -209,29 +170,42 @@ public class NtpCustomizationConfigManager {
                     EXECUTOR,
                     filePath);
         } else if (mBackgroundType == NtpBackgroundType.THEME_COLLECTION) {
-            mIsInitialized = true;
             NtpThemeDailyRefreshManager ntpThemeDailyRefreshManager =
                     NtpThemeDailyRefreshManager.getInstance();
-            BackgroundImageInfo imageInfo =
-                    ntpThemeDailyRefreshManager.getNtpBackgroundImageInfoForThemeCollection();
-            @ColorInt
-            int primaryColor = ntpThemeDailyRefreshManager.getNtpThemeColorForThemeCollection();
-            ntpThemeDailyRefreshManager.readNtpBackgroundImageForThemeCollection(
-                    (bitmap) -> {
-                        onBackgroundImageLoadedFromDisk(bitmap, imageInfo);
-                    },
-                    EXECUTOR,
-                    filePath);
-            mCustomBackgroundInfo =
+            CustomBackgroundInfo customBackgroundInfo =
                     ntpThemeDailyRefreshManager.getNtpCustomBackgroundInfoForThemeCollection();
-            mNtpBackgroundData =
-                    new NtpBackgroundDataThemeCollection(
-                            PlatformType.ANDROID,
-                            assumeNonNull(mCustomBackgroundInfo),
-                            imageInfo,
-                            /* bitmap= */ null,
-                            primaryColor,
-                            fileIdHash);
+            if (customBackgroundInfo == null) {
+                // The theme collection can't be restored if its info is missing or invalid. Clears
+                // the persisted background data and falls back to the default background. Unlike
+                // onBackgroundInitializationFailed(), doesn't notify any listener since this is
+                // called from the constructor, and doesn't delete the image files to avoid disk I/O
+                // on the UI thread.
+                mBackgroundType = NtpBackgroundType.DEFAULT;
+                NtpCustomizationUtils.removeAllNtpBackgroundDataFromSharedPreference();
+            } else {
+                mIsInitialized = true;
+                BackgroundImageInfo imageInfo =
+                        ntpThemeDailyRefreshManager.getNtpBackgroundImageInfoForThemeCollection();
+                @Nullable
+                @ColorInt
+                Integer primaryColor =
+                        ntpThemeDailyRefreshManager.getNtpThemeColorForThemeCollection();
+                ntpThemeDailyRefreshManager.readNtpBackgroundImageForThemeCollection(
+                        (bitmap) -> {
+                            onBackgroundImageLoadedFromDisk(bitmap, imageInfo);
+                        },
+                        EXECUTOR,
+                        filePath);
+                mCustomBackgroundInfo = customBackgroundInfo;
+                mNtpBackgroundData =
+                        new NtpBackgroundDataThemeCollection(
+                                PlatformType.ANDROID,
+                                customBackgroundInfo,
+                                imageInfo,
+                                /* bitmap= */ null,
+                                primaryColor,
+                                fileIdHash);
+            }
         }
 
         mIsMvtToggleOn =
@@ -246,7 +220,7 @@ public class NtpCustomizationConfigManager {
             // TODO(crbug.com/423579377): need to update the trailing icons in the NTP appearance
             // bottom sheet.
             if (mBackgroundType != NtpBackgroundType.DEFAULT) {
-                onBackgroundReset();
+                onBackgroundInitializationFailed();
             }
             return;
         }
@@ -260,8 +234,13 @@ public class NtpCustomizationConfigManager {
                 bitmap, imageInfo, NtpBackgroundType.DEFAULT, /* fromInitialization= */ true);
     }
 
-    @VisibleForTesting
-    void maybeInitializeColorTheme(Context context) {
+    /**
+     * Ensures color themes ({@link NtpBackgroundType#CHROME_COLOR} and {@link
+     * NtpBackgroundType#COLOR_FROM_HEX}) are initialized if not already initialized.
+     *
+     * @param context The context used to resolve theme color resources.
+     */
+    public void ensureInitialized(Context context) {
         if (mIsInitialized) return;
 
         mIsInitialized = true;
@@ -283,17 +262,37 @@ public class NtpCustomizationConfigManager {
                     /* oldType= */ NtpBackgroundType.DEFAULT);
 
         } else if (mBackgroundType == NtpBackgroundType.COLOR_FROM_HEX) {
+            @Nullable
             @ColorInt
-            int backgroundColor =
+            Integer primaryColorLight =
+                    NtpCustomizationUtils.getCustomizedPrimaryColorFromSharedPreference();
+            if (primaryColorLight == null) {
+                onBackgroundInitializationFailed();
+                return;
+            }
+
+            @ColorInt
+            Integer primaryColorDark =
+                    NtpCustomizationUtils.getCustomizedPrimaryColorDarkFromSharedPreference();
+            @ColorInt
+            int backgroundColorLight =
                     NtpCustomizationUtils.getBackgroundColorFromSharedPreference(
                             NtpThemeColorUtils.getDefaultBackgroundColor(context));
             @ColorInt
-            int primaryColor =
-                    NtpCustomizationUtils.getCustomizedPrimaryColorFromSharedPreference();
+            int backgroundColorDark =
+                    NtpCustomizationUtils.getBackgroundColorDarkFromSharedPreference(
+                            backgroundColorLight);
             mNtpBackgroundData =
                     new NtpBackgroundDataCustomizedColor(
                             PlatformType.ANDROID,
-                            new NtpThemeColorFromHexInfo(context, backgroundColor, primaryColor));
+                            new NtpThemeColorFromHexInfo(
+                                    context,
+                                    backgroundColorLight,
+                                    backgroundColorDark,
+                                    primaryColorLight,
+                                    primaryColorDark != null
+                                            ? primaryColorDark
+                                            : primaryColorLight));
             notifyBackgroundColorChanged(
                     context, /* fromInitialization= */ true, NtpBackgroundType.DEFAULT);
         }
@@ -311,7 +310,7 @@ public class NtpCustomizationConfigManager {
         if (skipNotify) return;
 
         if (!mIsInitialized) {
-            maybeInitializeColorTheme(context);
+            ensureInitialized(context);
             return;
         }
 
@@ -382,7 +381,8 @@ public class NtpCustomizationConfigManager {
      */
     public void onBackgroundDataChanged(
             Context context, @Nullable NtpBackgroundDataBase backgroundData) {
-        onBackgroundDataChanged(context, backgroundData, /* shouldNotifyThemeSyncObserver= */ true);
+        onBackgroundDataChanged(
+                context, backgroundData, /* shouldNotifySyncedThemeManager= */ true);
     }
 
     /**
@@ -391,38 +391,43 @@ public class NtpCustomizationConfigManager {
      *
      * @param context The application context.
      * @param backgroundData The selected NTP background theme data.
-     * @param shouldNotifyThemeSyncObserver True if the change should notify ThemeSyncObservers
-     *     (e.g. for local user selection), false if it is from incoming sync.
+     * @param shouldNotifySyncedThemeManager True if the change should be committed to native via
+     *     {@link NtpSyncedThemeManager} (e.g. for local user selection), false if it is from
+     *     incoming sync.
      */
     public void onBackgroundDataChanged(
             Context context,
             @Nullable NtpBackgroundDataBase backgroundData,
-            boolean shouldNotifyThemeSyncObserver) {
-        if (!Objects.equals(mSyncedNtpBackgroundData, backgroundData)) {
-            clearSyncedNtpBackgroundData(context);
-        }
+            boolean shouldNotifySyncedThemeManager) {
+        clearPendingSyncedBackgroundAndSharedPreference(context, backgroundData);
 
         if (backgroundData == null
-                || backgroundData.getBackgroundType() == NtpBackgroundType.DEFAULT) {
+                || backgroundData.getBackgroundType() == NtpBackgroundType.DEFAULT
+                || (backgroundData instanceof NtpBackgroundDataColor ntpBackgroundDataColor
+                        && ntpBackgroundDataColor.getThemeColorId() == NtpThemeColorId.DEFAULT)
+                || (backgroundData instanceof NtpBackgroundDataImageBase imageBaseData
+                        && imageBaseData.getBitmap() == null)) {
+            backgroundData = null;
             onBackgroundReset();
-        } else if (backgroundData instanceof NtpBackgroundDataColor ntpBackgroundDataColor) {
-            if (ntpBackgroundDataColor.getThemeColorId() == NtpThemeColorId.DEFAULT) {
-                onBackgroundReset();
-            } else {
+        } else {
+            // Persists the new background type. The rest of the new background's data is persisted
+            // by the type specific handlers below.
+            NtpCustomizationUtils.setNtpBackgroundTypeToSharedPreference(
+                    backgroundData.getBackgroundType());
+
+            if (backgroundData instanceof NtpBackgroundDataColor
+                    || backgroundData.getBackgroundType() == NtpBackgroundType.COLOR_FROM_HEX) {
                 onBackgroundColorChanged(context, backgroundData);
+            } else if (backgroundData instanceof NtpBackgroundDataUploadImage uploadImageData) {
+                onUploadedImageSelected(uploadImageData);
+            } else if (backgroundData
+                    instanceof NtpBackgroundDataThemeCollection themeCollectionData) {
+                onThemeCollectionImageSelected(themeCollectionData);
             }
-        } else if (backgroundData.getBackgroundType() == NtpBackgroundType.COLOR_FROM_HEX) {
-            onBackgroundColorChanged(context, backgroundData);
-        } else if (backgroundData instanceof NtpBackgroundDataUploadImage uploadImageData) {
-            onUploadedImageSelected(uploadImageData);
-        } else if (backgroundData instanceof NtpBackgroundDataThemeCollection themeCollectionData) {
-            onThemeCollectionImageSelected(themeCollectionData);
         }
 
-        if (shouldNotifyThemeSyncObserver) {
-            for (ThemeSyncObserver observer : mThemeSyncObservers) {
-                observer.onThemeCommitted(backgroundData);
-            }
+        if (shouldNotifySyncedThemeManager) {
+            NtpSyncedThemeManager.getInstance().onThemeCommitted(backgroundData);
         }
     }
 
@@ -437,18 +442,14 @@ public class NtpCustomizationConfigManager {
 
         mBackgroundType = IMAGE_FROM_DISK;
         mNtpBackgroundData = uploadImageData;
+        mCustomBackgroundInfo = null;
         // Saves the file path to the SharedPreference.
         NtpCustomizationUtils.setBackgroundImageFilePathToSharedPreference(
                 NtpCustomizationUtils.getBackgroundImageFileFromPath(
                                 uploadImageData.getLastUploadImageFilePath())
                         .getAbsolutePath());
 
-        Bitmap bitmap = uploadImageData.getBitmap();
-        if (bitmap == null) {
-            //  TODO(https://crbug.com/488439751): Removes this early exit when we load the bitmap.
-            return;
-        }
-
+        Bitmap bitmap = assumeNonNull(uploadImageData.getBitmap());
         BackgroundImageInfo backgroundImageInfo =
                 assumeNonNull(uploadImageData.getBackgroundImageInfo());
 
@@ -457,13 +458,8 @@ public class NtpCustomizationConfigManager {
         // bitmap have been saved to disk before. Thus, we don't need to pick the primary color or
         // save the bitmap again, but only update the current primary color to the Shared
         // Preference.
-        @ColorInt
-        Integer primaryColor =
-                NtpCustomizationUtils.saveBackgroundInfo(
-                        uploadImageData, fromHistoryData ? null : bitmap, backgroundImageInfo);
-        if (!fromHistoryData) {
-            uploadImageData.setPrimaryColor(primaryColor);
-        }
+        NtpCustomizationUtils.saveBackgroundInfo(
+                uploadImageData, fromHistoryData ? null : bitmap, backgroundImageInfo);
 
         onBackgroundImageChanged(bitmap, backgroundImageInfo, oldType);
     }
@@ -480,11 +476,6 @@ public class NtpCustomizationConfigManager {
         mBackgroundType = NtpBackgroundType.THEME_COLLECTION;
         mCustomBackgroundInfo = themeCollectionData.getCustomBackgroundInfo();
         mNtpBackgroundData = themeCollectionData;
-        // Saves the file path to the SharedPreference.
-        NtpCustomizationUtils.setBackgroundImageFilePathToSharedPreference(
-                NtpCustomizationUtils.getBackgroundImageFileFromPath(
-                                themeCollectionData.getLastUploadImageFilePath())
-                        .getAbsolutePath());
 
         onBackgroundImageChanged(
                 assumeNonNull(themeCollectionData.getBitmap()),
@@ -494,29 +485,19 @@ public class NtpCustomizationConfigManager {
         NtpCustomizationUtils.maybeUpdateDailyRefreshTimestamp(
                 TimeUtils.currentTimeMillis(), mBackgroundType, mCustomBackgroundInfo);
 
-        // Saves the background info, matrices, and primary color to SharedPreferences, and saves
-        // the bitmap to disk if not already saved on this device (e.g. when newly selected or from
-        // remote history).
-        // TODO(crbug.com/488439751): Capture the primary color returned by saveBackgroundInfo() and
-        // set it on themeCollectionData, as onUploadedImageSelected() does. Cross-device entries
-        // arrive with no primary color, and discarding it here is what forces the null-to-zero
-        // coercion in NtpSyncedThemeBridge#updateCustomBackgroundPrefsWithColor.
-        NtpCustomizationUtils.saveBackgroundInfo(
-                themeCollectionData,
-                themeCollectionData.isBitmapSaved() ? null : themeCollectionData.getBitmap(),
-                assumeNonNull(themeCollectionData.getBackgroundImageInfo()));
+        saveThemeCollectionInfoToSharedPreference(themeCollectionData);
     }
 
     /**
      * Called when a new theme collection image has been received from Chrome Sync. Saves the synced
-     * background info and bitmap asynchronously and caches the synced theme data.
+     * background info and bitmap asynchronously and caches the synced theme data. Ignored if the
+     * theme collection is already persisted on this device.
      *
      * <p>Note: We only persist the synced image file path, background type, and background metadata
      * (CustomBackgroundInfo, matrices, and primary color) to SharedPreferences and disk, and cache
      * the synced theme data in {@code mSyncedNtpBackgroundData} here without modifying the active
-     * in-memory state ({@code mNtpBackgroundData}). This cached {@code mSyncedNtpBackgroundData} is
-     * used later by {@link #maybeApplyBackgroundUpdateFromDeviceSync(Context)} to check for
-     * mismatches against {@code mNtpBackgroundData} before applying changes when the NTP becomes
+     * in-memory state ({@code mNtpBackgroundData}). The cached {@code mSyncedNtpBackgroundData} is
+     * applied by {@link #maybeApplyBackgroundUpdateFromDeviceSync(Context)} when the NTP becomes
      * active.
      *
      * @param context The context for managing synced background image files.
@@ -524,61 +505,116 @@ public class NtpCustomizationConfigManager {
      */
     public void onSyncedThemeCollectionImageChanged(
             Context context, NtpBackgroundDataThemeCollection themeCollectionData) {
-        if (themeCollectionData.getLastUploadImageFilePath() != null) {
-            String filePath =
-                    NtpCustomizationUtils.getBackgroundImageFileFromPath(
-                                    themeCollectionData.getLastUploadImageFilePath())
-                            .getAbsolutePath();
-            NtpCustomizationUtils.setBackgroundImageFilePathToSharedPreference(filePath);
-        }
+        if (!maybeClearForSyncedBackground(context, themeCollectionData)) return;
+
         NtpCustomizationUtils.setNtpBackgroundTypeToSharedPreference(
                 NtpBackgroundType.THEME_COLLECTION);
-        cleanupChromeColors();
+        saveThemeCollectionInfoToSharedPreference(themeCollectionData);
 
-        // Persists the synced bitmap file (asynchronously via BackgroundOnlyAsyncTask),
-        // CustomBackgroundInfo metadata, transformation matrices, and primary color.
-        NtpCustomizationUtils.saveBackgroundInfo(
-                themeCollectionData,
-                themeCollectionData.getBitmap(),
-                assumeNonNull(themeCollectionData.getBackgroundImageInfo()));
-
-        // Cleans up any previously pending synced background image file
-        // that is being replaced by the newly received synced theme.
-        if (!Objects.equals(mSyncedNtpBackgroundData, themeCollectionData)) {
-            clearSyncedNtpBackgroundData(context);
-        }
-        // Caches the synced theme data for mismatch comparison in
-        // maybeApplyBackgroundUpdateFromDeviceSync().
+        // Caches the synced theme data to apply it in maybeApplyBackgroundUpdateFromDeviceSync().
         mSyncedNtpBackgroundData = themeCollectionData;
+        mIsPersistedThemeReplacedBySync = true;
     }
 
     /**
-     * Called when a new Chrome color theme has been received from Chrome Sync.
+     * Called when a new Chrome color theme has been received from Chrome Sync. Ignored if the
+     * Chrome color is already persisted on this device.
      *
      * @param context The context for managing background theme resources.
      * @param colorData The synced Chrome color data.
      */
     public void onSyncedChromeColorChanged(Context context, NtpBackgroundDataColor colorData) {
-        clearSyncedNtpBackgroundData(context);
+        if (!maybeClearForSyncedBackground(context, colorData)) return;
 
         NtpCustomizationUtils.setNtpBackgroundTypeToSharedPreference(
                 NtpBackgroundType.CHROME_COLOR);
-        NtpCustomizationUtils.setNtpThemeColorIdToSharedPreference(colorData.getThemeColorId());
-        resetCustomizedImage(!mIsNtpCustomizationSyncEnabled);
+        saveChromeColorInfoToSharedPreference(colorData);
 
         mSyncedNtpBackgroundData = colorData;
+        mIsPersistedThemeReplacedBySync = true;
     }
 
     /**
-     * Called when a theme reset to default has been received from Chrome Sync.
+     * Called when a theme reset to default has been received from Chrome Sync. Ignored if the
+     * default theme is already persisted on this device.
      *
      * @param context The context for managing background theme resources.
      */
     public void onSyncedDefaultThemeReset(Context context) {
-        clearSyncedNtpBackgroundData(context);
-        NtpCustomizationUtils.removeNtpBackgroundTypeFromSharedPreference();
-        cleanupChromeColors();
-        resetCustomizedImage(!mIsNtpCustomizationSyncEnabled);
+        if (!maybeClearForSyncedBackground(context, /* syncedBackgroundData= */ null)) return;
+
+        mIsPersistedThemeReplacedBySync = true;
+    }
+
+    /**
+     * Clears the pending synced background and SharedPreferences for a synced background, unless it
+     * is already persisted on this device. The active in-memory state isn't changed.
+     *
+     * @param context The context for managing synced background image files.
+     * @param syncedBackgroundData The background data received from Chrome Sync, or null for the
+     *     default background.
+     * @return True if the data was cleared and the synced background should be saved; false if it
+     *     is already persisted and nothing was changed.
+     */
+    private boolean maybeClearForSyncedBackground(
+            Context context, @Nullable NtpBackgroundDataBase syncedBackgroundData) {
+        if (NtpCustomizationUtils.isSyncedBackgroundPersisted(syncedBackgroundData)) return false;
+
+        clearPendingSyncedBackgroundAndSharedPreference(context, syncedBackgroundData);
+        return true;
+    }
+
+    /**
+     * Clears the background data before a new background is saved:
+     *
+     * <ul>
+     *   <li>The pending synced background in memory, i.e. {@code mSyncedNtpBackgroundData}. Its
+     *       image file is cleaned up if unused, unless it is the new background.
+     *   <li>All the NTP background data in SharedPreferences, which may belong to the active or the
+     *       pending synced background.
+     * </ul>
+     *
+     * @param context The context for managing synced background image files.
+     * @param newBackgroundData The new background to save, or null if resetting to default.
+     */
+    private void clearPendingSyncedBackgroundAndSharedPreference(
+            Context context, @Nullable NtpBackgroundDataBase newBackgroundData) {
+        // Only cleans up the pending synced background's unused image file if it is replaced by a
+        // different background.
+        if (mSyncedNtpBackgroundData instanceof NtpBackgroundDataImageBase imageBaseData
+                && !Objects.equals(mSyncedNtpBackgroundData, newBackgroundData)) {
+            getNtpBackgroundDataManager(context).maybeCleanUpUnusedSyncedImageData(imageBaseData);
+        }
+        mSyncedNtpBackgroundData = null;
+        mIsPersistedThemeReplacedBySync = false;
+        NtpCustomizationUtils.removeAllNtpBackgroundDataFromSharedPreference();
+        // A daily refresh applied in memory was computed from the background that is being
+        // replaced, and must not be saved over the new one at deferred startup.
+        NtpThemeDailyRefreshManager.getInstance().discardPendingDailyRefresh();
+    }
+
+    /**
+     * Persists the theme collection's image file path, background info, matrices and primary color
+     * to SharedPreferences, and saves the bitmap to disk if it isn't saved on this device yet (e.g.
+     * when newly selected, synced or from remote history).
+     */
+    private static void saveThemeCollectionInfoToSharedPreference(
+            NtpBackgroundDataThemeCollection themeCollectionData) {
+        NtpCustomizationUtils.setBackgroundImageFilePathToSharedPreference(
+                NtpCustomizationUtils.getBackgroundImageFileFromPath(
+                                themeCollectionData.getLastUploadImageFilePath())
+                        .getAbsolutePath());
+        NtpCustomizationUtils.saveBackgroundInfo(
+                themeCollectionData,
+                themeCollectionData.isBitmapSaved() ? null : themeCollectionData.getBitmap(),
+                assumeNonNull(themeCollectionData.getBackgroundImageInfo()));
+    }
+
+    /** Persists the Chrome color's color id and daily refresh setting to SharedPreferences. */
+    private static void saveChromeColorInfoToSharedPreference(NtpBackgroundDataColor colorData) {
+        NtpCustomizationUtils.setNtpThemeColorIdToSharedPreference(colorData.getThemeColorId());
+        NtpCustomizationUtils.setIsChromeColorDailyRefreshEnabledToSharedPreference(
+                colorData.isChromeColorDailyRefreshEnabled());
     }
 
     /**
@@ -609,8 +645,6 @@ public class NtpCustomizationConfigManager {
                         ? NtpCustomizationUtils.getDefaultBackgroundImageInfo(
                                 ContextUtils.getApplicationContext(), bitmap)
                         : backgroundImageInfo;
-        NtpCustomizationUtils.setNtpBackgroundTypeToSharedPreference(mBackgroundType);
-        cleanupChromeColors();
 
         notifyBackgroundImageChanged(
                 bitmap, mBackgroundImageInfo, fromInitialization, oldBackgroundType);
@@ -627,7 +661,7 @@ public class NtpCustomizationConfigManager {
     private void onBackgroundColorChanged(Context context, NtpBackgroundDataBase backgroundData) {
         NtpThemeColorInfo colorInfo =
                 NtpThemeColorUtils.getNtpThemeColorInfoFromNtpBackgroundData(backgroundData);
-        if (colorInfo == null) return;
+        assert colorInfo != null;
 
         @NtpBackgroundType
         int backgroundType =
@@ -637,15 +671,16 @@ public class NtpCustomizationConfigManager {
 
         @NtpBackgroundType int oldType = mBackgroundType;
         mBackgroundType = backgroundType;
-        NtpCustomizationUtils.setNtpBackgroundTypeToSharedPreference(mBackgroundType);
 
         mNtpBackgroundData = backgroundData;
 
         if (mBackgroundType == NtpBackgroundType.CHROME_COLOR) {
             cleanupImageInfoAndNotifyBackgroundColorChangeImpl(context, oldType);
 
-            NtpCustomizationUtils.setNtpThemeColorIdToSharedPreference(assumeNonNull(colorInfo).id);
-            // Updates the daily refresh timestamp if enabled.
+            assert backgroundData instanceof NtpBackgroundDataColor;
+            saveChromeColorInfoToSharedPreference((NtpBackgroundDataColor) backgroundData);
+            // Updates the daily refresh timestamp if enabled. This must be called after the daily
+            // refresh setting is saved, which it reads.
             NtpCustomizationUtils.maybeUpdateDailyRefreshTimestamp(
                     TimeUtils.currentTimeMillis(),
                     mBackgroundType,
@@ -686,18 +721,35 @@ public class NtpCustomizationConfigManager {
 
     private void cleanupImageInfoAndNotifyBackgroundColorChangeImpl(
             Context context, @NtpBackgroundType int oldType) {
-        cleanupBackgroundImage(!mIsNtpCustomizationSyncEnabled);
+        cleanupBackgroundImage(oldType);
         notifyBackgroundColorChanged(context, /* fromInitialization= */ false, oldType);
     }
 
-    /** Notifies listeners about the NTP's customized background is reset. */
+    /**
+     * Called when the active background fails to initialize. Resets to the default background. If
+     * the persisted background was replaced by sync in the meantime, the SharedPreferences hold the
+     * synced background (or nothing for a synced reset) and are kept so that it will be applied by
+     * {@link #maybeApplyBackgroundUpdateFromDeviceSync(Context)}.
+     */
+    private void onBackgroundInitializationFailed() {
+        if (!mIsPersistedThemeReplacedBySync) {
+            NtpCustomizationUtils.removeAllNtpBackgroundDataFromSharedPreference();
+            // The daily refresh which may have been applied to the failed background is gone too.
+            NtpThemeDailyRefreshManager.getInstance().discardPendingDailyRefresh();
+        }
+        onBackgroundReset();
+    }
+
+    /**
+     * Notifies listeners about the NTP's customized background is reset. The SharedPreferences
+     * should be cleaned up by the caller.
+     */
     private void onBackgroundReset() {
         @NtpBackgroundType int oldType = mBackgroundType;
         mBackgroundType = NtpBackgroundType.DEFAULT;
         mNtpBackgroundData = null;
 
-        cleanupOnBackgroundTypeChanged(oldType);
-        NtpCustomizationUtils.removeNtpBackgroundTypeFromSharedPreference();
+        cleanupBackgroundImage(oldType);
         notifyBackgroundReset(oldType);
     }
 
@@ -743,11 +795,11 @@ public class NtpCustomizationConfigManager {
         int backgroundColor =
                 NtpThemeColorUtils.getBackgroundColorFromNtpBackgroundData(
                         context, mNtpBackgroundData);
+        NtpThemeColorInfo ntpThemeColorInfo =
+                NtpThemeColorUtils.getNtpThemeColorInfoFromNtpBackgroundData(mNtpBackgroundData);
         for (HomepageStateListener listener : mHomepageStateListeners) {
             listener.onBackgroundColorChanged(
-                    assumeNonNull(
-                            NtpThemeColorUtils.getNtpThemeColorInfoFromNtpBackgroundData(
-                                    mNtpBackgroundData)),
+                    assumeNonNull(ntpThemeColorInfo),
                     backgroundColor,
                     fromInitialization,
                     oldType,
@@ -863,29 +915,22 @@ public class NtpCustomizationConfigManager {
         mIsInitialized = isInitialized;
     }
 
-    /** Cleans up background bitmap image related info. */
-    private void cleanupBackgroundImage(boolean deleteImageFile) {
+    /**
+     * Cleans up the in-memory background image state when switching to a non-image background. When
+     * switching away from an image background, also deletes the image files if sync is disabled.
+     * Otherwise, the files may be shared with the theme history lists and are cleaned up by
+     * NtpBackgroundDataManager.
+     *
+     * @param oldType The previous type of the NTP's background.
+     */
+    private void cleanupBackgroundImage(@NtpBackgroundType int oldType) {
         mBackgroundImageInfo = null;
         mOriginalBitmap = null;
         mCustomBackgroundInfo = null;
-        resetCustomizedImage(deleteImageFile);
-    }
+        if (mIsNtpCustomizationSyncEnabled) return;
 
-    private void resetCustomizedImage(boolean deleteImageFile) {
-        NtpCustomizationUtils.resetCustomizedImage(deleteImageFile);
-    }
-
-    private void cleanupChromeColors() {
-        NtpCustomizationUtils.resetCustomizedColors();
-    }
-
-    private void cleanupOnBackgroundTypeChanged(@NtpBackgroundType int oldType) {
-        if (oldType == mBackgroundType) return;
-
-        switch (oldType) {
-            case CHROME_COLOR -> cleanupChromeColors();
-            case IMAGE_FROM_DISK, THEME_COLLECTION ->
-                    cleanupBackgroundImage(!mIsNtpCustomizationSyncEnabled);
+        if (oldType == IMAGE_FROM_DISK || oldType == THEME_COLLECTION) {
+            NtpCustomizationUtils.deleteAllNtpBackgroundImageFiles();
         }
     }
 
@@ -905,17 +950,23 @@ public class NtpCustomizationConfigManager {
 
     public void resetForTesting() {
         mHomepageStateListeners.clear();
-        mThemeSyncObservers.clear();
         mIsInitialized = false;
         mBackgroundType = NtpBackgroundType.DEFAULT;
         mNtpBackgroundData = null;
-        cleanupBackgroundImage(/* deleteImageFile= */ true);
+        mSyncedNtpBackgroundData = null;
+        mIsPersistedThemeReplacedBySync = false;
+        mBackgroundImageInfo = null;
+        mOriginalBitmap = null;
+        mCustomBackgroundInfo = null;
+        NtpCustomizationUtils.removeAllNtpBackgroundDataFromSharedPreference();
+        NtpCustomizationUtils.deleteAllNtpBackgroundImageFiles();
         mIsMvtToggleOn = false;
     }
 
     /**
-     * Called when the NTP comes to the foreground to compare standard SharedPreferences with our
-     * active in-memory cached state.
+     * Called when the NTP comes to the foreground. Applies the synced theme that replaced the
+     * persisted theme since the Activity was created, if any, and recreates the Activity so that
+     * its dynamic colors follow.
      *
      * @param context The context used for applying background data and saving history.
      */
@@ -924,17 +975,10 @@ public class NtpCustomizationConfigManager {
             return;
         }
 
-        // Check to ensure memory reflects disk state for synced backgrounds
-        boolean isThemeMismatch =
-                (mSyncedNtpBackgroundData != null
-                                && !Objects.equals(mNtpBackgroundData, mSyncedNtpBackgroundData))
-                        || (mBackgroundType != NtpBackgroundType.DEFAULT
-                                && NtpCustomizationUtils.getNtpBackgroundTypeFromSharedPreference()
-                                        == NtpBackgroundType.DEFAULT);
-
-        if (isThemeMismatch) {
+        if (mIsPersistedThemeReplacedBySync) {
+            // Applies the staged synced background, or resets to default if there is none.
             onBackgroundDataChanged(
-                    context, mSyncedNtpBackgroundData, /* shouldNotifyThemeSyncObserver= */ false);
+                    context, mSyncedNtpBackgroundData, /* shouldNotifySyncedThemeManager= */ false);
             maybeSaveUserSelectedBackgroundTypeToSharedPreference(context);
             // Recreate the Activity to safely apply the new image AND the new OS-level dynamic
             // theme colors together.
@@ -944,6 +988,7 @@ public class NtpCustomizationConfigManager {
         }
 
         mSyncedNtpBackgroundData = null;
+        mIsPersistedThemeReplacedBySync = false;
     }
 
     void setCustomBackgroundInfoForTesting(CustomBackgroundInfo customBackgroundInfo) {
@@ -958,7 +1003,7 @@ public class NtpCustomizationConfigManager {
         mNtpBackgroundDataManager = manager;
     }
 
-    @Nullable NtpBackgroundDataBase getSyncedNtpBackgroundDataForTesting() {
+    public @Nullable NtpBackgroundDataBase getSyncedNtpBackgroundData() {
         return mSyncedNtpBackgroundData;
     }
 }

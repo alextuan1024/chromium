@@ -72,6 +72,11 @@ class AutofillSuggestionDelegate {
     // the search input is not empty).
     bool from_search_result = false;
 
+    // Indicates if the application window was fully or partially obscured when
+    // the suggestion was accepted. This flag is populated only on Android at
+    // the moment.
+    bool was_obscured = false;
+
     friend bool operator==(const SuggestionMetadata& lhs,
                            const SuggestionMetadata& rhs) = default;
   };
@@ -103,11 +108,15 @@ class AutofillSuggestionDelegate {
 
   // Called when the autofill `suggestion` has been temporarily selected (e.g.,
   // hovered).
-  virtual void DidSelectSuggestion(const Suggestion& suggestion) = 0;
+  virtual void DidSelectSuggestion(const Suggestion& suggestion,
+                                   const FormGlobalId& form_id,
+                                   const FieldGlobalId& field_id) = 0;
 
   // Informs the delegate that a `suggestion` has been chosen.
   virtual void DidAcceptSuggestion(const Suggestion& suggestion,
-                                   const SuggestionMetadata& metadata) = 0;
+                                   const SuggestionMetadata& metadata,
+                                   const FormGlobalId& form_id,
+                                   const FieldGlobalId& field_id) = 0;
 
   // Informs the delegate to delete the described suggestion. Returns true if
   // something was deleted, or false if deletion is not allowed.

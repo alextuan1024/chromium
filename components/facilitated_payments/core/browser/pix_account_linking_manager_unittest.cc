@@ -134,7 +134,8 @@ class PixAccountLinkingManagerTest : public testing::Test {
   }
 
   std::unique_ptr<MockFacilitatedPaymentsApiClient> api_client_;
-  raw_ptr<MockFacilitatedPaymentsApiClient> api_client_ptr_ = nullptr;
+  raw_ptr<MockFacilitatedPaymentsApiClient, DisableDanglingPtrDetection>
+      api_client_ptr_ = nullptr;
 
   std::unique_ptr<PrefService> pref_service_;
   std::unique_ptr<autofill::TestPaymentsDataManager> payments_data_manager_;
@@ -824,6 +825,87 @@ TEST_F(PixAccountLinkingManagerTest,
       "FacilitatedPayments.Pix.AccountLinking.FlowExitedReason", 0);
 }
 
+class PixAccountLinkingManagerLateUiEventTest
+    : public PixAccountLinkingManagerTest,
+      public testing::WithParamInterface<UiEvent> {};
+
+// Verifies that UI events which arrive after Chrome has already dismissed the
+// account linking UI are ignored instead of crashing. The bottom sheet reports
+// its events asynchronously, so they can arrive after `DismissPrompt()` has set
+// the UI state to hidden.
+TEST_P(PixAccountLinkingManagerLateUiEventTest,
+       UiEventAfterPromptDismissed_Ignored) {
+  base::HistogramTester histogram_tester;
+  manager()->MaybeShowPixAccountLinkingPrompt(kPixPaymentPageOrigin);
+  task_environment_.FastForwardBy(kShowPromptDelay);
+  test_api().DismissPrompt();
+
+  test_api().OnUiScreenEvent(GetParam());
+
+  histogram_tester.ExpectTotalCount(
+      "FacilitatedPayments.Pix.AccountLinking.FlowExitedReason", 0);
+  histogram_tester.ExpectTotalCount(
+      "FacilitatedPayments.Pix.AccountLinking.PromptShown", 0);
+}
+
+INSTANTIATE_TEST_SUITE_P(PixAccountLinkingManagerTestSuite,
+                         PixAccountLinkingManagerLateUiEventTest,
+                         testing::Values(UiEvent::kNewScreenShown,
+                                         UiEvent::kScreenCouldNotBeShown,
+                                         UiEvent::kScreenClosedNotByUser,
+                                         UiEvent::kScreenClosedByUser));
+
+// Verifies that the user closing the bottom sheet after declining the prompt
+// does not crash and does not log an additional flow exited reason.
+TEST_F(PixAccountLinkingManagerTest,
+       ScreenClosedByUserAfterDecline_NoCrashAndNoExtraExitedReason) {
+  base::HistogramTester histogram_tester;
+  manager()->MaybeShowPixAccountLinkingPrompt(kPixPaymentPageOrigin);
+  task_environment_.FastForwardBy(kShowPromptDelay);
+
+  test_api().OnDeclined();
+  test_api().OnUiScreenEvent(UiEvent::kScreenClosedByUser);
+
+  histogram_tester.ExpectUniqueSample(
+      "FacilitatedPayments.Pix.AccountLinking.FlowExitedReason",
+      /*sample=*/AccountLinkingFlowExitedReason::kUserDeclined,
+      /*expected_bucket_count=*/1);
+}
+
+// Verifies that the user closing the bottom sheet after the GMSCore account
+// linking flow was canceled does not crash.
+TEST_F(PixAccountLinkingManagerTest,
+       ScreenClosedByUserAfterGmsCoreCanceled_NoCrash) {
+  base::HistogramTester histogram_tester;
+  EXPECT_CALL(*payments_network_interface(),
+              GetDetailsForCreatePaymentInstrument(
+                  testing::_, testing::_, testing::_, testing::_, testing::_))
+      .WillOnce([](long, const std::vector<uint8_t>&, base::DictValue,
+                   auto callback, const std::string&) {
+        std::move(callback).Run(autofill::payments::PaymentsAutofillClient::
+                                    PaymentsRpcResult::kSuccess,
+                                /*is_eligible=*/true,
+                                std::vector<uint8_t>{1, 2, 3});
+        return base::StrongAlias<autofill::payments::RequestIdTag,
+                                 std::string>();
+      });
+  manager()->MaybeShowPixAccountLinkingPrompt(kPixPaymentPageOrigin);
+  task_environment_.FastForwardBy(kShowPromptDelay);
+  // Accepting the prompt shows the progress screen and launches GMSCore.
+  test_api().OnAccepted();
+  EXPECT_CALL(client(), ShowAccountLinkingFailureNotification(
+                            FacilitatedPaymentsType::kPix));
+  test_api().OnAccountLinkingResult(AccountLinkingResult{
+      /*is_successful=*/false, 0, AccountLinkingResultCode::kResultCanceled});
+
+  test_api().OnUiScreenEvent(UiEvent::kScreenClosedByUser);
+
+  histogram_tester.ExpectUniqueSample(
+      "FacilitatedPayments.Pix.AccountLinking.FlowExitedReason",
+      /*sample=*/AccountLinkingFlowExitedReason::kUserCanceledInGmsCore,
+      /*expected_bucket_count=*/1);
+}
+
 TEST_F(PixAccountLinkingManagerTest,
        TriggerPixAccountLinking_MaxStrike_PromptNotShown) {
   base::test::ScopedFeatureList scoped_feature_list;
@@ -1020,12 +1102,19 @@ TEST_F(PixAccountLinkingManagerTest, DoOnAccountLinkingResult_Canceled) {
   // UserCanceledInGmsCore.
   test_api().OnAccepted();
 
+  EXPECT_CALL(client(), ShowAccountLinkingFailureNotification(
+                            FacilitatedPaymentsType::kPix));
+
   test_api().OnAccountLinkingResult(AccountLinkingResult{
       /*is_successful=*/false, 0, AccountLinkingResultCode::kResultCanceled});
 
   histogram_tester.ExpectUniqueSample(
       "FacilitatedPayments.Pix.AccountLinking.Result",
       /*sample=*/false,
+      /*expected_bucket_count=*/1);
+  histogram_tester.ExpectUniqueSample(
+      "FacilitatedPayments.Pix.AccountLinking.FlowExitedReason",
+      /*sample=*/AccountLinkingFlowExitedReason::kUserCanceledInGmsCore,
       /*expected_bucket_count=*/1);
 }
 
@@ -1108,6 +1197,31 @@ TEST_F(
       "FacilitatedPayments.Pix.AccountLinking.FlowExitedReason",
       /*sample=*/AccountLinkingFlowExitedReason::kMaxStrikes,
       /*expected_bucket_count=*/1);
+}
+
+TEST_F(PixAccountLinkingManagerTest,
+       MaybeShowPixAccountLinkingPrompt_RecreatesApiClientAcrossFlows) {
+  int api_client_creation_count = 0;
+  auto manager = std::make_unique<PixAccountLinkingManager>(
+      &client(),
+      base::BindRepeating(
+          [](int* count) -> std::unique_ptr<FacilitatedPaymentsApiClient> {
+            ++(*count);
+            auto client = std::make_unique<MockFacilitatedPaymentsApiClient>();
+            ON_CALL(*client, GetClientToken(testing::_))
+                .WillByDefault(
+                    [](base::OnceCallback<void(std::vector<uint8_t>)> cb) {
+                      std::move(cb).Run(std::vector<uint8_t>{1, 2, 3});
+                    });
+            return client;
+          },
+          &api_client_creation_count));
+
+  manager->MaybeShowPixAccountLinkingPrompt(kPixPaymentPageOrigin);
+  EXPECT_EQ(api_client_creation_count, 1);
+
+  manager->MaybeShowPixAccountLinkingPrompt(kPixPaymentPageOrigin);
+  EXPECT_EQ(api_client_creation_count, 2);
 }
 
 }  // namespace payments::facilitated

@@ -53,10 +53,12 @@ UtilitySandboxedProcessLauncherDelegate::
 #if DCHECK_IS_ON()
   bool supported_sandbox_type =
       sandbox_type_ == sandbox::mojom::Sandbox::kNoSandbox ||
+#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_LINUX)
+      sandbox_type_ == sandbox::mojom::Sandbox::kXrCompositing ||
+#endif
 #if BUILDFLAG(IS_WIN)
       sandbox_type_ ==
           sandbox::mojom::Sandbox::kNoSandboxAndElevatedPrivileges ||
-      sandbox_type_ == sandbox::mojom::Sandbox::kXrCompositing ||
       sandbox_type_ == sandbox::mojom::Sandbox::kPdfConversion ||
       sandbox_type_ == sandbox::mojom::Sandbox::kIconReader ||
       sandbox_type_ == sandbox::mojom::Sandbox::kMediaFoundationCdm ||
@@ -66,6 +68,8 @@ UtilitySandboxedProcessLauncherDelegate::
 #endif
 #if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC)
       sandbox_type_ == sandbox::mojom::Sandbox::kProxyResolver ||
+#endif
+#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_APPLE)
       sandbox_type_ == sandbox::mojom::Sandbox::kWebNNModelCompilation ||
 #endif
       sandbox_type_ == sandbox::mojom::Sandbox::kUtility ||
@@ -96,6 +100,7 @@ UtilitySandboxedProcessLauncherDelegate::
     BUILDFLAG(IS_WIN)
       sandbox_type_ == sandbox::mojom::Sandbox::kScreenAI ||
       sandbox_type_ == sandbox::mojom::Sandbox::kPrintBackend ||
+      sandbox_type_ == sandbox::mojom::Sandbox::kPlatformRuntime ||
 #endif
 #if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_CHROMEOS)
       sandbox_type_ == sandbox::mojom::Sandbox::kOnDeviceTranslation ||
@@ -156,6 +161,12 @@ ZygoteCommunication* UtilitySandboxedProcessLauncherDelegate::GetZygote() {
       sandbox_type_ == sandbox::mojom::Sandbox::kNearby ||
 #endif  // BUILDFLAG(IS_CHROMEOS)
       sandbox_type_ == sandbox::mojom::Sandbox::kAudio ||
+#if BUILDFLAG(IS_LINUX)
+      // The XR Device Service installs its broker and seccomp policy from a
+      // pre-sandbox hook, so it must fork from the unsandboxed zygote (like the
+      // other hook-based types) rather than the pre-sandboxed generic zygote.
+      sandbox_type_ == sandbox::mojom::Sandbox::kXrCompositing ||
+#endif
 #if BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_LINUX)
       sandbox_type_ == sandbox::mojom::Sandbox::kShapeDetection ||
 #endif
@@ -163,6 +174,7 @@ ZygoteCommunication* UtilitySandboxedProcessLauncherDelegate::GetZygote() {
     BUILDFLAG(IS_WIN)
       sandbox_type_ == sandbox::mojom::Sandbox::kPrintBackend ||
       sandbox_type_ == sandbox::mojom::Sandbox::kScreenAI ||
+      sandbox_type_ == sandbox::mojom::Sandbox::kPlatformRuntime ||
 #endif
 #if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS)
       sandbox_type_ == sandbox::mojom::Sandbox::kOnDeviceTranslation ||

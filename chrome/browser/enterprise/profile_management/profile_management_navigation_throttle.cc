@@ -32,8 +32,8 @@
 #include "content/public/browser/web_contents_user_data.h"
 #include "net/base/url_util.h"
 #include "services/data_decoder/public/cpp/data_decoder.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
 #include "ui/base/page_transition_types.h"
-#include "ui/base/window_open_disposition.h"
 #include "url/gurl.h"
 
 namespace profile_management {
@@ -203,7 +203,7 @@ void ProfileManagementNavigationThrottle::OnResponseBodyReady(
 void ProfileManagementNavigationThrottle::OnManagementDataReceived(
     const base::flat_map<std::string, std::string>& attributes) {
   const std::string navigation_host = navigation_handle()->GetURL().GetHost();
-  DCHECK(GetAttributeMap().contains(navigation_host));
+  CHECK(GetAttributeMap().contains(navigation_host), base::NotFatalUntil::M161);
   const auto profile_attributes = GetAttributeMap().at(navigation_host);
 
   if (base::FeatureList::IsEnabled(features::kEnableProfileTokenManagement) &&
@@ -255,7 +255,7 @@ void ProfileManagementNavigationThrottle::NavigateTo(const GURL& url) {
       base::BindOnce(&ProfileManagementWebContentsLifetimeHelper::OpenURL,
                      helper->GetWeakPtr(),
                      content::OpenURLParams::CreateBrowserInitiated(
-                         url, WindowOpenDisposition::CURRENT_TAB,
+                         url, ui::mojom::WindowOpenDisposition::kCurrentTab,
                          ui::PageTransition::PAGE_TRANSITION_CLIENT_REDIRECT)));
 
   // Only call `CancelDeferredNavigation()` outside of testing since it crashes

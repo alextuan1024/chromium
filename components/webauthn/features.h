@@ -26,6 +26,12 @@ extern const base::FeatureParam<std::string> kWebAuthnAndroidCredManForDevMode;
 COMPONENT_EXPORT(WEBAUTHN)
 BASE_DECLARE_FEATURE(kWebAuthnFilterSmartCardTransport);
 
+// Controls whether conditional create (automatic passkey upgrades) is
+// disallowed in Incognito mode on Android.
+// Enabled by default in M156. Can be cleaned up in or after M159.
+COMPONENT_EXPORT(WEBAUTHN)
+BASE_DECLARE_FEATURE(kWebAuthnAndroidDisallowIncognitoConditionalCreate);
+
 #endif  // BUILDFLAG(IS_ANDROID)
 
 #if !BUILDFLAG(IS_ANDROID)
@@ -37,6 +43,10 @@ BASE_DECLARE_FEATURE(kDeleteOldHiddenPasskeys);
 
 // Reject RP IDs inside the caller's public suffix.
 BASE_DECLARE_FEATURE(kRejectRpIdsInsideCallersPublicSuffix);
+
+// Gives GPM passkeys a 5-minute recency tolerance when deduplicating against
+// passwords for the same account.
+BASE_DECLARE_FEATURE(kWebAuthnGpmPasskeyRecencyTolerance);
 
 }  // namespace webauthn::features
 

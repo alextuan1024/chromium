@@ -15,7 +15,6 @@
 #include "base/test/scoped_feature_list.h"
 #include "base/values.h"
 #include "chrome/browser/signin/identity_test_environment_profile_adaptor.h"
-#include "chrome/browser/ui/webui/ash/settings/pref_names.h"
 #include "chrome/test/base/chrome_render_view_host_test_harness.h"
 #include "chrome/test/base/test_chrome_web_ui_controller_factory.h"
 #include "chromeos/ash/components/browser_context_helper/annotated_account_id.h"
@@ -365,9 +364,6 @@ class OsSyncHandlerTestWithoutSyncConsent : public OsSyncHandlerTest {
 TEST_F(
     OsSyncHandlerTestWithoutSyncConsent,
     NavigateToPageClearsSyncFeatureDisabledViaDashboardWhenFlagEnabledAndNoSyncConsent) {
-  base::test::ScopedFeatureList feature_list;
-  feature_list.InitAndEnableFeature(syncer::kReplaceSyncPromosWithSignInPromos);
-
   static_cast<syncer::TestSyncUserSettings*>(user_settings_)
       ->SetSyncFeatureDisabledViaDashboard();
   ASSERT_TRUE(user_settings_->IsSyncFeatureDisabledViaDashboard());
@@ -379,25 +375,7 @@ TEST_F(
 TEST_F(
     OsSyncHandlerTest,
     NavigateToPageDoesNotClearSyncFeatureDisabledViaDashboardWithSyncConsent) {
-  base::test::ScopedFeatureList feature_list;
-  feature_list.InitAndEnableFeature(syncer::kReplaceSyncPromosWithSignInPromos);
-
   // ConsentLevel::kSync is set by default in SetUp().
-  static_cast<syncer::TestSyncUserSettings*>(user_settings_)
-      ->SetSyncFeatureDisabledViaDashboard();
-  ASSERT_TRUE(user_settings_->IsSyncFeatureDisabledViaDashboard());
-
-  handler_->HandleDidNavigateToOsSyncPage(base::ListValue());
-  EXPECT_TRUE(user_settings_->IsSyncFeatureDisabledViaDashboard());
-}
-
-TEST_F(
-    OsSyncHandlerTestWithoutSyncConsent,
-    NavigateToPageDoesNotClearSyncFeatureDisabledViaDashboardWhenFlagDisabled) {
-  base::test::ScopedFeatureList feature_list;
-  feature_list.InitAndDisableFeature(
-      syncer::kReplaceSyncPromosWithSignInPromos);
-
   static_cast<syncer::TestSyncUserSettings*>(user_settings_)
       ->SetSyncFeatureDisabledViaDashboard();
   ASSERT_TRUE(user_settings_->IsSyncFeatureDisabledViaDashboard());

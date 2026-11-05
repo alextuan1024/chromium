@@ -39,7 +39,7 @@ public class AutofillUiUtilsTest {
 
     @Before
     public void setUp() {
-        mContext = RuntimeEnvironment.application;
+        mContext = RuntimeEnvironment.getApplication();
         mMonthInput = new EditText(mContext);
         mYearInput = new EditText(mContext);
         mThisMonth = Calendar.getInstance().get(Calendar.MONTH) + 1;
@@ -280,7 +280,7 @@ public class AutofillUiUtilsTest {
                         /* underlineLinks= */ false,
                         /* onClickCallback= */ null);
 
-        Assert.assertEquals("line1\nline2", spannableString.toString());
+        Assert.assertEquals("line1\n\nline2", spannableString.toString());
     }
 
     @Test

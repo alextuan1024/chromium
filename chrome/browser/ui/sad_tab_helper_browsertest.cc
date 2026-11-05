@@ -20,7 +20,7 @@
 #include "content/public/test/no_renderer_crashes_assertion.h"
 #include "content/public/test/test_utils.h"
 #include "net/test/embedded_test_server/embedded_test_server.h"
-#include "ui/base/window_open_disposition.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
 
 #if BUILDFLAG(IS_WIN)
 #include "base/process/process.h"
@@ -75,7 +75,7 @@ IN_PROC_BROWSER_TEST_F(
   // Open a new tab to make the first one hidden.
   ui_test_utils::NavigateToURLWithDisposition(
       browser(), GURL(url.spec() + "#2"),
-      WindowOpenDisposition::NEW_FOREGROUND_TAB,
+      ui::mojom::WindowOpenDisposition::kNewForegroundTab,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP);
 
   ASSERT_EQ(web_contents_to_kill->GetVisibility(), content::Visibility::HIDDEN);
@@ -141,6 +141,11 @@ IN_PROC_BROWSER_TEST_F(SadTabHelperBrowserTest,
           /*process_id=*/-1, /*route_id=*/-1, prefetch_url,
           blink::mojom::PrerenderTriggerType::kLinkRelPrerender,
           content::Referrer(), url::Origin::Create(prefetch_url),
+          browser()
+              ->tab_strip_model()
+              ->GetActiveWebContents()
+              ->GetPrimaryMainFrame()
+              ->GetCurrentInitiatorNavigationState(),
           gfx::Size(640, 480));
 
   content::WebContents* prefetch_web_contents =

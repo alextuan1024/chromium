@@ -16,7 +16,6 @@ static_library("settings_manager") {
     "//ash/webui/common/backend",
     "//ash/webui/eche_app_ui",
     "//base",
-    "//chrome/browser:browser_public_dependencies",
     "//chrome/browser/profiles:profile",
     "//chrome/browser/ui/webui/ash/settings/pages/device/display_settings",
     "//chrome/browser/ui/webui/ash/settings/pages/device/input_device_settings",
@@ -86,6 +85,7 @@ source_set("unit_tests") {
     "//chrome/browser/ui/webui/ash/settings/pages",
     "//chrome/browser/ui/webui/ash/settings/search",
     "//chrome/test:test_support",
+    "//chrome/test/base:testing_browser_process",
     "//chromeos/ash/components/dbus/userdataauth",
     "//chromeos/ash/components/local_search_service",
     "//chromeos/ash/components/local_search_service/public/cpp",
@@ -95,6 +95,7 @@ source_set("unit_tests") {
     "//components/account_id",
     "//components/user_manager",
     "//content/test:test_support",
+    "//services/network:test_support",
     "//testing/gtest",
     "//ui/base:test_support",
   ]

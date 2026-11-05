@@ -14,13 +14,13 @@
 #include "base/notreached.h"
 #include "base/task/sequenced_task_runner.h"
 #include "chrome/browser/pwc/pwc_api_binder.h"
-#include "chrome/browser/pwc/pwc_features.mojom-features.h"
 #include "components/back_forward_cache/back_forward_cache_disable.h"
 #include "components/back_forward_cache/disabled_reason_id.h"
 #include "content/public/browser/back_forward_cache.h"
 #include "content/public/browser/browser_context.h"
 #include "content/public/browser/file_select_listener.h"
 #include "content/public/browser/navigation_handle.h"
+#include "content/public/browser/page_navigator.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/browser/web_contents_user_data.h"
@@ -29,7 +29,9 @@
 #include "third_party/blink/public/mojom/choosers/file_chooser.mojom.h"
 #include "third_party/blink/public/mojom/mediastream/media_stream.mojom.h"
 #include "third_party/blink/public/mojom/page/draggable_region.mojom.h"
-#include "ui/base/window_open_disposition.h"
+#include "third_party/blink/public/mojom/window_features/window_features.mojom.h"
+#include "ui/base/mojom/window_open_disposition.mojom-shared.h"
+#include "url/gurl.h"
 #include "url/origin.h"
 
 namespace pwc {
@@ -118,13 +120,13 @@ WEB_CONTENTS_USER_DATA_KEY_IMPL(PrivilegedWebContentsHolder);
 std::unique_ptr<PrivilegedWebContents> PrivilegedWebContents::Create(
     PrivilegedComponent component,
     content::BrowserContext* browser_context,
-    std::unique_ptr<PwcPolicyDelegate> policy_delegate) {
-  CHECK(base::FeatureList::IsEnabled(mojom::features::kPrivilegedWebContents));
+    std::unique_ptr<PwcPolicyDelegate> policy_delegate,
+    const PwcCreateOptions& options) {
   CHECK(browser_context);
   CHECK(policy_delegate);
   // Not std::make_unique: the constructor is private.
   return base::WrapUnique(new PrivilegedWebContents(
-      component, browser_context, std::move(policy_delegate)));
+      component, browser_context, std::move(policy_delegate), options));
 }
 
 // static
@@ -184,12 +186,14 @@ PrivilegedWebContents::GetPermissionStatus(
 PrivilegedWebContents::PrivilegedWebContents(
     PrivilegedComponent component,
     content::BrowserContext* browser_context,
-    std::unique_ptr<PwcPolicyDelegate> policy_delegate)
+    std::unique_ptr<PwcPolicyDelegate> policy_delegate,
+    const PwcCreateOptions& options)
     : policy_(component, std::move(policy_delegate)),
       bridge_(std::make_unique<PwcApiBinder>()) {
   // No StoragePartitionConfig override: the WebContents lives in the
   // profile's default partition so the component shares the live cookie jar.
   content::WebContents::CreateParams params(browser_context);
+  params.initially_hidden = options.initially_hidden;
   content::WebContents::PrivilegedParams privileged_params;
   privileged_params.feature_id = policy_.content_feature_id();
   privileged_params.disallow_service_worker_control =
@@ -258,6 +262,14 @@ void PrivilegedWebContents::EmbedderDelegate::DraggableRegionsChanged(
     const std::vector<blink::mojom::DraggableRegionPtr>& regions,
     content::WebContents* contents) {}
 
+bool PrivilegedWebContents::EmbedderDelegate::HandleWindowCreation(
+    content::RenderFrameHost* opener,
+    const GURL& target_url,
+    ui::mojom::WindowOpenDisposition disposition,
+    const blink::mojom::WindowFeatures& features) {
+  return false;
+}
+
 content::PreloadingEligibility PrivilegedWebContents::IsPrerender2Supported(
     content::WebContents& web_contents,
     content::PreloadingTriggerType trigger_type) {
@@ -267,11 +279,29 @@ content::PreloadingEligibility PrivilegedWebContents::IsPrerender2Supported(
   return content::PreloadingEligibility::kPreloadingUnsupportedByWebContents;
 }
 
+content::WebContents* PrivilegedWebContents::OpenURLFromTab(
+    content::WebContents* source,
+    const content::OpenURLParams& params,
+    base::OnceCallback<void(content::NavigationHandle&)>
+        navigation_handle_callback) {
+  if (source != web_contents_.get()) {
+    return nullptr;
+  }
+  content::RenderFrameHost* rfh = content::RenderFrameHost::FromID(
+      params.source_render_process_id, params.source_render_frame_id);
+  if (!rfh) {
+    rfh = web_contents_->GetPrimaryMainFrame();
+  }
+  blink::mojom::WindowFeatures features;
+  HandleWindowCreation(rfh, params.url, params.disposition, features);
+  return nullptr;
+}
+
 content::WebContents* PrivilegedWebContents::AddNewContents(
     content::WebContents* source,
     std::unique_ptr<content::WebContents> new_contents,
     const GURL& target_url,
-    WindowOpenDisposition disposition,
+    ui::mojom::WindowOpenDisposition disposition,
     const blink::mojom::WindowFeatures& window_features,
     bool user_gesture,
     bool* was_blocked) {
@@ -400,6 +430,18 @@ void PrivilegedWebContents::DraggableRegionsChanged(
   if (embedder_delegate_) {
     embedder_delegate_->DraggableRegionsChanged(regions, contents);
   }
+}
+
+bool PrivilegedWebContents::HandleWindowCreation(
+    content::RenderFrameHost* opener,
+    const GURL& target_url,
+    ui::mojom::WindowOpenDisposition disposition,
+    const blink::mojom::WindowFeatures& features) {
+  if (embedder_delegate_) {
+    return embedder_delegate_->HandleWindowCreation(opener, target_url,
+                                                    disposition, features);
+  }
+  return false;
 }
 
 bool PrivilegedWebContents::IsPrimaryMainFrame(

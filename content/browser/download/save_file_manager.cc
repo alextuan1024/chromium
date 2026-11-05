@@ -245,7 +245,9 @@ void SaveFileManager::SaveURL(
 
   // Register a saving job.
   if (save_source == SaveFileCreateInfo::SAVE_FILE_FROM_NET) {
-    CHECK(url.is_valid(), base::NotFatalUntil::M159);
+    // TODO(crbug.com/572453593): CHECK-exclusion: Convert to a CHECK once we
+    // are confident it won't be triggered.
+    DCHECK(url.is_valid());
     // Starts the actual download.
     if (!ChildProcessSecurityPolicyImpl::GetInstance()->CanRequestURL(
             render_process_host_id, url)) {
@@ -325,8 +327,9 @@ void SaveFileManager::SaveURL(
           static_cast<RenderFrameHostImpl*>(rfh)->GetStorageKey()));
       factory = factory_remote.get();
     } else if (rfh && url.SchemeIs(content::kChromeUIScheme)) {
-      factory_remote.Bind(
-          CreateWebUIURLLoaderFactory(rfh, url.GetScheme(), {}));
+      factory_remote.Bind(CreateWebUIURLLoaderFactoryWithoutOriginLock(
+          WebUIURLLoaderFactoryPasskey::GetPassKey(), rfh, url.GetScheme(),
+          {}));
       factory = factory_remote.get();
     } else {
       factory = storage_partition->GetURLLoaderFactoryForBrowserProcess().get();
@@ -461,7 +464,9 @@ void SaveFileManager::UpdateSaveProgress(SaveItemId save_item_id,
         base::NotFatalUntil::M159);
   SaveFile* save_file = LookupSaveFile(save_item_id);
   if (save_file) {
-    CHECK(save_file->InProgress(), base::NotFatalUntil::M159);
+    // TODO(crbug.com/571537090): CHECK-exclusion: Convert to a CHECK once we
+    // are confident it won't be triggered.
+    DCHECK(save_file->InProgress());
 
     download::DownloadInterruptReason reason =
         save_file->AppendDataToFile(base::as_byte_span(data));

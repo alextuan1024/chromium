@@ -66,9 +66,10 @@
 #include "ui/accessibility/ax_action_data.h"
 #include "ui/accessibility/ax_enums.mojom.h"
 #include "ui/base/l10n/l10n_util.h"
+#include "ui/base/mojom/window_open_disposition.mojom-shared.h"
 #include "ui/base/page_transition_types.h"
-#include "ui/base/window_open_disposition.h"
 #include "ui/events/test/test_event.h"
+#include "ui/views/bubble/bubble_dialog_delegate_view.h"
 #include "ui/views/test/widget_test.h"
 #include "ui/views/widget/widget.h"
 #include "ui/views/widget/widget_observer.h"
@@ -115,9 +116,9 @@ std::string GetInteractionHistogram(const char* name) {
 // This function waits for safety tip checks to complete.
 void NavigateToURL(BrowserWindowInterface* browser,
                    const GURL& url,
-                   WindowOpenDisposition disposition) {
+                   ui::mojom::WindowOpenDisposition disposition) {
   // If we plan to use an existing tab, ensure that it's latch is reset.
-  if (disposition == WindowOpenDisposition::CURRENT_TAB) {
+  if (disposition == ui::mojom::WindowOpenDisposition::kCurrentTab) {
     content::WebContents* contents =
         browser->GetTabStripModel()->GetActiveWebContents();
     // Null web contents happen when you first create an incognito browser,
@@ -131,7 +132,7 @@ void NavigateToURL(BrowserWindowInterface* browser,
   // Otherwise*, we're creating a new tab and we don't need to do anything.
   // (* Unless we're using SWITCH_TO_TAB. Then the above code will fetch the
   //    wrong tab, so we forbid it since we don't presently need it.)
-  CHECK_NE(disposition, WindowOpenDisposition::SWITCH_TO_TAB);
+  CHECK_NE(disposition, ui::mojom::WindowOpenDisposition::kSwitchToTab);
 
   // Now actually navigate.
   NavigateParams params(browser, url, ui::PAGE_TRANSITION_LINK);
@@ -160,17 +161,19 @@ void PerformMouseClickOnView(views::View* view) {
   view->HandleAccessibleAction(data);
 }
 
-bool IsUIShowing() {
+bool IsUIShowing(content::WebContents* web_contents) {
   return PageInfoBubbleViewBase::BUBBLE_SAFETY_TIP ==
-         PageInfoBubbleViewBase::GetShownBubbleType();
+         PageInfoBubbleViewBase::GetShownBubbleTypeForTesting(web_contents);
 }
 
-void CloseWarningIgnore(views::Widget::ClosedReason reason) {
-  if (!PageInfoBubbleViewBase::GetPageInfoBubbleForTesting()) {
+void CloseWarningIgnore(content::WebContents* web_contents,
+                        views::Widget::ClosedReason reason) {
+  if (!PageInfoBubbleViewBase::GetPageInfoBubbleForTesting(web_contents)) {
     return;
   }
   auto* widget =
-      PageInfoBubbleViewBase::GetPageInfoBubbleForTesting()->GetWidget();
+      PageInfoBubbleViewBase::GetPageInfoBubbleForTesting(web_contents)
+          ->GetWidget();
   views::test::WidgetDestroyedWaiter waiter(widget);
   widget->CloseWithReason(reason);
   waiter.Wait();
@@ -194,7 +197,8 @@ void SetEngagementScore(BrowserWindowInterface* browser,
 void OpenPageInfoBubble(BrowserWindowInterface* browser) {
   LocationIconTestAccessor(browser).ShowBubble();
   views::BubbleDialogDelegateView* page_info =
-      PageInfoBubbleViewBase::GetPageInfoBubbleForTesting();
+      PageInfoBubbleViewBase::GetPageInfoBubbleForTesting(
+          browser->GetTabStripModel()->GetActiveWebContents());
   EXPECT_NE(nullptr, page_info);
   page_info->set_close_on_deactivate(false);
 }
@@ -294,39 +298,62 @@ class SafetyTipPageInfoBubbleViewBrowserTest : public InProcessBrowserTest {
     return GetURL(hostname).GetWithEmptyPath();
   }
 
-  void ClickLeaveButton() {
+  content::WebContents* web_contents() {
+    return browser()->GetTabStripModel()->GetActiveWebContents();
+  }
+
+  bool IsUIShowing(content::WebContents* contents = nullptr) {
+    return ::IsUIShowing(contents ? contents : web_contents());
+  }
+
+  void CloseWarningIgnore(views::Widget::ClosedReason reason) {
+    ::CloseWarningIgnore(web_contents(), reason);
+  }
+
+  void ClickLeaveButton(content::WebContents* contents = nullptr) {
     // This class is a friend to SafetyTipPageInfoBubbleView.
     auto* bubble = static_cast<SafetyTipPageInfoBubbleView*>(
-        PageInfoBubbleViewBase::GetPageInfoBubbleForTesting());
+        PageInfoBubbleViewBase::GetPageInfoBubbleForTesting(
+            contents ? contents : web_contents()));
     PerformMouseClickOnView(bubble->GetLeaveButtonForTesting());
   }
 
-  void ClickLearnMoreLink() {
+  void ClickLearnMoreLink(content::WebContents* contents = nullptr) {
     // This class is a friend to SafetyTipPageInfoBubbleView.
     auto* bubble = static_cast<SafetyTipPageInfoBubbleView*>(
-        PageInfoBubbleViewBase::GetPageInfoBubbleForTesting());
+        PageInfoBubbleViewBase::GetPageInfoBubbleForTesting(
+            contents ? contents : web_contents()));
     bubble->OpenHelpCenter();
   }
 
   void CheckNoButtons() {
     auto* bubble = static_cast<SafetyTipPageInfoBubbleView*>(
-        PageInfoBubbleViewBase::GetPageInfoBubbleForTesting());
+        PageInfoBubbleViewBase::GetPageInfoBubbleForTesting(web_contents()));
     EXPECT_FALSE(bubble->info_link_);
     EXPECT_FALSE(bubble->leave_button_);
   }
 
-  void CloseWarningLeaveSite(BrowserWindowInterface* browser) {
+  void CloseWarningLeaveSite(content::WebContents* contents = nullptr) {
     // Wait for a Safety Tip bubble to be destroyed. Navigating away from a page
     // with a safety tip destroys the safety tip, but waiting for the navigation
     // to complete is racy.
+    auto* target_contents = contents ? contents : web_contents();
     views::test::WidgetDestroyedWaiter waiter(
-        PageInfoBubbleViewBase::GetPageInfoBubbleForTesting()->GetWidget());
-    ClickLeaveButton();
+        PageInfoBubbleViewBase::GetPageInfoBubbleForTesting(target_contents)
+            ->GetWidget());
+    ClickLeaveButton(target_contents);
     waiter.Wait();
   }
 
-  std::u16string GetSafetyTipSummaryText() {
-    auto* page_info = PageInfoBubbleView::GetPageInfoBubbleForTesting();
+  void CloseWarningLeaveSite(BrowserWindowInterface* browser) {
+    CloseWarningLeaveSite(browser->GetTabStripModel()->GetActiveWebContents());
+  }
+
+  std::u16string GetSafetyTipSummaryText(
+      BrowserWindowInterface* browser = nullptr) {
+    auto* target_browser = browser ? browser : this->browser();
+    auto* page_info = PageInfoBubbleView::GetPageInfoBubbleForTesting(
+        target_browser->GetTabStripModel()->GetActiveWebContents());
     auto* summary_label = page_info->GetViewByID(
         PageInfoViewFactory::VIEW_ID_PAGE_INFO_SECURITY_SUMMARY_LABEL);
     return static_cast<views::StyledLabel*>(summary_label)->GetText();
@@ -337,15 +364,17 @@ class SafetyTipPageInfoBubbleViewBrowserTest : public InProcessBrowserTest {
       security_state::SafetyTipStatus expected_safety_tip_status,
       const GURL& expected_safe_url) {
     OpenPageInfoBubble(browser);
-    ASSERT_EQ(PageInfoBubbleViewBase::GetShownBubbleType(),
+    ASSERT_EQ(PageInfoBubbleViewBase::GetShownBubbleTypeForTesting(
+                  browser->GetTabStripModel()->GetActiveWebContents()),
               PageInfoBubbleViewBase::BubbleType::BUBBLE_PAGE_INFO);
-    auto* page_info = PageInfoBubbleViewBase::GetPageInfoBubbleForTesting();
+    auto* page_info = PageInfoBubbleViewBase::GetPageInfoBubbleForTesting(
+        browser->GetTabStripModel()->GetActiveWebContents());
     ASSERT_TRUE(page_info);
 
     switch (expected_safety_tip_status) {
       case security_state::SafetyTipStatus::kLookalike:
       case security_state::SafetyTipStatus::kLookalikeIgnored:
-        EXPECT_EQ(GetSafetyTipSummaryText(),
+        EXPECT_EQ(GetSafetyTipSummaryText(browser),
                   l10n_util::GetStringFUTF16(
                       IDS_PAGE_INFO_SAFETY_TIP_LOOKALIKE_TITLE,
                       security_interstitials::common_string_util::
@@ -368,14 +397,16 @@ class SafetyTipPageInfoBubbleViewBrowserTest : public InProcessBrowserTest {
   void CheckPageInfoDoesNotShowSafetyTipInfo(BrowserWindowInterface* browser) {
     OpenPageInfoBubble(browser);
     auto* page_info = static_cast<PageInfoBubbleViewBase*>(
-        PageInfoBubbleViewBase::GetPageInfoBubbleForTesting());
+        PageInfoBubbleViewBase::GetPageInfoBubbleForTesting(
+            browser->GetTabStripModel()->GetActiveWebContents()));
     ASSERT_TRUE(page_info);
     EXPECT_TRUE(
-        GetSafetyTipSummaryText() ==
+        GetSafetyTipSummaryText(browser) ==
             l10n_util::GetStringUTF16(IDS_PAGE_INFO_NOT_SECURE_SUMMARY) ||
-        GetSafetyTipSummaryText() ==
+        GetSafetyTipSummaryText(browser) ==
             l10n_util::GetStringUTF16(IDS_PAGE_INFO_INTERNAL_PAGE));
-    if (PageInfoBubbleViewBase::GetShownBubbleType() ==
+    if (PageInfoBubbleViewBase::GetShownBubbleTypeForTesting(
+            browser->GetTabStripModel()->GetActiveWebContents()) ==
         PageInfoBubbleViewBase::BubbleType::BUBBLE_PAGE_INFO) {
       content::WebContentsAddedObserver new_tab_observer;
       static_cast<views::StyledLabel*>(
@@ -426,7 +457,8 @@ IN_PROC_BROWSER_TEST_F(SafetyTipPageInfoBubbleViewBrowserTest,
                        NoShowOnLowEngagement) {
   auto kNavigatedUrl = GetURL("site1.com");
   SetEngagementScore(browser(), kNavigatedUrl, kLowEngagement);
-  NavigateToURL(browser(), kNavigatedUrl, WindowOpenDisposition::CURRENT_TAB);
+  NavigateToURL(browser(), kNavigatedUrl,
+                ui::mojom::WindowOpenDisposition::kCurrentTab);
   EXPECT_FALSE(IsUIShowing());
 
   ASSERT_NO_FATAL_FAILURE(CheckPageInfoDoesNotShowSafetyTipInfo(browser()));
@@ -443,8 +475,9 @@ IN_PROC_BROWSER_TEST_F(SafetyTipPageInfoBubbleViewBrowserTest,
   auto kNavigatedUrl = GetURL("site1.com");
   SetEngagementScore(incognito_browser, kNavigatedUrl, kLowEngagement);
   NavigateToURL(incognito_browser, kNavigatedUrl,
-                WindowOpenDisposition::CURRENT_TAB);
-  EXPECT_FALSE(IsUIShowing());
+                ui::mojom::WindowOpenDisposition::kCurrentTab);
+  EXPECT_FALSE(IsUIShowing(
+      incognito_browser->GetTabStripModel()->GetActiveWebContents()));
 
   ASSERT_NO_FATAL_FAILURE(
       CheckPageInfoDoesNotShowSafetyTipInfo(incognito_browser));
@@ -457,7 +490,8 @@ IN_PROC_BROWSER_TEST_F(SafetyTipPageInfoBubbleViewBrowserTest,
   const GURL kNavigatedUrl = GetURL("accounts-google.com");
 
   SetEngagementScore(browser(), kNavigatedUrl, kHighEngagement);
-  NavigateToURL(browser(), kNavigatedUrl, WindowOpenDisposition::CURRENT_TAB);
+  NavigateToURL(browser(), kNavigatedUrl,
+                ui::mojom::WindowOpenDisposition::kCurrentTab);
   EXPECT_FALSE(IsUIShowing());
 
   ASSERT_NO_FATAL_FAILURE(CheckPageInfoDoesNotShowSafetyTipInfo(browser()));
@@ -474,8 +508,9 @@ IN_PROC_BROWSER_TEST_F(SafetyTipPageInfoBubbleViewBrowserTest,
   const GURL kNavigatedUrl = GetURL("accounts-google.com");
   SetEngagementScore(incognito_browser, kNavigatedUrl, kHighEngagement);
   NavigateToURL(incognito_browser, kNavigatedUrl,
-                WindowOpenDisposition::CURRENT_TAB);
-  EXPECT_FALSE(IsUIShowing());
+                ui::mojom::WindowOpenDisposition::kCurrentTab);
+  EXPECT_FALSE(IsUIShowing(
+      incognito_browser->GetTabStripModel()->GetActiveWebContents()));
 
   ASSERT_NO_FATAL_FAILURE(
       CheckPageInfoDoesNotShowSafetyTipInfo(incognito_browser));
@@ -486,7 +521,8 @@ IN_PROC_BROWSER_TEST_F(SafetyTipPageInfoBubbleViewBrowserTest,
 IN_PROC_BROWSER_TEST_F(SafetyTipPageInfoBubbleViewBrowserTest, ShowOnBlock) {
   auto kNavigatedUrl = GetURL("accounts-google.com");
   SetEngagementScore(browser(), kNavigatedUrl, kLowEngagement);
-  NavigateToURL(browser(), kNavigatedUrl, WindowOpenDisposition::CURRENT_TAB);
+  NavigateToURL(browser(), kNavigatedUrl,
+                ui::mojom::WindowOpenDisposition::kCurrentTab);
   EXPECT_TRUE(IsUIShowing());
 
   ASSERT_NO_FATAL_FAILURE(CheckPageInfoShowsSafetyTipInfo(
@@ -495,7 +531,7 @@ IN_PROC_BROWSER_TEST_F(SafetyTipPageInfoBubbleViewBrowserTest, ShowOnBlock) {
 
   // Navigate away to record UKM.
   NavigateToURL(browser(), GURL("about:blank"),
-                WindowOpenDisposition::CURRENT_TAB);
+                ui::mojom::WindowOpenDisposition::kCurrentTab);
   EXPECT_FALSE(IsUIShowing());
   test_helper()->CheckSafetyTipUkmCount(1);
   test_helper()->CheckInterstitialUkmCount(0);
@@ -506,7 +542,8 @@ IN_PROC_BROWSER_TEST_F(SafetyTipPageInfoBubbleViewBrowserTest, NoShowOnError) {
   auto kNavigatedUrl =
       embedded_test_server()->GetURL("accounts-google.com", "/close-socket");
   SetEngagementScore(browser(), kNavigatedUrl, kLowEngagement);
-  NavigateToURL(browser(), kNavigatedUrl, WindowOpenDisposition::CURRENT_TAB);
+  NavigateToURL(browser(), kNavigatedUrl,
+                ui::mojom::WindowOpenDisposition::kCurrentTab);
   EXPECT_FALSE(IsUIShowing());
 
   ASSERT_NO_FATAL_FAILURE(CheckPageInfoDoesNotShowSafetyTipInfo(browser()));
@@ -524,8 +561,9 @@ IN_PROC_BROWSER_TEST_F(SafetyTipPageInfoBubbleViewBrowserTest,
                                     /*create_if_needed=*/true),
                                 /*from_user_gesture=*/true));
   NavigateToURL(incognito_browser, kNavigatedUrl,
-                WindowOpenDisposition::CURRENT_TAB);
-  EXPECT_TRUE(IsUIShowing());
+                ui::mojom::WindowOpenDisposition::kCurrentTab);
+  EXPECT_TRUE(IsUIShowing(
+      incognito_browser->GetTabStripModel()->GetActiveWebContents()));
 
   ASSERT_NO_FATAL_FAILURE(CheckPageInfoShowsSafetyTipInfo(
       incognito_browser, security_state::SafetyTipStatus::kLookalike,
@@ -533,8 +571,9 @@ IN_PROC_BROWSER_TEST_F(SafetyTipPageInfoBubbleViewBrowserTest,
 
   // Navigate away to record UKM. Incognito doesn't record UKM.
   NavigateToURL(incognito_browser, GURL("about:blank"),
-                WindowOpenDisposition::CURRENT_TAB);
-  EXPECT_FALSE(IsUIShowing());
+                ui::mojom::WindowOpenDisposition::kCurrentTab);
+  EXPECT_FALSE(IsUIShowing(
+      incognito_browser->GetTabStripModel()->GetActiveWebContents()));
   test_helper()->CheckNoLookalikeUkm();
 }
 
@@ -544,12 +583,13 @@ IN_PROC_BROWSER_TEST_F(SafetyTipPageInfoBubbleViewBrowserTest,
                        StillShowAfterSameDocNav) {
   auto kNavigatedUrl = GetURL("accounts-google.com");
   SetEngagementScore(browser(), kNavigatedUrl, kLowEngagement);
-  NavigateToURL(browser(), kNavigatedUrl, WindowOpenDisposition::CURRENT_TAB);
+  NavigateToURL(browser(), kNavigatedUrl,
+                ui::mojom::WindowOpenDisposition::kCurrentTab);
   EXPECT_TRUE(IsUIShowing());
 
   // Now generate a same-document navigation and verify the tip is still there.
   NavigateToURL(browser(), GURL(kNavigatedUrl.spec() + "#fragment"),
-                WindowOpenDisposition::CURRENT_TAB);
+                ui::mojom::WindowOpenDisposition::kCurrentTab);
   EXPECT_TRUE(IsUIShowing());
 
   ASSERT_NO_FATAL_FAILURE(CheckPageInfoShowsSafetyTipInfo(
@@ -558,7 +598,7 @@ IN_PROC_BROWSER_TEST_F(SafetyTipPageInfoBubbleViewBrowserTest,
 
   // Navigate away to record metrics.
   NavigateToURL(browser(), GURL("about:blank"),
-                WindowOpenDisposition::CURRENT_TAB);
+                ui::mojom::WindowOpenDisposition::kCurrentTab);
   test_helper()->CheckSafetyTipUkmCount(1);
   test_helper()->CheckInterstitialUkmCount(0);
 }
@@ -577,7 +617,8 @@ IN_PROC_BROWSER_TEST_F(SafetyTipPageInfoBubbleViewBrowserTest,
       {"accounts1-google.com", "bla.accounts2-google.com", "g0ogle.com"});
 
   for (auto* const url : kUrls) {
-    NavigateToURL(browser(), GetURL(url), WindowOpenDisposition::CURRENT_TAB);
+    NavigateToURL(browser(), GetURL(url),
+                  ui::mojom::WindowOpenDisposition::kCurrentTab);
     EXPECT_FALSE(IsUIShowing());
     ASSERT_NO_FATAL_FAILURE(CheckPageInfoDoesNotShowSafetyTipInfo(browser()));
   }
@@ -592,7 +633,8 @@ IN_PROC_BROWSER_TEST_F(SafetyTipPageInfoBubbleViewBrowserTest,
                        LeaveSiteLeavesSite) {
   const GURL kNavigatedUrl = GetURL("accounts-google.com");
   SetEngagementScore(browser(), kNavigatedUrl, kLowEngagement);
-  NavigateToURL(browser(), kNavigatedUrl, WindowOpenDisposition::CURRENT_TAB);
+  NavigateToURL(browser(), kNavigatedUrl,
+                ui::mojom::WindowOpenDisposition::kCurrentTab);
   ASSERT_TRUE(IsUIShowing());
 
   CloseWarningLeaveSite(browser());
@@ -613,16 +655,18 @@ IN_PROC_BROWSER_TEST_F(SafetyTipPageInfoBubbleViewBrowserTest,
                        LearnMoreOpensHelpCenter) {
   const GURL kNavigatedUrl = GetURL("accounts-google.com");
   SetEngagementScore(browser(), kNavigatedUrl, kLowEngagement);
-  NavigateToURL(browser(), kNavigatedUrl, WindowOpenDisposition::CURRENT_TAB);
+  NavigateToURL(browser(), kNavigatedUrl,
+                ui::mojom::WindowOpenDisposition::kCurrentTab);
   ASSERT_TRUE(IsUIShowing());
 
+  content::WebContents* initial_contents = web_contents();
   content::WebContentsAddedObserver new_tab_observer;
   ClickLearnMoreLink();
   EXPECT_NE(kNavigatedUrl,
             new_tab_observer.GetWebContents()->GetLastCommittedURL());
 
-  CloseWarningLeaveSite(browser());
-  EXPECT_FALSE(IsUIShowing());
+  CloseWarningLeaveSite(initial_contents);
+  EXPECT_FALSE(IsUIShowing(initial_contents));
   test_helper()->CheckSafetyTipUkmCount(1);
   test_helper()->CheckInterstitialUkmCount(0);
 }
@@ -635,11 +679,13 @@ IN_PROC_BROWSER_TEST_F(SafetyTipPageInfoBubbleViewBrowserTest,
                        DISABLED_LeaveSiteStillWarnsAfter) {
   const GURL kNavigatedUrl = GetURL("accounts-google.com");
   SetEngagementScore(browser(), kNavigatedUrl, kLowEngagement);
-  NavigateToURL(browser(), kNavigatedUrl, WindowOpenDisposition::CURRENT_TAB);
+  NavigateToURL(browser(), kNavigatedUrl,
+                ui::mojom::WindowOpenDisposition::kCurrentTab);
 
   CloseWarningLeaveSite(browser());
 
-  NavigateToURL(browser(), kNavigatedUrl, WindowOpenDisposition::CURRENT_TAB);
+  NavigateToURL(browser(), kNavigatedUrl,
+                ui::mojom::WindowOpenDisposition::kCurrentTab);
 
   EXPECT_TRUE(IsUIShowing());
   EXPECT_EQ(kNavigatedUrl, browser()
@@ -660,7 +706,8 @@ IN_PROC_BROWSER_TEST_F(SafetyTipPageInfoBubbleViewBrowserTest,
                        IgnoreWarningStaysOnPage) {
   const GURL kNavigatedUrl = GetURL("accounts-google.com");
   SetEngagementScore(browser(), kNavigatedUrl, kLowEngagement);
-  NavigateToURL(browser(), kNavigatedUrl, WindowOpenDisposition::CURRENT_TAB);
+  NavigateToURL(browser(), kNavigatedUrl,
+                ui::mojom::WindowOpenDisposition::kCurrentTab);
 
   CloseWarningIgnore(views::Widget::ClosedReason::kCloseButtonClicked);
   EXPECT_FALSE(IsUIShowing());
@@ -683,11 +730,13 @@ IN_PROC_BROWSER_TEST_F(SafetyTipPageInfoBubbleViewBrowserTest,
                        IgnoreWarningStopsWarning) {
   const GURL kNavigatedUrl = GetURL("accounts-google.com");
   SetEngagementScore(browser(), kNavigatedUrl, kLowEngagement);
-  NavigateToURL(browser(), kNavigatedUrl, WindowOpenDisposition::CURRENT_TAB);
+  NavigateToURL(browser(), kNavigatedUrl,
+                ui::mojom::WindowOpenDisposition::kCurrentTab);
 
   CloseWarningIgnore(views::Widget::ClosedReason::kCloseButtonClicked);
 
-  NavigateToURL(browser(), kNavigatedUrl, WindowOpenDisposition::CURRENT_TAB);
+  NavigateToURL(browser(), kNavigatedUrl,
+                ui::mojom::WindowOpenDisposition::kCurrentTab);
   EXPECT_FALSE(IsUIShowing());
   EXPECT_EQ(kNavigatedUrl, browser()
                                ->GetTabStripModel()
@@ -712,7 +761,8 @@ IN_PROC_BROWSER_TEST_F(SafetyTipPageInfoBubbleViewBrowserTest,
       embedded_test_server()->GetURL("b.com", "/title1.html");
   SetEngagementScore(browser(), kNavigatedUrl, kLowEngagement);
 
-  NavigateToURL(browser(), kNavigatedUrl, WindowOpenDisposition::CURRENT_TAB);
+  NavigateToURL(browser(), kNavigatedUrl,
+                ui::mojom::WindowOpenDisposition::kCurrentTab);
   EXPECT_TRUE(IsUIShowing());
 
   ASSERT_NO_FATAL_FAILURE(CheckPageInfoShowsSafetyTipInfo(
@@ -733,7 +783,7 @@ IN_PROC_BROWSER_TEST_F(SafetyTipPageInfoBubbleViewBrowserTest,
   const GURL kNavigatedUrl = GetURL("accounts-google.com");
   SetEngagementScore(browser(), kNavigatedUrl, kLowEngagement);
   NavigateToURL(browser(), kNavigatedUrl,
-                WindowOpenDisposition::NEW_BACKGROUND_TAB);
+                ui::mojom::WindowOpenDisposition::kNewBackgroundTab);
   EXPECT_FALSE(IsUIShowing());
 
   SwitchToTabAndWait(browser(),
@@ -752,7 +802,7 @@ IN_PROC_BROWSER_TEST_F(SafetyTipPageInfoBubbleViewBrowserTest,
       embedded_test_server()->GetURL("accounts-google.com", "/close-socket");
   SetEngagementScore(browser(), kNavigatedUrl, kLowEngagement);
   NavigateToURL(browser(), kNavigatedUrl,
-                WindowOpenDisposition::NEW_BACKGROUND_TAB);
+                ui::mojom::WindowOpenDisposition::kNewBackgroundTab);
   EXPECT_FALSE(IsUIShowing());
 
   SwitchToTabAndWait(browser(),
@@ -769,12 +819,13 @@ IN_PROC_BROWSER_TEST_F(SafetyTipPageInfoBubbleViewBrowserTest,
                        SkipLookalikeInterstitialed) {
   const GURL kNavigatedUrl = GetURL("googlé.com");
   SetEngagementScore(browser(), kNavigatedUrl, kLowEngagement);
-  NavigateToURL(browser(), kNavigatedUrl, WindowOpenDisposition::CURRENT_TAB);
+  NavigateToURL(browser(), kNavigatedUrl,
+                ui::mojom::WindowOpenDisposition::kCurrentTab);
   EXPECT_FALSE(IsUIShowing());
 
   // Navigate away so that the interstitial records UKM.
   NavigateToURL(browser(), GURL("about:blank"),
-                WindowOpenDisposition::CURRENT_TAB);
+                ui::mojom::WindowOpenDisposition::kCurrentTab);
 
   test_helper()->CheckSafetyTipUkmCount(0);
   test_helper()->CheckInterstitialUkmCount(1);
@@ -786,7 +837,8 @@ IN_PROC_BROWSER_TEST_F(SafetyTipPageInfoBubbleViewBrowserTest,
                        TriggersOnLookalike) {
   const GURL kNavigatedUrl = GetURL("accounts-google.com");
   SetEngagementScore(browser(), kNavigatedUrl, kLowEngagement);
-  NavigateToURL(browser(), kNavigatedUrl, WindowOpenDisposition::CURRENT_TAB);
+  NavigateToURL(browser(), kNavigatedUrl,
+                ui::mojom::WindowOpenDisposition::kCurrentTab);
   EXPECT_TRUE(IsUIShowing());
 
   ASSERT_NO_FATAL_FAILURE(CheckPageInfoShowsSafetyTipInfo(
@@ -796,7 +848,7 @@ IN_PROC_BROWSER_TEST_F(SafetyTipPageInfoBubbleViewBrowserTest,
 
   // Navigate away so that the safety tip bubble records UKM.
   NavigateToURL(browser(), GURL("about:blank"),
-                WindowOpenDisposition::CURRENT_TAB);
+                ui::mojom::WindowOpenDisposition::kCurrentTab);
 
   test_helper()->CheckSafetyTipUkmCount(1);
   test_helper()->CheckInterstitialUkmCount(0);
@@ -809,15 +861,18 @@ IN_PROC_BROWSER_TEST_F(SafetyTipPageInfoBubbleViewBrowserTest,
   // Ensure a Safety Tip is triggered initially...
   const GURL kNavigatedUrl = GetURL("accounts-google.com");
   SetEngagementScore(browser(), kNavigatedUrl, kLowEngagement);
-  NavigateToURL(browser(), kNavigatedUrl, WindowOpenDisposition::CURRENT_TAB);
+  NavigateToURL(browser(), kNavigatedUrl,
+                ui::mojom::WindowOpenDisposition::kCurrentTab);
   EXPECT_TRUE(IsUIShowing());
 
   // ...but suppressed by the allowlist.
   views::test::WidgetDestroyedWaiter waiter(
-      PageInfoBubbleViewBase::GetPageInfoBubbleForTesting()->GetWidget());
+      PageInfoBubbleViewBase::GetPageInfoBubbleForTesting(web_contents())
+          ->GetWidget());
   lookalikes::SetSafetyTipAllowlistPatterns({"accounts-google.com/"}, {}, {});
   SetEngagementScore(browser(), kNavigatedUrl, kLowEngagement);
-  NavigateToURL(browser(), kNavigatedUrl, WindowOpenDisposition::CURRENT_TAB);
+  NavigateToURL(browser(), kNavigatedUrl,
+                ui::mojom::WindowOpenDisposition::kCurrentTab);
   waiter.Wait();
 
   EXPECT_FALSE(IsUIShowing());
@@ -842,7 +897,8 @@ IN_PROC_BROWSER_TEST_F(SafetyTipPageInfoBubbleViewBrowserTest,
   lookalikes::SetSafetyTipAllowlistPatterns({}, {"google\\.com"}, {});
   SetEngagementScore(browser(), kNavigatedUrl, kLowEngagement);
 
-  NavigateToURL(browser(), kNavigatedUrl, WindowOpenDisposition::CURRENT_TAB);
+  NavigateToURL(browser(), kNavigatedUrl,
+                ui::mojom::WindowOpenDisposition::kCurrentTab);
   EXPECT_FALSE(IsUIShowing());
   ASSERT_NO_FATAL_FAILURE(CheckPageInfoDoesNotShowSafetyTipInfo(browser()));
 
@@ -857,7 +913,8 @@ IN_PROC_BROWSER_TEST_F(SafetyTipPageInfoBubbleViewBrowserTest,
   const GURL kTargetUrl = GetURL("google.com");
   SetEngagementScore(browser(), kNavigatedUrl, kLowEngagement);
   SetEngagementScore(browser(), kTargetUrl, kHighEngagement);
-  NavigateToURL(browser(), kNavigatedUrl, WindowOpenDisposition::CURRENT_TAB);
+  NavigateToURL(browser(), kNavigatedUrl,
+                ui::mojom::WindowOpenDisposition::kCurrentTab);
   EXPECT_TRUE(IsUIShowing());
   test_helper()->CheckNoLookalikeUkm();
 
@@ -876,7 +933,8 @@ IN_PROC_BROWSER_TEST_F(SafetyTipPageInfoBubbleViewBrowserTest,
   ConfigureAllowlistWithScopes();
   SetEngagementScore(browser(), kNavigatedUrl, kLowEngagement);
   SetEngagementScore(browser(), kTargetUrl, kHighEngagement);
-  NavigateToURL(browser(), kNavigatedUrl, WindowOpenDisposition::CURRENT_TAB);
+  NavigateToURL(browser(), kNavigatedUrl,
+                ui::mojom::WindowOpenDisposition::kCurrentTab);
   EXPECT_FALSE(IsUIShowing());
   ASSERT_NO_FATAL_FAILURE(CheckPageInfoDoesNotShowSafetyTipInfo(browser()));
 
@@ -895,7 +953,8 @@ IN_PROC_BROWSER_TEST_F(SafetyTipPageInfoBubbleViewBrowserTest,
   ConfigureAllowlistWithScopes();
   SetEngagementScore(browser(), kNavigatedUrl, kLowEngagement);
   SetEngagementScore(browser(), kTargetUrl, kHighEngagement);
-  NavigateToURL(browser(), kNavigatedUrl, WindowOpenDisposition::CURRENT_TAB);
+  NavigateToURL(browser(), kNavigatedUrl,
+                ui::mojom::WindowOpenDisposition::kCurrentTab);
   EXPECT_TRUE(IsUIShowing());
   test_helper()->CheckNoLookalikeUkm();
 
@@ -911,7 +970,8 @@ IN_PROC_BROWSER_TEST_F(SafetyTipPageInfoBubbleViewBrowserTest,
   const GURL kTargetUrl = GetURL("character-swap.com");
   SetEngagementScore(browser(), kNavigatedUrl, kLowEngagement);
   SetEngagementScore(browser(), kTargetUrl, kHighEngagement);
-  NavigateToURL(browser(), kNavigatedUrl, WindowOpenDisposition::CURRENT_TAB);
+  NavigateToURL(browser(), kNavigatedUrl,
+                ui::mojom::WindowOpenDisposition::kCurrentTab);
   EXPECT_TRUE(IsUIShowing());
   test_helper()->CheckSafetyTipUkmCount(0);
 
@@ -930,7 +990,8 @@ IN_PROC_BROWSER_TEST_F(SafetyTipPageInfoBubbleViewBrowserTest,
   const GURL kTargetUrl = GetURL("example.com");
   SetEngagementScore(browser(), kNavigatedUrl, kLowEngagement);
   SetEngagementScore(browser(), kTargetUrl, kHighEngagement);
-  NavigateToURL(browser(), kNavigatedUrl, WindowOpenDisposition::CURRENT_TAB);
+  NavigateToURL(browser(), kNavigatedUrl,
+                ui::mojom::WindowOpenDisposition::kCurrentTab);
   EXPECT_TRUE(IsUIShowing());
   test_helper()->CheckNoLookalikeUkm();
 
@@ -950,7 +1011,8 @@ IN_PROC_BROWSER_TEST_F(SafetyTipPageInfoBubbleViewBrowserTest,
   // Both the lookalike and the target have low engagement.
   SetEngagementScore(browser(), kNavigatedUrl, kLowEngagement);
   SetEngagementScore(browser(), kTargetUrl, kLowEngagement);
-  NavigateToURL(browser(), kNavigatedUrl, WindowOpenDisposition::CURRENT_TAB);
+  NavigateToURL(browser(), kNavigatedUrl,
+                ui::mojom::WindowOpenDisposition::kCurrentTab);
   EXPECT_TRUE(IsUIShowing());
   test_helper()->CheckNoLookalikeUkm();
 
@@ -970,7 +1032,8 @@ IN_PROC_BROWSER_TEST_F(SafetyTipPageInfoBubbleViewBrowserTest,
   const GURL kTargetUrl = GetURL("digital.gov");
   SetEngagementScore(browser(), kNavigatedUrl, kLowEngagement);
   SetEngagementScore(browser(), kTargetUrl, kHighEngagement);
-  NavigateToURL(browser(), kNavigatedUrl, WindowOpenDisposition::CURRENT_TAB);
+  NavigateToURL(browser(), kNavigatedUrl,
+                ui::mojom::WindowOpenDisposition::kCurrentTab);
   EXPECT_FALSE(IsUIShowing());
 
   histograms.ExpectTotalCount(kInterstitialHistogramName, 0);
@@ -992,7 +1055,8 @@ IN_PROC_BROWSER_TEST_F(
   // considered for lookalike suggestions.
   SetEngagementScore(browser(), kNavigatedUrl, kLowEngagement);
 
-  NavigateToURL(browser(), kNavigatedUrl, WindowOpenDisposition::CURRENT_TAB);
+  NavigateToURL(browser(), kNavigatedUrl,
+                ui::mojom::WindowOpenDisposition::kCurrentTab);
 
   // Make sure that the UI is not showing, and that no metric has been
   // recorded.
@@ -1009,7 +1073,8 @@ IN_PROC_BROWSER_TEST_F(SafetyTipPageInfoBubbleViewBrowserTest,
   // Tail-embedding has the canonical domain at the very end of the lookalike.
   const GURL kNavigatedUrl = GetURL("accounts-google.com");
   SetEngagementScore(browser(), kNavigatedUrl, kLowEngagement);
-  NavigateToURL(browser(), kNavigatedUrl, WindowOpenDisposition::CURRENT_TAB);
+  NavigateToURL(browser(), kNavigatedUrl,
+                ui::mojom::WindowOpenDisposition::kCurrentTab);
   EXPECT_TRUE(IsUIShowing());
 
   CloseWarningLeaveSite(browser());
@@ -1024,7 +1089,8 @@ IN_PROC_BROWSER_TEST_F(SafetyTipPageInfoBubbleViewBrowserTest,
                        DoesntTriggersOnGenericTargetEmbedding) {
   const GURL kNavigatedUrl = GetURL("google.com.evil.com");
   SetEngagementScore(browser(), kNavigatedUrl, kLowEngagement);
-  NavigateToURL(browser(), kNavigatedUrl, WindowOpenDisposition::CURRENT_TAB);
+  NavigateToURL(browser(), kNavigatedUrl,
+                ui::mojom::WindowOpenDisposition::kCurrentTab);
   EXPECT_FALSE(IsUIShowing());
 
   test_helper()->CheckNoLookalikeUkm();
@@ -1038,13 +1104,15 @@ IN_PROC_BROWSER_TEST_F(SafetyTipPageInfoBubbleViewBrowserTest,
 
   auto kNavigatedUrl = GetURL("site1.com");
   SetEngagementScore(browser(), kNavigatedUrl, kLowEngagement);
-  NavigateToURL(browser(), kNavigatedUrl, WindowOpenDisposition::CURRENT_TAB);
+  NavigateToURL(browser(), kNavigatedUrl,
+                ui::mojom::WindowOpenDisposition::kCurrentTab);
   histograms.ExpectBucketCount(kSafetyTipShownHistogram,
                                security_state::SafetyTipStatus::kNone, 1);
 
   const GURL kLookalikeUrl = GetURL("accounts-google.com");
   SetEngagementScore(browser(), kLookalikeUrl, kLowEngagement);
-  NavigateToURL(browser(), kLookalikeUrl, WindowOpenDisposition::CURRENT_TAB);
+  NavigateToURL(browser(), kLookalikeUrl,
+                ui::mojom::WindowOpenDisposition::kCurrentTab);
 
   // Verify metrics for lookalike domains.
   histograms.ExpectBucketCount(kSafetyTipShownHistogram,
@@ -1064,7 +1132,8 @@ IN_PROC_BROWSER_TEST_F(SafetyTipPageInfoBubbleViewBrowserTest,
   base::HistogramTester histogram_tester;
   const GURL kLookalikeUrl = GetURL("accounts-google.com");
   SetEngagementScore(browser(), kLookalikeUrl, kLowEngagement);
-  NavigateToURL(browser(), kLookalikeUrl, WindowOpenDisposition::CURRENT_TAB);
+  NavigateToURL(browser(), kLookalikeUrl,
+                ui::mojom::WindowOpenDisposition::kCurrentTab);
 
   // The histogram should not be recorded until the user has interacted with
   // the safety tip.
@@ -1087,7 +1156,8 @@ IN_PROC_BROWSER_TEST_F(SafetyTipPageInfoBubbleViewBrowserTest,
   base::HistogramTester histogram_tester;
   auto kNavigatedUrl = GetURL("accounts1-google.com");
   SetEngagementScore(browser(), kNavigatedUrl, kLowEngagement);
-  NavigateToURL(browser(), kNavigatedUrl, WindowOpenDisposition::CURRENT_TAB);
+  NavigateToURL(browser(), kNavigatedUrl,
+                ui::mojom::WindowOpenDisposition::kCurrentTab);
 
   // The histogram should not be recorded until the user has interacted with
   // the safety tip.
@@ -1113,7 +1183,8 @@ IN_PROC_BROWSER_TEST_F(SafetyTipPageInfoBubbleViewBrowserTest,
   base::HistogramTester histogram_tester;
   auto kNavigatedUrl = GetURL("accounts2-google.com");
   SetEngagementScore(browser(), kNavigatedUrl, kLowEngagement);
-  NavigateToURL(browser(), kNavigatedUrl, WindowOpenDisposition::CURRENT_TAB);
+  NavigateToURL(browser(), kNavigatedUrl,
+                ui::mojom::WindowOpenDisposition::kCurrentTab);
 
   CloseWarningIgnore(views::Widget::ClosedReason::kEscKeyPressed);
   histogram_tester.ExpectBucketCount(
@@ -1135,15 +1206,15 @@ IN_PROC_BROWSER_TEST_F(SafetyTipPageInfoBubbleViewBrowserTest,
 
   // Prep the web contents for later observing.
   NavigateToURL(browser(), GURL("about:blank"),
-                WindowOpenDisposition::NEW_FOREGROUND_TAB);
+                ui::mojom::WindowOpenDisposition::kNewForegroundTab);
   SafetyTipWebContentsObserver* safety_tip_observer =
-      SafetyTipWebContentsObserver::FromWebContents(
-          browser()->GetTabStripModel()->GetActiveWebContents());
+      SafetyTipWebContentsObserver::FromWebContents(web_contents());
 
   // Trigger the warning in the prepped web contents.
   auto kNavigatedUrl = GetURL("accounts3-google.com");
   SetEngagementScore(browser(), kNavigatedUrl, kLowEngagement);
-  NavigateToURL(browser(), kNavigatedUrl, WindowOpenDisposition::CURRENT_TAB);
+  NavigateToURL(browser(), kNavigatedUrl,
+                ui::mojom::WindowOpenDisposition::kCurrentTab);
 
   // Close the current tab and wait for that to happen.
   base::RunLoop loop;
@@ -1169,8 +1240,7 @@ IN_PROC_BROWSER_TEST_F(SafetyTipPageInfoBubbleViewBrowserTest,
 
   // Prep the web contents for later observing.
   SafetyTipWebContentsObserver* safety_tip_observer =
-      SafetyTipWebContentsObserver::FromWebContents(
-          browser()->GetTabStripModel()->GetActiveWebContents());
+      SafetyTipWebContentsObserver::FromWebContents(web_contents());
   base::RunLoop loop;
   safety_tip_observer->RegisterSafetyTipCloseCallbackForTesting(
       loop.QuitClosure());
@@ -1178,11 +1248,12 @@ IN_PROC_BROWSER_TEST_F(SafetyTipPageInfoBubbleViewBrowserTest,
   // Trigger the warning in the prepped web contents.
   auto kNavigatedUrl = GetURL("accounts4-google.com");
   SetEngagementScore(browser(), kNavigatedUrl, kLowEngagement);
-  NavigateToURL(browser(), kNavigatedUrl, WindowOpenDisposition::CURRENT_TAB);
+  NavigateToURL(browser(), kNavigatedUrl,
+                ui::mojom::WindowOpenDisposition::kCurrentTab);
 
   // Open a new foreground tab.
   NavigateToURL(browser(), GURL("about:blank"),
-                WindowOpenDisposition::NEW_FOREGROUND_TAB);
+                ui::mojom::WindowOpenDisposition::kNewForegroundTab);
   loop.Run();
   histogram_tester.ExpectBucketCount(
       GetInteractionHistogram("SafetyTip_Lookalike"),
@@ -1200,19 +1271,19 @@ IN_PROC_BROWSER_TEST_F(SafetyTipPageInfoBubbleViewBrowserTest,
 
   // Prep the web contents for later observing.
   SafetyTipWebContentsObserver* safety_tip_observer =
-      SafetyTipWebContentsObserver::FromWebContents(
-          browser()->GetTabStripModel()->GetActiveWebContents());
+      SafetyTipWebContentsObserver::FromWebContents(web_contents());
   base::RunLoop loop;
   safety_tip_observer->RegisterSafetyTipCloseCallbackForTesting(
       loop.QuitClosure());
 
   auto kNavigatedUrl = GetURL("accounts5-google.com");
   SetEngagementScore(browser(), kNavigatedUrl, kLowEngagement);
-  NavigateToURL(browser(), kNavigatedUrl, WindowOpenDisposition::CURRENT_TAB);
+  NavigateToURL(browser(), kNavigatedUrl,
+                ui::mojom::WindowOpenDisposition::kCurrentTab);
 
   // Navigate away in the same tab.
   NavigateToURL(browser(), GURL("about:blank"),
-                WindowOpenDisposition::CURRENT_TAB);
+                ui::mojom::WindowOpenDisposition::kCurrentTab);
   loop.Run();
   histogram_tester.ExpectBucketCount(
       GetInteractionHistogram("SafetyTip_Lookalike"),
@@ -1231,7 +1302,8 @@ IN_PROC_BROWSER_TEST_F(SafetyTipPageInfoBubbleViewBrowserTest,
   const GURL kNavigatedUrl = GetURL("google-login.com");
   SetEngagementScore(browser(), kNavigatedUrl, kLowEngagement);
   base::HistogramTester histograms;
-  NavigateToURL(browser(), kNavigatedUrl, WindowOpenDisposition::CURRENT_TAB);
+  NavigateToURL(browser(), kNavigatedUrl,
+                ui::mojom::WindowOpenDisposition::kCurrentTab);
 
   // Make sure that the UI isn't showing but interstitial histogram is recorded.
   ASSERT_FALSE(IsUIShowing());
@@ -1263,7 +1335,7 @@ IN_PROC_BROWSER_TEST_F(SafetyTipPageInfoBubbleViewBrowserTest,
   for (const HeuristicsTestCase& test_case : test_cases) {
     SetEngagementScore(browser(), test_case.navigated_url, kLowEngagement);
     NavigateToURL(browser(), test_case.navigated_url,
-                  WindowOpenDisposition::CURRENT_TAB);
+                  ui::mojom::WindowOpenDisposition::kCurrentTab);
     // If a warning should show, dismiss it to ensure UKM data gets recorded.
     if (test_case.expected_lookalike) {
       CloseWarningLeaveSite(browser());
@@ -1294,7 +1366,8 @@ IN_PROC_BROWSER_TEST_F(SafetyTipPageInfoBubbleViewBrowserTest,
                        WarningDismissalCausesUkmRecordingForLookalike) {
   GURL kNavigatedUrl = GetURL("accounts-google.com");
 
-  NavigateToURL(browser(), kNavigatedUrl, WindowOpenDisposition::CURRENT_TAB);
+  NavigateToURL(browser(), kNavigatedUrl,
+                ui::mojom::WindowOpenDisposition::kCurrentTab);
 
   // Make sure that the UI is now showing, and that no UKM data has been
   // recorded yet.
@@ -1311,7 +1384,8 @@ IN_PROC_BROWSER_TEST_F(SafetyTipPageInfoBubbleViewBrowserTest,
 
   // Navigate to the same site again, but close the warning with an ignore
   // instead of an accept. This should still record UKM data.
-  NavigateToURL(browser(), kNavigatedUrl, WindowOpenDisposition::CURRENT_TAB);
+  NavigateToURL(browser(), kNavigatedUrl,
+                ui::mojom::WindowOpenDisposition::kCurrentTab);
 
   ASSERT_TRUE(IsUIShowing());
 
@@ -1336,7 +1410,8 @@ IN_PROC_BROWSER_TEST_F(
     SafetyTipPageInfoBubbleViewBrowserTest,
     DISABLED_WarningDismissalCausesUkmRecordingForBlocklist) {
   GURL kNavigatedUrl = GetURL("accounts-google.com");
-  NavigateToURL(browser(), kNavigatedUrl, WindowOpenDisposition::CURRENT_TAB);
+  NavigateToURL(browser(), kNavigatedUrl,
+                ui::mojom::WindowOpenDisposition::kCurrentTab);
 
   // Make sure that the UI is now showing, and that no UKM data has been
   // recorded yet.
@@ -1352,7 +1427,8 @@ IN_PROC_BROWSER_TEST_F(
 
   // Navigate to the same site again, but close the warning with an ignore
   // instead of an accept. This should still record UKM data.
-  NavigateToURL(browser(), kNavigatedUrl, WindowOpenDisposition::CURRENT_TAB);
+  NavigateToURL(browser(), kNavigatedUrl,
+                ui::mojom::WindowOpenDisposition::kCurrentTab);
 
   ASSERT_TRUE(IsUIShowing());
 
@@ -1384,7 +1460,8 @@ IN_PROC_BROWSER_TEST_F(SafetyTipPageInfoBubbleViewBrowserTest,
   const GURL kNavigatedUrl = GetURL("google-login.com");
   SetEngagementScore(browser(), kNavigatedUrl, kLowEngagement);
 
-  NavigateToURL(browser(), kNavigatedUrl, WindowOpenDisposition::CURRENT_TAB);
+  NavigateToURL(browser(), kNavigatedUrl,
+                ui::mojom::WindowOpenDisposition::kCurrentTab);
 
   histograms.ExpectBucketCount(kSafetyTipShownHistogram,
                                security_state::SafetyTipStatus::kLookalike, 1);
@@ -1409,7 +1486,8 @@ IN_PROC_BROWSER_TEST_F(SafetyTipPageInfoBubbleViewBrowserTest,
 
   // Navigate to the same site again, but close the warning with an ignore
   // instead of an accept. This should still record UKM data.
-  NavigateToURL(browser(), kNavigatedUrl, WindowOpenDisposition::CURRENT_TAB);
+  NavigateToURL(browser(), kNavigatedUrl,
+                ui::mojom::WindowOpenDisposition::kCurrentTab);
 
   ASSERT_TRUE(IsUIShowing());
 
@@ -1444,7 +1522,8 @@ IN_PROC_BROWSER_TEST_F(SafetyTipPageInfoBubbleViewBrowserTest,
   SetEngagementScore(browser(), kNavigatedUrl, kLowEngagement);
   lookalikes::SetSafetyTipAllowlistPatterns({"google-login.com/"}, {}, {});
 
-  NavigateToURL(browser(), kNavigatedUrl, WindowOpenDisposition::CURRENT_TAB);
+  NavigateToURL(browser(), kNavigatedUrl,
+                ui::mojom::WindowOpenDisposition::kCurrentTab);
 
   // Make sure that the UI is not showing, and that no histogram has been
   // recorded.
@@ -1470,7 +1549,8 @@ IN_PROC_BROWSER_TEST_F(SafetyTipPageInfoBubbleViewBrowserTest,
   const GURL kNavigatedUrl = GetURL("costco-login.com");
   SetEngagementScore(browser(), kNavigatedUrl, kLowEngagement);
 
-  NavigateToURL(browser(), kNavigatedUrl, WindowOpenDisposition::CURRENT_TAB);
+  NavigateToURL(browser(), kNavigatedUrl,
+                ui::mojom::WindowOpenDisposition::kCurrentTab);
 
   histograms.ExpectBucketCount(kSafetyTipShownHistogram,
                                security_state::SafetyTipStatus::kLookalike, 1);
@@ -1494,7 +1574,8 @@ IN_PROC_BROWSER_TEST_F(SafetyTipPageInfoBubbleViewBrowserTest,
 
   // Navigate to the same site again, but close the warning with an ignore
   // instead of an accept. This should still record UKM data.
-  NavigateToURL(browser(), kNavigatedUrl, WindowOpenDisposition::CURRENT_TAB);
+  NavigateToURL(browser(), kNavigatedUrl,
+                ui::mojom::WindowOpenDisposition::kCurrentTab);
 
   ASSERT_TRUE(IsUIShowing());
 
@@ -1529,7 +1610,8 @@ IN_PROC_BROWSER_TEST_F(SafetyTipPageInfoBubbleViewBrowserTest,
   SetEngagementScore(browser(), kEngagedUrl, kHighEngagement);
   SetEngagementScore(browser(), kNavigatedUrl, kLowEngagement);
 
-  NavigateToURL(browser(), kNavigatedUrl, WindowOpenDisposition::CURRENT_TAB);
+  NavigateToURL(browser(), kNavigatedUrl,
+                ui::mojom::WindowOpenDisposition::kCurrentTab);
 
   histograms.ExpectBucketCount(kSafetyTipShownHistogram,
                                security_state::SafetyTipStatus::kLookalike, 1);
@@ -1555,7 +1637,8 @@ IN_PROC_BROWSER_TEST_F(SafetyTipPageInfoBubbleViewBrowserTest,
 
   // Navigate to the same site again, but close the warning with an ignore
   // instead of an accept. This should still record UKM data.
-  NavigateToURL(browser(), kNavigatedUrl, WindowOpenDisposition::CURRENT_TAB);
+  NavigateToURL(browser(), kNavigatedUrl,
+                ui::mojom::WindowOpenDisposition::kCurrentTab);
 
   ASSERT_TRUE(IsUIShowing());
 
@@ -1585,7 +1668,8 @@ IN_PROC_BROWSER_TEST_F(SafetyTipPageInfoBubbleViewBrowserTest,
   const GURL kNavigatedUrl = GetURL("costco-login.com");
   SetEngagementScore(browser(), kNavigatedUrl, kLowEngagement);
 
-  NavigateToURL(browser(), kNavigatedUrl, WindowOpenDisposition::CURRENT_TAB);
+  NavigateToURL(browser(), kNavigatedUrl,
+                ui::mojom::WindowOpenDisposition::kCurrentTab);
 
   histograms.ExpectTotalCount(kInterstitialHistogramName, 1);
   histograms.ExpectBucketCount(kInterstitialHistogramName,
@@ -1610,7 +1694,8 @@ IN_PROC_BROWSER_TEST_F(
   SetEngagementScore(browser(), kEngagedUrl, kHighEngagement);
   SetEngagementScore(browser(), kNavigatedUrl, kLowEngagement);
 
-  NavigateToURL(browser(), kNavigatedUrl, WindowOpenDisposition::CURRENT_TAB);
+  NavigateToURL(browser(), kNavigatedUrl,
+                ui::mojom::WindowOpenDisposition::kCurrentTab);
 
   histograms.ExpectTotalCount(kInterstitialHistogramName, 1);
   histograms.ExpectBucketCount(
@@ -1652,6 +1737,8 @@ class SafetyTipPageInfoBubbleViewPrerenderBrowserTest
   content::WebContents* web_contents() {
     return browser()->GetTabStripModel()->GetActiveWebContents();
   }
+
+  bool IsUIShowing() { return ::IsUIShowing(web_contents()); }
 
   content::test::PrerenderTestHelper* prerender_helper() {
     return &prerender_helper_;
@@ -1725,7 +1812,8 @@ IN_PROC_BROWSER_TEST_F(SafetyTipPageInfoBubbleViewPrerenderBrowserTest,
 
   // Generate a Safety Tip.
   content::TestNavigationObserver navigation_observer(web_contents());
-  NavigateToURL(browser(), kNavigatedUrl, WindowOpenDisposition::CURRENT_TAB);
+  NavigateToURL(browser(), kNavigatedUrl,
+                ui::mojom::WindowOpenDisposition::kCurrentTab);
   EXPECT_TRUE(IsUIShowing());
   histograms.ExpectTotalCount(kSafetyTipShownHistogram, 1);
 
@@ -1780,7 +1868,8 @@ IN_PROC_BROWSER_TEST_F(SafetyTipPageInfoBubbleViewBrowserTest,
   // Trigger bubble to show on the 0 indexed tab.
   auto kNavigatedUrl = GetURL("accounts-google.com");
   SetEngagementScore(browser(), kNavigatedUrl, kLowEngagement);
-  NavigateToURL(browser(), kNavigatedUrl, WindowOpenDisposition::CURRENT_TAB);
+  NavigateToURL(browser(), kNavigatedUrl,
+                ui::mojom::WindowOpenDisposition::kCurrentTab);
   EXPECT_TRUE(IsUIShowing());
 
   // The highlight should show around the contents container for the 0th tab

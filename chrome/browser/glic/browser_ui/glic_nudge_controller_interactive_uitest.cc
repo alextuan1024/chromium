@@ -41,11 +41,12 @@ class GlicNudgeControllerInteractiveUiTest : public test::InteractiveGlicTest {
   GlicNudgeControllerInteractiveUiTest() {
     feature_list_.InitWithFeatures(
         /*enabled_features=*/{},
-        /*disabled_features=*/{contextual_cueing::kContextualCueingV2});
+        /*disabled_features=*/{contextual_cueing::kContextualCueingV2,
+                               features::kGlicHorizontalTabToolbarButton});
   }
 
   void SetUpOnMainThread() override {
-    InteractiveBrowserTest::SetUpOnMainThread();
+    test::InteractiveGlicTest::SetUpOnMainThread();
     scoped_glic_bypass_.emplace();
     browser()->GetProfile()->GetPrefs()->SetBoolean(
         prefs::kGlicPinnedToTabstrip, true);
@@ -55,7 +56,7 @@ class GlicNudgeControllerInteractiveUiTest : public test::InteractiveGlicTest {
 
   void TearDownOnMainThread() override {
     scoped_glic_bypass_.reset();
-    InteractiveBrowserTest::TearDownOnMainThread();
+    test::InteractiveGlicTest::TearDownOnMainThread();
   }
 
   GlicNudgeController* nudge_controller() {
@@ -113,7 +114,8 @@ class GlicNudgeControllerWarmingInteractiveUiTest
         /*enabled_features=*/{features::kGlicWarmOnNudge,
                               features::kGlicAnchorEntryPointForOnboardedUsers},
         /*disabled_features=*/{contextual_cueing::kContextualCueingV2,
-                               features::kGlicWarming});
+                               features::kGlicWarming,
+                               features::kGlicHorizontalTabToolbarButton});
   }
 
   void SetUp() override {
@@ -167,9 +169,9 @@ class GlicNudgeControllerWarmingDisabledInteractiveUiTest
   GlicNudgeControllerWarmingDisabledInteractiveUiTest() {
     scoped_feature_list_.InitWithFeatures(
         /*enabled_features=*/{features::kGlicAnchorEntryPointForOnboardedUsers},
-        /*disabled_features=*/{contextual_cueing::kContextualCueingV2,
-                               features::kGlicWarmOnNudge,
-                               features::kGlicWarming});
+        /*disabled_features=*/{
+            contextual_cueing::kContextualCueingV2, features::kGlicWarmOnNudge,
+            features::kGlicWarming, features::kGlicHorizontalTabToolbarButton});
   }
 
   void SetUp() override {

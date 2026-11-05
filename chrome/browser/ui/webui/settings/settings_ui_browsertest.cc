@@ -21,6 +21,8 @@
 #include "chrome/browser/ui/hats/hats_service_factory.h"
 #include "chrome/browser/ui/hats/mock_hats_service.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
+#include "chrome/browser/ui/ui_features.h"
+#include "chrome/browser/ui/webui/settings/search/mojom/settings_search.mojom.h"
 #include "chrome/common/chrome_features.h"
 #include "chrome/common/url_constants.h"
 #include "chrome/grit/generated_resources.h"
@@ -33,10 +35,13 @@
 #include "components/sync/base/features.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/browser/web_ui.h"
+#include "content/public/browser/web_ui_controller.h"
 #include "content/public/browser/web_ui_message_handler.h"
 #include "content/public/common/url_constants.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
+#include "mojo/public/cpp/bindings/remote.h"
+#include "mojo/public/cpp/test_support/test_utils.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "url/gurl.h"
 
@@ -89,8 +94,6 @@ class SettingsUITestDisableSync : public SettingsUITest {
     std::vector<base::test::FeatureRef> enabled_features;
 #if !BUILDFLAG(IS_CHROMEOS)
     enabled_features.push_back(syncer::kUnoPhase2FollowUp);
-#else
-    enabled_features.push_back(syncer::kReplaceSyncPromosWithSignInPromos);
 #endif
     scoped_feature_list_.InitWithFeatures(enabled_features,
                                           /*disabled_features=*/{});
@@ -206,21 +209,24 @@ IN_PROC_BROWSER_TEST_F(SettingsUITestGlicDisabledButAnchored, DoesNotCrash) {
 
   // Check that the Glic settings section is hidden because the killswitch
   // (kGlic) is disabled.
-  bool show_glic_settings =
+  std::string ai_settings_section =
       content::EvalJs(
           web_contents,
           "import('chrome://resources/js/load_time_data.js').then(m => "
-          "m.loadTimeData.getBoolean('showGlicSettings'))")
-          .ExtractBool();
+          "m.loadTimeData.getString('aiSettingsSection'))")
+          .ExtractString();
 
-  EXPECT_FALSE(show_glic_settings);
+  EXPECT_EQ("", ai_settings_section);
 }
 
 class SettingsUIWalletReminderNoticeTest : public SettingsUITest {
  public:
   SettingsUIWalletReminderNoticeTest() {
-    scoped_feature_list_.InitAndEnableFeature(
-        autofill::features::kAutofillEnableWalletReminderNotice);
+    scoped_feature_list_.InitWithFeatures(
+        /*enabled_features=*/
+        {autofill::features::kAutofillEnableWalletReminderNotice},
+        /*disabled_features=*/
+        {autofill::features::kAutofillEnableWalletDirectOffers});
   }
 
  private:
@@ -341,4 +347,46 @@ IN_PROC_BROWSER_TEST_F(
       base::UTF8ToUTF16(autofill::payments::GetManagePassesUrl().spec())));
 
   EXPECT_EQ(label, expected_label);
+}
+
+class SettingsUISearchTest : public SettingsUITest {
+ protected:
+  mojo::Remote<settings_search::mojom::SettingsSearchHandlerFactory>
+  BindFactory() {
+    mojo::Remote<settings_search::mojom::SettingsSearchHandlerFactory> factory;
+    browser()
+        ->GetTabStripModel()
+        ->GetActiveWebContents()
+        ->GetWebUI()
+        ->GetController()
+        ->GetAs<settings::SettingsUI>()
+        ->BindInterface(factory.BindNewPipeAndPassReceiver());
+    return factory;
+  }
+
+ private:
+  base::test::ScopedFeatureList scoped_feature_list_{
+      {features::kWebuiRefresh2026, features::kSettingsRefresh2026,
+       features::kSettingsSearch2026},
+      /*disabled_features=*/{}};
+};
+
+IN_PROC_BROWSER_TEST_F(SettingsUISearchTest, OneHandlerPerFactoryConnection) {
+  ASSERT_TRUE(NavigateToURL(browser(), GURL(chrome::kChromeUISettingsURL)));
+  mojo::Remote<settings_search::mojom::SettingsSearchHandler> first, second,
+      third;
+  auto factory = BindFactory();
+  factory->CreateSettingsSearchHandler(first.BindNewPipeAndPassReceiver());
+  factory.FlushForTesting();
+
+  // A reload can reuse SettingsUI, which binds the factory again.
+  factory = BindFactory();
+  factory->CreateSettingsSearchHandler(second.BindNewPipeAndPassReceiver());
+  second.FlushForTesting();
+  EXPECT_TRUE(second.is_connected());
+
+  mojo::test::BadMessageObserver bad_message_observer;
+  factory->CreateSettingsSearchHandler(third.BindNewPipeAndPassReceiver());
+  EXPECT_EQ("CreateSettingsSearchHandler called more than once.",
+            bad_message_observer.WaitForBadMessage());
 }

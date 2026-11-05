@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <string_view>
+#include <utility>
 
 #include "base/feature_list.h"
 #include "base/functional/bind.h"
@@ -20,7 +21,7 @@
 #include "components/autofill/core/browser/foundations/autofill_manager.h"
 #include "components/autofill/core/common/autofill_features.h"
 #include "components/one_time_tokens/core/browser/gmail_otp_backend.h"
-#include "components/one_time_tokens/core/browser/one_time_token_service.h"
+#include "components/one_time_tokens/core/browser/one_time_token_service_constants.h"
 #include "components/signin/public/identity_manager/identity_manager.h"
 #include "components/translate/core/browser/language_state.h"
 #include "google_apis/gaia/gaia_auth_util.h"
@@ -64,7 +65,7 @@ bool TryRecordTickleMetrics(std::optional<base::TimeTicks>& previous_event_time,
           *ukm_source_id != ukm::kInvalidSourceId) {
         ukm::builders::Autofill_OneTimeTokens builder(*ukm_source_id);
         (builder.*latency_setter)(latency.InMilliseconds());
-        builder.SetTickle_Arrival(static_cast<int64_t>(arrival_type));
+        builder.SetTickle_Arrival(std::to_underlying(arrival_type));
         builder.Record(ukm::UkmRecorder::Get());
       }
       return true;
@@ -102,13 +103,12 @@ bool OtpMetricsTracker::IsEligibleForGmailOtps(
 }
 
 OtpMetricsTracker::OtpMetricsTracker(
-    one_time_tokens::OneTimeTokenService* one_time_token_service,
+    one_time_tokens::GmailOtpBackend* gmail_otp_backend,
     AutofillClient& autofill_client)
-    : one_time_token_service_(one_time_token_service),
-      autofill_client_(autofill_client) {
-  if (one_time_token_service_) {
-    tickle_subscription_ = one_time_token_service_->SubscribeToTickles(
-        one_time_tokens::OneTimeTokenSource::kGmail, base::Time::Max(),
+    : autofill_client_(autofill_client) {
+  if (gmail_otp_backend) {
+    tickle_subscription_ = gmail_otp_backend->SubscribeToTickles(
+        base::Time::Max(),
         base::BindRepeating(&OtpMetricsTracker::OnTickleReceived,
                             weak_ptr_factory_.GetWeakPtr()));
   }
@@ -159,8 +159,7 @@ void OtpMetricsTracker::OnOtpFieldDetected(FormGlobalId form_id,
   }
 }
 
-void OtpMetricsTracker::OnTickleReceived(
-    one_time_tokens::OneTimeTokenSource source) {
+void OtpMetricsTracker::OnTickleReceived() {
   if (!base::FeatureList::IsEnabled(
           features::kAutofillGmailOtpPreLaunchMetrics)) {
     return;
@@ -225,7 +224,7 @@ void OtpMetricsTracker::RecordFormOutcomeMetrics(
                                 form_outcome);
   if (ukm_source_id_.has_value() && *ukm_source_id_ != ukm::kInvalidSourceId) {
     ukm::builders::Autofill_OneTimeTokens builder(*ukm_source_id_);
-    builder.SetTickle_FormOutcome(static_cast<int64_t>(form_outcome));
+    builder.SetTickle_FormOutcome(std::to_underlying(form_outcome));
     builder.Record(ukm::UkmRecorder::Get());
   }
 

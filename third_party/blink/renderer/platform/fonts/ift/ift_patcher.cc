@@ -50,6 +50,10 @@ void IftSubsetDefinition::Union(const IftSubsetDefinition& other) {
   subset_.union_(other.subset_);
 }
 
+void IftSubsetDefinition::Clear() {
+  subset_.clear();
+}
+
 IftPatcher::IftPatcher(ift_patcher_rs::IftPatcher patcher)
     : patcher_(std::move(patcher)) {}
 
@@ -72,12 +76,25 @@ std::unique_ptr<IftPatcher> IftPatcher::Create(
 }
 
 base::span<const uint8_t> IftPatcher::GetFontData() const {
-  rs_std::SliceRef<const ::std::uint8_t> font_data = patcher_.font_data();
+  rs::SliceRef<const ::std::uint8_t> font_data = patcher_.font_data();
   return base::span(font_data.to_span());
 }
 
+bool IftPatcher::RenderedFontRequiresPatches(
+    const IftSubsetDefinition& subset) const {
+  return patcher_.rendered_font_requires_patches(subset.subset_);
+}
+
+bool IftPatcher::HasUnrenderedChanges() const {
+  return patcher_.has_unrendered_changes();
+}
+
+void IftPatcher::MarkFontDataRendered() {
+  patcher_.mark_rendered();
+}
+
 Vector<String> IftPatcher::RequestPatches(const IftSubsetDefinition& subset) {
-  rs_std::Vec<::rs::alloc::string::String> urls =
+  rs::Vec<::rs::alloc::string::String> urls =
       patcher_.request_patches(subset.subset_);
   Vector<String> ret;
   ret.ReserveInitialCapacity(base::checked_cast<wtf_size_t>(urls.size()));
@@ -90,7 +107,7 @@ Vector<String> IftPatcher::RequestPatches(const IftSubsetDefinition& subset) {
 void IftPatcher::AddPatchData(const String& url,
                               base::span<const uint8_t> data) {
   std::string utf8_url = url.Utf8();
-  patcher_.add_patch_data(rs_std::StrRef::FromUtf8Unchecked(utf8_url), data);
+  patcher_.add_patch_data(rs::StrRef::FromUtf8Unchecked(utf8_url), data);
 }
 
 IftPatcher::ApplyStatus IftPatcher::ApplyPatches(

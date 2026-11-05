@@ -12,6 +12,7 @@
 #include "base/memory/weak_ptr.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_view_util.h"
+#include "base/test/metrics/histogram_tester.h"
 #include "base/test/protobuf_matchers.h"
 #include "base/test/run_until.h"
 #include "base/test/scoped_feature_list.h"
@@ -32,8 +33,10 @@
 #include "components/base32/base32.h"
 #include "components/endpoint_fetcher/endpoint_fetcher.h"
 #include "components/lens/lens_features.h"
+#include "components/lens/lens_overlay_metrics.h"
 #include "components/lens/lens_overlay_mime_type.h"
 #include "components/lens/lens_overlay_permission_utils.h"
+#include "components/lens/lens_request_construction.h"
 #include "components/omnibox/browser/mock_aim_eligibility_service.h"
 #include "components/prefs/pref_service.h"
 #include "components/signin/public/identity_manager/identity_test_environment.h"
@@ -5170,7 +5173,7 @@ TEST_F(LensOverlayQueryControllerTest,
 }
 
 TEST_F(LensOverlayQueryControllerTest,
-       SendInteraction_TriggersDeferredUploads) {
+       SendInteraction_DoesNotTriggerDeferredUploads) {
   feature_list_.Reset();
   feature_list_.InitWithFeaturesAndParameters(
       {{lens::features::kLensOverlayNonBlockingPrivacyNoticeForImageSearch, {}},
@@ -5226,8 +5229,6 @@ TEST_F(LensOverlayQueryControllerTest,
   ASSERT_EQ(query_controller.num_full_image_requests_sent(), 1);
   ASSERT_EQ(query_controller.num_page_content_update_requests_sent(), 0);
 
-  full_image_response_future.Clear();
-
   auto region = lens::mojom::CenterRotatedBox::New();
   region->box = gfx::RectF(30, 40, 50, 60);
   region->coordinate_type =
@@ -5236,15 +5237,10 @@ TEST_F(LensOverlayQueryControllerTest,
   query_controller.SendRegionSearch(kTestTime, std::move(region),
                                     lens::REGION_SEARCH, {}, std::nullopt);
 
-  ASSERT_TRUE(full_image_response_future.Wait());
   ASSERT_TRUE(url_response_future.Wait());
 
-  ASSERT_EQ(query_controller.num_full_image_requests_sent(), 2);
-  auto sent_object_request = query_controller.sent_full_image_objects_request();
-  ASSERT_EQ(sent_object_request.image_data().image_metadata().width(), 1000);
-  ASSERT_EQ(sent_object_request.image_data().image_metadata().height(), 1000);
-
-  ASSERT_EQ(query_controller.num_page_content_update_requests_sent(), 1);
+  ASSERT_EQ(query_controller.num_full_image_requests_sent(), 1);
+  ASSERT_EQ(query_controller.num_page_content_update_requests_sent(), 0);
 
   query_controller.EndQuery();
 }
@@ -5353,6 +5349,224 @@ TEST_F(LensOverlayQueryControllerTest, SearchSessionIdNulloptSafe) {
   query_controller.EndQuery();
   query_controller.ResetRequestClusterInfoStateForTesting();
   EXPECT_TRUE(query_controller.search_session_id().empty());
+}
+
+TEST_F(LensOverlayQueryControllerTest, MethodsNoOpWhenQueryControllerIsOff) {
+  TestLensOverlayQueryController query_controller(
+      base::NullCallback(), base::NullCallback(), base::NullCallback(),
+      base::NullCallback(), base::NullCallback(), fake_variations_client_.get(),
+      IdentityManagerFactory::GetForProfile(profile()), profile(),
+      lens::LensOverlayInvocationSource::kAppMenu,
+      /*use_dark_mode=*/false, GetGen204Controller());
+
+  EXPECT_TRUE(query_controller.IsOff());
+
+  // Calling these methods when the controller is off should safely no-op.
+  query_controller.MaybeRestartQueryFlow();
+  query_controller.SendUpdatedPageContent(
+      /*underlying_page_content=*/std::nullopt,
+      /*primary_content_type=*/std::nullopt, /*new_page_url=*/std::nullopt,
+      /*new_page_title=*/std::nullopt, /*pdf_current_page=*/std::nullopt,
+      CreateNonEmptyBitmap(100, 100));
+  std::vector<std::u16string> partial_content = {u"test content"};
+  query_controller.SendPartialPageContentRequest(partial_content);
+  query_controller.ResetPageContentData();
+
+  EXPECT_TRUE(query_controller.IsOff());
+}
+
+TEST_F(LensOverlayQueryControllerTest, ClusterInfoMetricsRecordedOnSuccess) {
+  base::HistogramTester histogram_tester;
+  InitFeaturesWithClusterInfoOptimization();
+
+  base::test::TestFuture<std::vector<lens::mojom::OverlayObjectPtr>,
+                         lens::mojom::TextPtr, bool>
+      full_image_response_future;
+  TestLensOverlayQueryController query_controller(
+      full_image_response_future.GetRepeatingCallback(), base::NullCallback(),
+      base::NullCallback(), base::NullCallback(), base::NullCallback(),
+      fake_variations_client_.get(),
+      IdentityManagerFactory::GetForProfile(profile()), profile(),
+      lens::LensOverlayInvocationSource::kAppMenu,
+      /*use_dark_mode=*/false, GetGen204Controller());
+
+  lens::LensOverlayServerClusterInfoResponse fake_cluster_info_response;
+  fake_cluster_info_response.set_server_session_id(kTestServerSessionId);
+  fake_cluster_info_response.set_search_session_id(kTestSearchSessionId);
+  query_controller.set_fake_cluster_info_response(fake_cluster_info_response);
+  lens::LensOverlayObjectsResponse fake_objects_response;
+  fake_objects_response.mutable_cluster_info()->set_server_session_id(
+      kTestServerSessionId);
+  query_controller.set_fake_objects_response(fake_objects_response);
+
+  SkBitmap bitmap = CreateNonEmptyBitmap(100, 100);
+  query_controller.StartQueryFlow(
+      bitmap, bitmap, GURL(kTestPageUrl),
+      std::make_optional<std::string>(kTestPageTitle),
+      std::vector<lens::mojom::CenterRotatedBoxPtr>(),
+      /*underlying_page_contents=*/{},
+      /*primary_content_type=*/lens::MimeType::kUnknown,
+      /*pdf_current_page=*/std::nullopt, 0, base::TimeTicks::Now());
+
+  ASSERT_TRUE(full_image_response_future.Wait());
+  query_controller.EndQuery();
+
+  histogram_tester.ExpectUniqueSample(
+      "Lens.Overlay.ClusterInfo.Status",
+      lens::LensOverlayClusterInfoStatus::kSuccess, 1);
+  histogram_tester.ExpectTotalCount("Lens.Overlay.ClusterInfo.ResponseTime", 1);
+}
+
+TEST_F(LensOverlayQueryControllerTest, ClusterInfoMetricsRecordedOnHttpError) {
+  base::HistogramTester histogram_tester;
+  InitFeaturesWithClusterInfoOptimization();
+
+  base::test::TestFuture<std::vector<lens::mojom::OverlayObjectPtr>,
+                         lens::mojom::TextPtr, bool>
+      full_image_response_future;
+  TestLensOverlayQueryController query_controller(
+      full_image_response_future.GetRepeatingCallback(), base::NullCallback(),
+      base::NullCallback(), base::NullCallback(), base::NullCallback(),
+      fake_variations_client_.get(),
+      IdentityManagerFactory::GetForProfile(profile()), profile(),
+      lens::LensOverlayInvocationSource::kAppMenu,
+      /*use_dark_mode=*/false, GetGen204Controller());
+
+  query_controller.set_next_cluster_info_request_should_return_error(true);
+  lens::LensOverlayObjectsResponse fake_objects_response;
+  query_controller.set_fake_objects_response(fake_objects_response);
+
+  SkBitmap bitmap = CreateNonEmptyBitmap(100, 100);
+  query_controller.StartQueryFlow(
+      bitmap, bitmap, GURL(kTestPageUrl),
+      std::make_optional<std::string>(kTestPageTitle),
+      std::vector<lens::mojom::CenterRotatedBoxPtr>(),
+      /*underlying_page_contents=*/{},
+      /*primary_content_type=*/lens::MimeType::kUnknown,
+      /*pdf_current_page=*/std::nullopt, 0, base::TimeTicks::Now());
+
+  ASSERT_TRUE(full_image_response_future.Wait());
+  query_controller.EndQuery();
+
+  histogram_tester.ExpectUniqueSample(
+      "Lens.Overlay.ClusterInfo.Status",
+      lens::LensOverlayClusterInfoStatus::kHttpError, 1);
+  histogram_tester.ExpectTotalCount("Lens.Overlay.ClusterInfo.ResponseTime", 1);
+}
+
+TEST_F(LensOverlayQueryControllerTest, ClusterInfoMetricsRecordedOnParseError) {
+  base::HistogramTester histogram_tester;
+  InitFeaturesWithClusterInfoOptimization();
+
+  base::test::TestFuture<std::vector<lens::mojom::OverlayObjectPtr>,
+                         lens::mojom::TextPtr, bool>
+      full_image_response_future;
+  TestLensOverlayQueryController query_controller(
+      full_image_response_future.GetRepeatingCallback(), base::NullCallback(),
+      base::NullCallback(), base::NullCallback(), base::NullCallback(),
+      fake_variations_client_.get(),
+      IdentityManagerFactory::GetForProfile(profile()), profile(),
+      lens::LensOverlayInvocationSource::kAppMenu,
+      /*use_dark_mode=*/false, GetGen204Controller());
+
+  query_controller.set_next_cluster_info_request_should_return_parse_error(
+      true);
+  lens::LensOverlayObjectsResponse fake_objects_response;
+  query_controller.set_fake_objects_response(fake_objects_response);
+
+  SkBitmap bitmap = CreateNonEmptyBitmap(100, 100);
+  query_controller.StartQueryFlow(
+      bitmap, bitmap, GURL(kTestPageUrl),
+      std::make_optional<std::string>(kTestPageTitle),
+      std::vector<lens::mojom::CenterRotatedBoxPtr>(),
+      /*underlying_page_contents=*/{},
+      /*primary_content_type=*/lens::MimeType::kUnknown,
+      /*pdf_current_page=*/std::nullopt, 0, base::TimeTicks::Now());
+
+  ASSERT_TRUE(full_image_response_future.Wait());
+  query_controller.EndQuery();
+
+  histogram_tester.ExpectUniqueSample(
+      "Lens.Overlay.ClusterInfo.Status",
+      lens::LensOverlayClusterInfoStatus::kProtoParseError, 1);
+  histogram_tester.ExpectTotalCount("Lens.Overlay.ClusterInfo.ResponseTime", 1);
+}
+
+TEST_F(LensOverlayQueryControllerTest,
+       IdentityDelegation_RetriesWithoutAuthorizationOn401) {
+  base::HistogramTester histogram_tester;
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeature(
+      lens::features::kLensComposeboxIdentityDelegation);
+
+  base::test::TestFuture<std::vector<lens::mojom::OverlayObjectPtr>,
+                         lens::mojom::TextPtr, bool>
+      full_image_response_future;
+  base::test::TestFuture<lens::proto::LensOverlayUrlResponse>
+      url_response_future;
+  TestLensOverlayQueryController query_controller(
+      full_image_response_future.GetRepeatingCallback(),
+      url_response_future.GetRepeatingCallback(), base::NullCallback(),
+      base::NullCallback(), base::NullCallback(), fake_variations_client_.get(),
+      IdentityManagerFactory::GetForProfile(profile()), profile(),
+      lens::LensOverlayInvocationSource::kAppMenu,
+      /*use_dark_mode=*/false, GetGen204Controller());
+
+  query_controller.set_fake_identity_delegation_headers(
+      std::vector<std::string>{"Origin", "https://www.google.com",
+                               "Authorization", "SAPISIDHASH 123_fake",
+                               "X-Goog-AuthUser", "0"});
+  query_controller.set_reject_requests_with_auth_header_with_401(true);
+
+  lens::LensOverlayServerClusterInfoResponse fake_cluster_info_response;
+  fake_cluster_info_response.set_server_session_id(kTestServerSessionId);
+  fake_cluster_info_response.set_search_session_id(kTestSearchSessionId);
+  query_controller.set_fake_cluster_info_response(fake_cluster_info_response);
+
+  lens::LensOverlayObjectsResponse fake_objects_response;
+  fake_objects_response.mutable_cluster_info()->set_server_session_id(
+      kTestServerSessionId);
+  query_controller.set_fake_objects_response(fake_objects_response);
+
+  SkBitmap bitmap = CreateNonEmptyBitmap(100, 100);
+  query_controller.StartQueryFlow(
+      bitmap, bitmap, GURL(kTestPageUrl),
+      std::make_optional<std::string>(kTestPageTitle),
+      std::vector<lens::mojom::CenterRotatedBoxPtr>(),
+      /*underlying_page_contents=*/{},
+      /*primary_content_type=*/lens::MimeType::kUnknown,
+      /*pdf_current_page=*/std::nullopt, 0, base::TimeTicks::Now());
+
+  ASSERT_TRUE(full_image_response_future.Wait());
+  EXPECT_FALSE(std::get<2>(full_image_response_future.Get()));
+  EXPECT_EQ(query_controller.num_cluster_info_fetch_requests_sent(), 2);
+  EXPECT_EQ(query_controller.num_full_image_requests_sent(), 2);
+
+  ASSERT_EQ(query_controller.sent_request_headers_history().size(), 4u);
+  EXPECT_THAT(query_controller.sent_request_headers_history()[0],
+              testing::Contains("Authorization"));
+  EXPECT_THAT(query_controller.sent_request_headers_history()[1],
+              testing::Not(testing::Contains("Authorization")));
+  EXPECT_THAT(query_controller.sent_request_headers_history()[1],
+              testing::Contains("Origin"));
+  EXPECT_THAT(query_controller.sent_request_headers_history()[2],
+              testing::Contains("Authorization"));
+  EXPECT_THAT(query_controller.sent_request_headers_history()[3],
+              testing::Not(testing::Contains("Authorization")));
+  EXPECT_THAT(query_controller.sent_request_headers_history()[3],
+              testing::Contains("Origin"));
+
+  histogram_tester.ExpectBucketCount(
+      "Lens.IdentityDelegation.RetriedWithoutAuthOn401",
+      lens::LensIdentityDelegationRetryRequestType::kOverlayClusterInfo, 1);
+  histogram_tester.ExpectBucketCount(
+      "Lens.IdentityDelegation.RetriedWithoutAuthOn401",
+      lens::LensIdentityDelegationRetryRequestType::kOverlayFetchRequest, 1);
+  histogram_tester.ExpectUniqueSample(
+      "Lens.Overlay.ClusterInfo.Status",
+      lens::LensOverlayClusterInfoStatus::kSuccess, 1);
+
+  query_controller.EndQuery();
 }
 
 }  // namespace lens

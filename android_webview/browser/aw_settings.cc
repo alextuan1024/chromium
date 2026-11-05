@@ -192,7 +192,6 @@ void AwSettings::UpdateEverythingLocked(JNIEnv* env,
   UpdateInitialPageScaleLocked(env, obj);
   UpdateWebkitPreferencesLocked(env, obj);
   UpdateUserAgentLocked(env, obj);
-  ResetScrollAndScaleState(env, obj);
   UpdateRendererPreferencesLocked(env, obj);
   UpdateOffscreenPreRasterLocked(env, obj);
   UpdateWillSuppressErrorStateLocked(env, obj);
@@ -295,7 +294,6 @@ void AwSettings::UpdateInitialPageScaleLocked(JNIEnv* env,
     float dip_scale =
         static_cast<float>(Java_AwSettings_getDipScaleLocked(env, obj));
     rvhe->SetInitialPageScale(initial_page_scale_percent / dip_scale / 100.0f);
-    initial_page_scale_is_non_default_ = true;
   }
 }
 
@@ -657,6 +655,9 @@ void AwSettings::PopulateWebPreferencesLocked(JNIEnv* env,
   web_prefs->javascript_enabled =
       Java_AwSettings_getJavaScriptEnabledLocked(env, obj);
 
+  web_prefs->allow_file_access_from_workers =
+      Java_AwSettings_getAllowFileAccess(env, obj);
+
   web_prefs->allow_universal_access_from_file_urls =
       Java_AwSettings_getAllowUniversalAccessFromFileUrlsLocked(env, obj);
 
@@ -693,9 +694,6 @@ void AwSettings::PopulateWebPreferencesLocked(JNIEnv* env,
 
   web_prefs->initialize_at_minimum_page_scale =
       Java_AwSettings_getLoadWithOverviewModeLocked(env, obj);
-
-  initial_page_scale_is_non_default_ |=
-      (web_prefs->initialize_at_minimum_page_scale);
 
   web_prefs->autoplay_policy =
       Java_AwSettings_getMediaPlaybackRequiresUserGestureLocked(env, obj)

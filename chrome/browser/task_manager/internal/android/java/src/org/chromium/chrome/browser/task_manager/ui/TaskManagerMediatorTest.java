@@ -8,7 +8,10 @@ import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.Mockito.eq;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -22,6 +25,7 @@ import static org.chromium.chrome.browser.task_manager.ui.TaskManagerProperties.
 
 import android.graphics.Bitmap;
 
+import org.jni_zero.JniUniquePtr;
 import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
@@ -51,6 +55,9 @@ public class TaskManagerMediatorTest {
     @Mock private Callback<Boolean> mOnHasKillableSelectedTaskChanged;
     @Mock private Bitmap mBitmap;
 
+    @Mock
+    private JniUniquePtr<TaskManagerServiceBridge.NativeTaskManagerObserverAndroid> mNativeObserver;
+
     private PropertyModel mHeader;
     private ModelList mTasks;
     private TaskManagerMediator mMediator;
@@ -59,6 +66,7 @@ public class TaskManagerMediatorTest {
     @Before
     public void setUp() {
         TaskManagerServiceBridgeJni.setInstanceForTesting(mBridge);
+        when(mBridge.addObserver(any(), anyInt(), anyInt())).thenReturn(mNativeObserver);
 
         mHeader = new PropertyModel(HEADER_PROPERTY_KEYS);
         mTasks = new ModelList();
@@ -225,9 +233,14 @@ public class TaskManagerMediatorTest {
         mMediator.toggleSelection(mTasks.get(1).model);
 
         assertTrue(mTasks.get(1).model.get(IS_SELECTED));
+        assertTrue(mTasks.get(0).model.get(IS_SELECTED));
+
+        mMediator.toggleSelection(mTasks.get(0).model);
         assertFalse(mTasks.get(0).model.get(IS_SELECTED));
+        assertTrue(mTasks.get(1).model.get(IS_SELECTED));
 
         mMediator.toggleSelection(mTasks.get(1).model);
+        assertFalse(mTasks.get(1).model.get(IS_SELECTED));
 
         verify(mOnHasKillableSelectedTaskChanged).onResult(false);
     }
@@ -244,9 +257,36 @@ public class TaskManagerMediatorTest {
 
         verify(mOnHasKillableSelectedTaskChanged).onResult(true);
 
+        // Selecting a non-killable task while a killable task is still selected keeps it true.
         mMediator.toggleSelection(mTasks.get(1).model);
+        assertTrue(mTasks.get(0).model.get(IS_SELECTED));
+        assertTrue(mTasks.get(1).model.get(IS_SELECTED));
+
+        // Deselecting the killable task leaves only the non-killable task selected -> false.
+        mMediator.toggleSelection(mTasks.get(0).model);
 
         verify(mOnHasKillableSelectedTaskChanged).onResult(false);
+    }
+
+    @Test
+    public void testKillMultipleSelectedTasks() {
+        when(mBridge.isTaskKillable(1)).thenReturn(true);
+        when(mBridge.isTaskKillable(2)).thenReturn(false);
+        when(mBridge.isTaskKillable(3)).thenReturn(true);
+
+        mObserver.onTaskAdded(1);
+        mObserver.onTaskAdded(2);
+        mObserver.onTaskAdded(3);
+
+        mMediator.toggleSelection(mTasks.get(0).model);
+        mMediator.toggleSelection(mTasks.get(1).model);
+        mMediator.toggleSelection(mTasks.get(2).model);
+
+        mMediator.killSelectedTasks();
+
+        verify(mBridge).killTask(1);
+        verify(mBridge, never()).killTask(2);
+        verify(mBridge).killTask(3);
     }
 
     @Test

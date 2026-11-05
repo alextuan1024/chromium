@@ -34,6 +34,27 @@ TEST(FeaturesTest, ForcedEmbeddedPageHost_OverrideToGoogleHostWithPort) {
             GetForcedEmbeddedPageHost());
 }
 
+TEST(FeaturesTest, ForcedEmbeddedPageHost_OverrideToGoogleHost_WithHttps) {
+  base::test::ScopedFeatureList scoped_features;
+  scoped_features.InitAndEnableFeatureWithParameters(
+      kContextualTasks, {{"contextual-tasks-forced-embedded-page-host",
+                          "https://localhost.corp.google.com"}});
+
+  EXPECT_EQ((HostOverride{"localhost.corp.google.com", std::nullopt}),
+            GetForcedEmbeddedPageHost());
+}
+
+TEST(FeaturesTest,
+     ForcedEmbeddedPageHost_OverrideToGoogleHost_WithHttpsAndPort) {
+  base::test::ScopedFeatureList scoped_features;
+  scoped_features.InitAndEnableFeatureWithParameters(
+      kContextualTasks, {{"contextual-tasks-forced-embedded-page-host",
+                          "https://localhost.corp.google.com:8888"}});
+
+  EXPECT_EQ((HostOverride{"localhost.corp.google.com", 8888}),
+            GetForcedEmbeddedPageHost());
+}
+
 TEST(FeaturesTest, ForcedEmbeddedPageHost_OverrideToNonGoogleHost) {
   base::test::ScopedFeatureList scoped_features;
   scoped_features.InitAndEnableFeatureWithParameters(
@@ -81,6 +102,11 @@ TEST(FeaturesTest, ForcedEmbeddedPageHost_SetOverrideRuntime) {
 }
 
 TEST(FeaturesTest, IsContextualTasksUnboundedMenuEnabled_DefaultDisabled) {
+  base::test::ScopedFeatureList scoped_features;
+  scoped_features.InitWithFeatures(
+      /*enabled_features=*/{},
+      /*disabled_features=*/{kContextualTasksUnboundedMenu,
+                             kContextualTasksSidePanelRearchitecture});
   EXPECT_FALSE(IsContextualTasksUnboundedMenuEnabled());
 }
 
@@ -95,6 +121,106 @@ TEST(FeaturesTest,
   base::test::ScopedFeatureList scoped_features;
   scoped_features.InitAndEnableFeature(kContextualTasksSidePanelRearchitecture);
   EXPECT_TRUE(IsContextualTasksUnboundedMenuEnabled());
+}
+
+TEST(FeaturesTest, IsContextualTasksUIEnabled_SidePanelRearchitectureEnabled) {
+  base::test::ScopedFeatureList scoped_features;
+  scoped_features.InitWithFeatures({kContextualTasksSidePanelRearchitecture},
+                                   {kContextualTasks, kContextualTasksSidePanel,
+                                    kContextualTasksRearchitecture});
+  EXPECT_TRUE(IsContextualTasksUIEnabled());
+}
+
+TEST(FeaturesTest,
+     IsContextualTasksEphemeralEntryPointEnabled_DefaultDisabled) {
+  EXPECT_FALSE(IsContextualTasksEphemeralEntryPointEnabled());
+}
+
+TEST(FeaturesTest, IsContextualTasksEphemeralEntryPointEnabled_LegacyParam) {
+  base::test::ScopedFeatureList scoped_features;
+  scoped_features.InitAndEnableFeatureWithParameters(
+      kContextualTasksEphemeralBrandedEntryPoint,
+      {{"ContextualTasksEntryPoint", "toolbar-ephemeral-branded"}});
+  EXPECT_TRUE(IsContextualTasksEphemeralEntryPointEnabled());
+}
+
+TEST(FeaturesTest,
+     IsContextualTasksEphemeralEntryPointEnabled_PinButtonRefactor) {
+  base::test::ScopedFeatureList scoped_features;
+  scoped_features.InitWithFeatures(
+      {kContextualTasksPinningV2, kContextualTasksEphemeralPinButtonRefactor},
+      {});
+  EXPECT_TRUE(IsContextualTasksEphemeralEntryPointEnabled());
+}
+
+TEST(FeaturesTest,
+     IsContextualTasksEphemeralEntryPointEnabled_RefactorRequiresPinningV2) {
+  base::test::ScopedFeatureList scoped_features;
+  scoped_features.InitWithFeatures({kContextualTasksEphemeralPinButtonRefactor},
+                                   {kContextualTasksPinningV2});
+  EXPECT_FALSE(IsContextualTasksEphemeralEntryPointEnabled());
+}
+
+TEST(FeaturesTest, GetEphemeralButtonContextMenuOption_FeatureDisabled) {
+  base::test::ScopedFeatureList scoped_features;
+  scoped_features.InitAndDisableFeature(
+      kContextualTasksEphemeralButtonContextMenu);
+  EXPECT_EQ(EphemeralButtonContextMenuOption::kHideSidePanel,
+            GetEphemeralButtonContextMenuOption());
+}
+
+TEST(FeaturesTest, GetEphemeralButtonContextMenuOption_EnumOptions) {
+  struct TestCase {
+    const char* param_value;
+    EphemeralButtonContextMenuOption expected_option;
+  };
+  constexpr TestCase kTestCases[] = {
+      {"hide-side-panel", EphemeralButtonContextMenuOption::kHideSidePanel},
+      {"close-side-panel", EphemeralButtonContextMenuOption::kCloseSidePanel},
+      {"dismiss-active-search",
+       EphemeralButtonContextMenuOption::kDismissActiveSearch},
+      {"dismiss-active-search-in-tab",
+       EphemeralButtonContextMenuOption::kDismissActiveSearchInTab},
+  };
+
+  for (const auto& test_case : kTestCases) {
+    SCOPED_TRACE(test_case.param_value);
+    base::test::ScopedFeatureList scoped_features;
+    scoped_features.InitAndEnableFeatureWithParameters(
+        kContextualTasksEphemeralButtonContextMenu,
+        {{"ContextualTasksEphemeralButtonContextMenuOption",
+          test_case.param_value}});
+    EXPECT_EQ(test_case.expected_option, GetEphemeralButtonContextMenuOption());
+  }
+}
+
+TEST(FeaturesTest, GetEphemeralButtonContextMenuOption_LegacyBooleanFallback) {
+  {
+    base::test::ScopedFeatureList scoped_features;
+    scoped_features.InitAndEnableFeatureWithParameters(
+        kContextualTasksEphemeralButtonContextMenu,
+        {{"ContextualTasksEphemeralButtonContextMenuCloseSidePanel", "true"}});
+    EXPECT_EQ(EphemeralButtonContextMenuOption::kCloseSidePanel,
+              GetEphemeralButtonContextMenuOption());
+  }
+  {
+    base::test::ScopedFeatureList scoped_features;
+    scoped_features.InitAndEnableFeatureWithParameters(
+        kContextualTasksEphemeralButtonContextMenu,
+        {{"ContextualTasksEphemeralButtonContextMenuCloseSidePanel", "false"}});
+    EXPECT_EQ(EphemeralButtonContextMenuOption::kHideSidePanel,
+              GetEphemeralButtonContextMenuOption());
+  }
+  {
+    base::test::ScopedFeatureList scoped_features;
+    scoped_features.InitAndEnableFeatureWithParameters(
+        kContextualTasksEphemeralButtonContextMenu,
+        {{"ContextualTasksEphemeralButtonContextMenuOption",
+          "dismiss-active-search"},
+         {"ContextualTasksEphemeralButtonContextMenuCloseSidePanel", "true"}});
+    EXPECT_EQ(EphemeralButtonContextMenuOption::kDismissActiveSearch,
+              GetEphemeralButtonContextMenuOption());
+  }
 }
 
 }  // namespace contextual_tasks

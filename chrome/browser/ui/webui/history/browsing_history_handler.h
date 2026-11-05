@@ -23,13 +23,16 @@
 #include "base/timer/elapsed_timer.h"
 #include "base/values.h"
 #include "chrome/browser/history/profile_based_browsing_history_driver.h"
-#include "chrome/browser/ui/webui/top_chrome/top_chrome_web_ui_controller.h"
 #include "components/signin/public/identity_manager/identity_manager.h"
 #include "mojo/public/cpp/bindings/pending_receiver.h"
 #include "mojo/public/cpp/bindings/pending_remote.h"
 #include "mojo/public/cpp/bindings/receiver.h"
 #include "mojo/public/cpp/bindings/remote.h"
 #include "ui/webui/resources/cr_components/history/history.mojom.h"
+
+#if !BUILDFLAG(IS_ANDROID)
+#include "chrome/browser/ui/webui/top_chrome/top_chrome_web_ui_controller.h"  // nogncheck
+#endif
 
 namespace content {
 class WebContents;
@@ -54,10 +57,10 @@ class BrowsingHistoryHandler : public history::mojom::PageHandler,
 
   ~BrowsingHistoryHandler() override;
 
+#if !BUILDFLAG(IS_ANDROID)
   void SetSidePanelUIEmbedder(
       base::WeakPtr<TopChromeWebUIController::Embedder> side_panel_embedder);
-
-  void StartQueryHistory();
+#endif
 
   void SetPage(mojo::PendingRemote<history::mojom::Page> pending_page) override;
 
@@ -66,8 +69,10 @@ class BrowsingHistoryHandler : public history::mojom::PageHandler,
   void QueryHistory(const std::string& query,
                     int max_count,
                     std::optional<double> begin_timestamp,
+                    std::optional<double> end_timestamp,
                     bool include_user_visits,
                     bool include_actor_visits,
+                    const std::vector<std::string>& client_ids,
                     QueryHistoryCallback callback) override;
 
   void QueryHistoryContinuation(
@@ -99,10 +104,13 @@ class BrowsingHistoryHandler : public history::mojom::PageHandler,
 
   // history::mojom::PageHandler:
   void RequestAccountInfo(RequestAccountInfoCallback callback) override;
-  void TurnOnHistorySync() override;
+  void TurnOnHistorySync(history::mojom::AccessPoint access_point) override;
   void OpenCriticalActionConversation(
       const std::string& critical_action_id,
       OpenCriticalActionConversationCallback callback) override;
+  void GetSyncedDevicesForFiltering(
+      GetSyncedDevicesForFilteringCallback callback) override;
+  void GetTimePeriodOptions(GetTimePeriodOptionsCallback callback) override;
 #if !BUILDFLAG(IS_CHROMEOS)
   void ShouldShowHistoryPageHistorySyncPromo(
       ShouldShowHistoryPageHistorySyncPromoCallback callback) override;
@@ -133,15 +141,17 @@ class BrowsingHistoryHandler : public history::mojom::PageHandler,
   virtual void SendHistoryQuery(int count,
                                 const std::string& query,
                                 std::optional<double> begin_timestamp,
+                                std::optional<double> end_timestamp,
                                 bool include_user_visits,
-                                bool include_actor_visits);
+                                bool include_actor_visits,
+                                const std::vector<std::string>& client_ids);
 
  private:
   FRIEND_TEST_ALL_PREFIXES(BrowsingHistoryHandlerTest,
                            ObservingWebHistoryDeletions);
   FRIEND_TEST_ALL_PREFIXES(BrowsingHistoryHandlerTest, MdTruncatesTitles);
 
-#if !BUILDFLAG(IS_CHROMEOS)
+#if !BUILDFLAG(IS_CHROMEOS) && !BUILDFLAG(IS_ANDROID)
   int GetHistoryPageHistorySyncPromoShownCount() const;
   void IncrementHistoryPageHistorySyncPromoShownCountPref();
 
@@ -153,7 +163,9 @@ class BrowsingHistoryHandler : public history::mojom::PageHandler,
   void SetHistoryPageHistorySyncPromoShownAfterDismissal();
 #endif
 
+#if !BUILDFLAG(IS_ANDROID)
   base::WeakPtr<TopChromeWebUIController::Embedder> side_panel_embedder_;
+#endif
 
   // signin::IdentityManager::Observer:
   void OnExtendedAccountInfoUpdated(const AccountInfo& info) override;

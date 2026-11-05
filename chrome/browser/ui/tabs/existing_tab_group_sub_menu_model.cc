@@ -62,7 +62,7 @@ ExistingTabGroupSubMenuModel::ExistingTabGroupSubMenuModel(
                                kMinExistingTabGroupCommandId,
                                TabStripModel::CommandAddToNewGroup),
       tab_menu_model_delegate_(tab_menu_model_delegate) {
-  DCHECK(model->SupportsTabGroups());
+  CHECK(model->SupportsTabGroups(), base::NotFatalUntil::M162);
   std::vector<MenuItemInfo> menu_item_infos;
 
   menu_item_infos = GetMenuItemsFromModel(model);
@@ -113,7 +113,7 @@ ExistingTabGroupSubMenuModel::GetGroupsFromModel(TabStripModel* current_model) {
   // Add tab groups to `groups` if they differ from our indexes current group.
   std::vector<tab_groups::TabGroupId> groups;
   for (auto& group : current_model->group_model()->ListTabGroups()) {
-    if (current_model->IsTabGroupTemporary(group)) {
+    if (current_model->IsEphemeralTabGroup(group)) {
       continue;
     }
 
@@ -208,11 +208,6 @@ bool ExistingTabGroupSubMenuModel::ShouldShowSubmenu(
   return false;
 }
 
-void ExistingTabGroupSubMenuModel::ExecuteExistingCommandForTesting(
-    size_t target_index) {
-  ExecuteExistingCommand(target_index);
-}
-
 void ExistingTabGroupSubMenuModel::ExecuteExistingCommand(size_t target_index) {
   // The tab strip may have been modified while the context menu was open,
   // including closing the tab originally at `context_index`.
@@ -220,7 +215,8 @@ void ExistingTabGroupSubMenuModel::ExecuteExistingCommand(size_t target_index) {
     return;
   }
 
-  DCHECK_LE(size_t(target_index), target_index_to_group_mapping_.size());
+  CHECK_LE(size_t(target_index), target_index_to_group_mapping_.size(),
+           base::NotFatalUntil::M162);
   TabGroupModel* group_model = model()->group_model();
   if (!group_model) {
     return;
@@ -240,7 +236,7 @@ bool ExistingTabGroupSubMenuModel::ShouldShowGroup(
     TabStripModel* model,
     int context_index,
     tab_groups::TabGroupId group) {
-  if (model->IsTabGroupTemporary(group)) {
+  if (model->IsEphemeralTabGroup(group)) {
     return false;
   }
 
@@ -277,7 +273,8 @@ void ExistingTabGroupSubMenuModel::AddSelectedTabsToOpenGroup(
   // If the group exists in this model, move the tab into it.
   TabGroupModel* group_model = model()->group_model();
   if (group_model->ContainsTabGroup(group)) {
-    model()->ExecuteAddToExistingGroupCommand(GetContextIndex(), group);
+    model()->ExecuteAddToExistingGroupCommand(
+        model()->GetTabAtIndex(GetContextIndex())->GetHandle(), group);
     return;
   }
 
@@ -333,5 +330,6 @@ void ExistingTabGroupSubMenuModel::AddSelectedTabsToOpenGroup(
     }
   }
 
-  found_model->ExecuteAddToExistingGroupCommand(selected_indices.back(), group);
+  found_model->ExecuteAddToExistingGroupCommand(
+      found_model->GetTabAtIndex(selected_indices.back())->GetHandle(), group);
 }

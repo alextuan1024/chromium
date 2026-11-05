@@ -12,7 +12,6 @@
 #import "ios/chrome/browser/autofill/atmemory/ui/at_memory_granular_fill_mutator.h"
 #import "ios/chrome/browser/autofill/atmemory/utils/atmemory_ui_util.h"
 #import "ios/chrome/browser/shared/ui/list_model/list_model.h"
-#import "ios/chrome/browser/shared/ui/table_view/cells/table_view_cell.h"
 #import "ios/chrome/browser/shared/ui/table_view/cells/table_view_link_header_footer_item.h"
 #import "ios/chrome/browser/shared/ui/table_view/content_configuration/table_view_cell_content_configuration.h"
 #import "ios/chrome/browser/shared/ui/table_view/table_view_utils.h"
@@ -21,6 +20,9 @@
 #import "ui/base/l10n/l10n_util.h"
 
 namespace {
+
+// Vertical spacing above the manage enhanced autofill section.
+constexpr CGFloat kManageSectionHeaderHeight = 16.0;
 
 // Section identifiers for the diffable data source.
 enum SectionIdentifier {
@@ -45,6 +47,9 @@ enum ItemIdentifier {
   UITableViewDiffableDataSource<NSNumber*, id>* _dataSource;
   // List of dynamic granular fill items to display.
   NSArray<AtMemoryGranularFillItem*>* _granularFillItems;
+  // Whether the "Suggested by Gemini" footer is shown for the granular fill
+  // section.
+  BOOL _showSuggestedByGeminiFooter;
 }
 
 #pragma mark - UIViewController
@@ -56,6 +61,9 @@ enum ItemIdentifier {
   self.tableView.separatorStyle = UITableViewCellSeparatorStyleNone;
   self.tableView.backgroundColor =
       [UIColor colorNamed:kGroupedPrimaryBackgroundColor];
+  self.tableView.tableHeaderView =
+      [[UIView alloc] initWithFrame:CGRectMake(0, 0, 0, CGFLOAT_MIN)];
+  self.tableView.sectionHeaderTopPadding = 0;
 
   UIBarButtonItem* cancelButton = [[UIBarButtonItem alloc]
       initWithBarButtonSystemItem:UIBarButtonSystemItemCancel
@@ -109,13 +117,24 @@ enum ItemIdentifier {
   }
 }
 
+- (void)setShowSuggestedByGeminiFooter:(BOOL)show {
+  if (_showSuggestedByGeminiFooter == show) {
+    return;
+  }
+  _showSuggestedByGeminiFooter = show;
+  if (_dataSource) {
+    [self.tableView reloadData];
+  }
+}
+
 #pragma mark - UITableViewDelegate
 
 - (UIView*)tableView:(UITableView*)tableView
     viewForFooterInSection:(NSInteger)section {
   SectionIdentifier sectionIdentifier = static_cast<SectionIdentifier>(
       [_dataSource sectionIdentifierForIndex:section].unsignedIntegerValue);
-  if (sectionIdentifier == kGranularFillItemsSection) {
+  if (sectionIdentifier == kGranularFillItemsSection &&
+      _showSuggestedByGeminiFooter) {
     TableViewLinkHeaderFooterView* footer =
         DequeueTableViewHeaderFooter<TableViewLinkHeaderFooterView>(tableView);
     [footer setText:l10n_util::GetNSString(IDS_AUTOFILL_AI_SUGGESTED_BY_GEMINI)
@@ -129,14 +148,25 @@ enum ItemIdentifier {
     heightForFooterInSection:(NSInteger)section {
   SectionIdentifier sectionIdentifier = static_cast<SectionIdentifier>(
       [_dataSource sectionIdentifierForIndex:section].unsignedIntegerValue);
-  if (sectionIdentifier == kGranularFillItemsSection) {
+  if (sectionIdentifier == kGranularFillItemsSection &&
+      _showSuggestedByGeminiFooter) {
     return UITableViewAutomaticDimension;
   }
   return 0.0;
 }
 
+- (UIView*)tableView:(UITableView*)tableView
+    viewForHeaderInSection:(NSInteger)section {
+  return nil;
+}
+
 - (CGFloat)tableView:(UITableView*)tableView
     heightForHeaderInSection:(NSInteger)section {
+  SectionIdentifier sectionIdentifier = static_cast<SectionIdentifier>(
+      [_dataSource sectionIdentifierForIndex:section].unsignedIntegerValue);
+  if (sectionIdentifier == kManageSection) {
+    return kManageSectionHeaderHeight;
+  }
   return 0.0;
 }
 

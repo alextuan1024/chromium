@@ -86,7 +86,9 @@ SandboxGrantResult MaybeDeleteOldData(
     return SandboxGrantResult::kSuccess;
 
   // Check old path exists, and is a directory.
-  CHECK(base::DirectoryExists(old_path), base::NotFatalUntil::M159);
+  // TODO(crbug.com/571050903): CHECK-exclusion: Convert to a CHECK once we are
+  // confident it won't be triggered.
+  DCHECK(base::DirectoryExists(old_path));
 
   base::FilePath old_file_path = old_path.Append(*filename);
 
@@ -136,8 +138,9 @@ SandboxGrantResult MaybeCopyData(const base::FilePath& old_path,
     return SandboxGrantResult::kSuccess;
 
   // Check both paths exist, and are directories.
-  CHECK(base::DirectoryExists(old_path) && base::DirectoryExists(new_path),
-        base::NotFatalUntil::M159);
+  // TODO(crbug.com/571728864): CHECK-exclusion: Convert to a CHECK once we are
+  // confident it won't be triggered.
+  DCHECK(base::DirectoryExists(old_path) && base::DirectoryExists(new_path));
 
   base::FilePath old_file_path = old_path.Append(*filename);
   base::FilePath new_file_path = new_path.Append(*filename);
@@ -185,9 +188,10 @@ SandboxGrantResult MaybeCopyData(const base::FilePath& old_path,
 SandboxGrantResult CleanUpOldData(
     network::mojom::NetworkContextParams* params) {
   // Never delete old data unless the checkpoint file exists.
-  CHECK(base::PathExists(params->file_paths->data_directory.path().Append(
-            kCheckpointFileName)),
-        base::NotFatalUntil::M159);
+  // TODO(crbug.com/571386676): CHECK-exclusion: Convert to a CHECK once we are
+  // confident it won't be triggered.
+  DCHECK(base::PathExists(
+      params->file_paths->data_directory.path().Append(kCheckpointFileName)));
 
   SandboxGrantResult last_error = SandboxGrantResult::kSuccess;
   SandboxGrantResult result = MaybeDeleteOldData(
@@ -395,7 +399,11 @@ SandboxGrantResult MaybeGrantSandboxAccessToNetworkContextData(
     //
     // Cache/
     // |-- Cache_Data/ <- `http_cache_directory`
-    // \-- No_Vary_Search/ <- `no_vary_search_directory`
+    // |-- No_Vary_Search/ <- `no_vary_search_directory`
+    // \-- Logical_Invalidation/ <- `logical_invalidation_directory`
+    //
+    // `Logical_Invalidation` is created lazily on first write by
+    // `LogicalInvalidationStore` and inherits the parent directory's ACL.
     //
     // The path must exist for the cache ACL to be set. Create if needed.
     if (base::CreateDirectory(
@@ -426,6 +434,16 @@ SandboxGrantResult MaybeGrantSandboxAccessToNetworkContextData(
       // have already been emplaced above.
       base::CreateDirectory(
           params->file_paths->no_vary_search_directory.value().path());
+    }
+
+    // Not created here: `LogicalInvalidationStore` does that on its first
+    // write, because Android skips this function entirely. It still has to be
+    // a sibling so that the ACL emplaced on the shared parent above covers it.
+    if (params->file_paths->logical_invalidation_directory) {
+      CHECK_EQ(
+          params->file_paths->logical_invalidation_directory->path().DirName(),
+          params->file_paths->http_cache_directory->path().DirName())
+          << "Logical Invalidation and Cache must be siblings.";
     }
   }
   if (params->file_paths->shared_dictionary_directory &&
@@ -507,35 +525,33 @@ SandboxGrantResult MaybeGrantSandboxAccessToNetworkContextData(
     return SandboxGrantResult::kFailedToCreateDataDirectory;
   }
 
-  {
-    SCOPED_UMA_HISTOGRAM_TIMER("NetworkService.TimeToGrantDataAccess");
-    // This must be done on each load of the network context for two
-    // platform-specific reasons:
-    //
-    // 1. On Windows Chrome, the LPAC SID for each channel is different so it is
-    // possible that this data might be read by a different channel and we need
-    // to explicitly support that.
-    // 2. Other platforms such as macOS and Linux need to grant access each time
-    // as they do not rely on filesystem permissions, but runtime sandbox broker
-    // permissions.
-    if (!MaybeGrantAccessToDataPath(sandbox_params,
-                                    &params->file_paths->data_directory)) {
-      PLOG(ERROR)
-          << "Failed to grant sandbox access to network context data directory "
-          << params->file_paths->data_directory.path();
-      // If migration has already happened there isn't much that can be done
-      // about this, the data has already moved, but the sandbox might not have
-      // access.
-      if (migration_already_happened)
-        return SandboxGrantResult::kMigrationAlreadySucceededWithNoAccess;
-      // If migration hasn't happened yet, then fail here, and do not attempt to
-      // migrate or proceed further. Better to just leave the data where it is.
-      // In this case `unsandboxed_data_path` will continue to be used and the
-      // migration attempt will be retried the next time the same network
-      // context is created with `trigger_migration` set.
-      return SandboxGrantResult::kFailedToGrantSandboxAccessToData;
+  // This must be done on each load of the network context for two
+  // platform-specific reasons:
+  //
+  // 1. On Windows Chrome, the LPAC SID for each channel is different so it is
+  // possible that this data might be read by a different channel and we need
+  // to explicitly support that.
+  // 2. Other platforms such as macOS and Linux need to grant access each time
+  // as they do not rely on filesystem permissions, but runtime sandbox broker
+  // permissions.
+  if (!MaybeGrantAccessToDataPath(sandbox_params,
+                                  &params->file_paths->data_directory)) {
+    PLOG(ERROR)
+        << "Failed to grant sandbox access to network context data directory "
+        << params->file_paths->data_directory.path();
+    // If migration has already happened there isn't much that can be done
+    // about this, the data has already moved, but the sandbox might not have
+    // access.
+    if (migration_already_happened) {
+      return SandboxGrantResult::kMigrationAlreadySucceededWithNoAccess;
     }
-  }  // SCOPED_UMA_HISTOGRAM_TIMER
+    // If migration hasn't happened yet, then fail here, and do not attempt to
+    // migrate or proceed further. Better to just leave the data where it is.
+    // In this case `unsandboxed_data_path` will continue to be used and the
+    // migration attempt will be retried the next time the same network
+    // context is created with `trigger_migration` set.
+    return SandboxGrantResult::kFailedToGrantSandboxAccessToData;
+  }
 
   // This covers cases 3. and 4. where a migration has already happened.
   if (migration_already_happened) {

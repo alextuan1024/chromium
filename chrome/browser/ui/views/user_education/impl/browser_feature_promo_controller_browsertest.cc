@@ -63,6 +63,7 @@
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/events/event_constants.h"
 #include "ui/events/keycodes/keyboard_codes.h"
+#include "ui/views/bubble/bubble_dialog_delegate_view.h"
 #include "ui/views/controls/button/label_button.h"
 #include "ui/views/interaction/element_tracker_views.h"
 #include "ui/views/interaction/interaction_test_util_views.h"
@@ -1182,10 +1183,7 @@ IN_PROC_BROWSER_TEST_F(BrowserFeaturePromoControllerTrackerInitializedTest,
       IDS_CHROME_TIP,
       base::BindLambdaForTesting([&](const UserEducationContextPtr& context,
                                      FeaturePromoHandle handle) {
-        views::ElementTrackerViews::GetInstance()
-            ->GetUniqueView(kToolbarAppMenuButtonElementId,
-                            context->GetElementContext())
-            ->SetVisible(false);
+        GetAnchorView()->SetVisible(false);
         promo_handle = std::move(handle);
       })));
 

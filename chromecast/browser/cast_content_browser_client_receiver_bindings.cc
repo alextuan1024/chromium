@@ -57,9 +57,9 @@ void CreateMediaDrmStorage(
 
   // The object will be deleted on connection error, or when the frame navigates
   // away.
-  new cdm::MediaDrmStorageImpl(*render_frame_host, pref_service,
-                               base::BindRepeating(&CreateOriginId),
-                               std::move(receiver));
+  base::MakeSelfDeleting<cdm::MediaDrmStorageImpl>(
+      *render_frame_host, pref_service, base::BindRepeating(&CreateOriginId),
+      std::move(receiver));
 }
 
 }  // namespace
@@ -182,10 +182,6 @@ void CastContentBrowserClient::BindGpuHostReceiver(
                                 base::Unretained(this), std::move(receiver)));
 }
 #endif  // BUILDFLAG(ENABLE_CAST_RENDERER)
-
-void CastContentBrowserClient::RunServiceInstance(
-    const service_manager::Identity& identity,
-    mojo::PendingReceiver<service_manager::mojom::Service>* receiver) {}
 
 }  // namespace shell
 }  // namespace chromecast

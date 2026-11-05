@@ -10,8 +10,11 @@
 #include "base/debug/dump_without_crashing.h"
 #include "base/run_loop.h"
 #include "base/test/metrics/histogram_tester.h"
+#include "base/test/scoped_feature_list.h"
 #include "base/values.h"
 #include "build/build_config.h"
+#include "chrome/browser/external_protocol/constants.h"
+#include "chrome/browser/external_protocol/features.h"
 #include "chrome/browser/prefs/browser_prefs.h"
 #include "chrome/common/pref_names.h"
 #include "chrome/test/base/testing_browser_process.h"
@@ -34,6 +37,12 @@
 #else
 #include "components/web_modal/web_contents_modal_dialog_manager.h"
 #endif  // BUILDFLAG(IS_ANDROID)
+
+namespace {
+
+constexpr char kLocalOnlyScheme[] = "local+custom";
+
+}  // namespace
 
 class FakeExternalProtocolHandlerWorker
     : public shell_integration::DefaultSchemeClientWorker {
@@ -508,6 +517,76 @@ TEST_F(ExternalProtocolHandlerTest, TestGetBlockStateDefaultDontBlock) {
       ExternalProtocolHandler::BlockStateMetric::kAllowedDefaultMail, 1);
 }
 
+TEST_F(ExternalProtocolHandlerTest, TestGetBlockStateLocalOnlyPrefixDisabled) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndDisableFeature(features::kLocalOnlyAppProtocolPrefix);
+
+  url::Origin test_origin = url::Origin::Create(GURL("https://example.test"));
+  EXPECT_EQ(ExternalProtocolHandler::UNKNOWN,
+            ExternalProtocolHandler::GetBlockState(
+                kLocalOnlyScheme, &test_origin, profile_.get()));
+}
+
+TEST_F(ExternalProtocolHandlerTest, TestGetBlockStateLocalOnlyPrefix) {
+  base::test::ScopedFeatureList feature_list(
+      features::kLocalOnlyAppProtocolPrefix);
+
+  url::Origin test_origin = url::Origin::Create(GURL("https://example.test"));
+  EXPECT_EQ(ExternalProtocolHandler::BLOCK,
+            ExternalProtocolHandler::GetBlockState(
+                kLocalOnlyScheme, &test_origin, profile_.get()));
+
+  url::Origin opaque_origin =
+      url::Origin::Resolve(GURL("data:text/html,hi"), test_origin);
+  EXPECT_EQ(ExternalProtocolHandler::BLOCK,
+            ExternalProtocolHandler::GetBlockState(
+                kLocalOnlyScheme, &opaque_origin, profile_.get()));
+
+  EXPECT_EQ(ExternalProtocolHandler::UNKNOWN,
+            ExternalProtocolHandler::GetBlockState(kLocalOnlyScheme, nullptr,
+                                                   profile_.get()));
+  EXPECT_EQ(ExternalProtocolHandler::UNKNOWN,
+            ExternalProtocolHandler::GetBlockState("custom", &test_origin,
+                                                   profile_.get()));
+  EXPECT_EQ(ExternalProtocolHandler::UNKNOWN,
+            ExternalProtocolHandler::GetBlockState("local-custom", &test_origin,
+                                                   profile_.get()));
+
+  ExternalProtocolHandler::SetBlockState(kLocalOnlyScheme, test_origin,
+                                         ExternalProtocolHandler::DONT_BLOCK,
+                                         profile_.get());
+  EXPECT_EQ(ExternalProtocolHandler::BLOCK,
+            ExternalProtocolHandler::GetBlockState(
+                kLocalOnlyScheme, &test_origin, profile_.get()));
+}
+
+TEST_F(ExternalProtocolHandlerTest,
+       TestPolicyOverridesGetBlockStateLocalOnlyPrefix) {
+  base::test::ScopedFeatureList feature_list(
+      features::kLocalOnlyAppProtocolPrefix);
+
+  url::Origin test_origin = url::Origin::Create(GURL("https://example.test"));
+  EXPECT_EQ(ExternalProtocolHandler::BLOCK,
+            ExternalProtocolHandler::GetBlockState(
+                kLocalOnlyScheme, &test_origin, profile_.get()));
+
+  base::DictValue protocol_origins_map;
+  protocol_origins_map.Set(policy::external_protocol::kProtocolNameKey,
+                           kLocalOnlyScheme);
+  base::ListValue origins;
+  origins.Append("*");
+  protocol_origins_map.Set(policy::external_protocol::kOriginListKey,
+                           std::move(origins));
+  base::ListValue protocol_origins_map_list;
+  protocol_origins_map_list.Append(std::move(protocol_origins_map));
+  profile_->GetPrefs()->SetList(prefs::kAutoLaunchProtocolsFromOrigins,
+                                std::move(protocol_origins_map_list));
+
+  EXPECT_EQ(ExternalProtocolHandler::DONT_BLOCK,
+            ExternalProtocolHandler::GetBlockState(
+                kLocalOnlyScheme, &test_origin, profile_.get()));
+}
+
 TEST_F(ExternalProtocolHandlerTest, TestSetBlockState) {
   base::HistogramTester histogram_tester;
 
@@ -666,5 +745,68 @@ TEST_F(ExternalProtocolHandlerTest, TestOpaqueInitiatingOrigin) {
   DoTest(ExternalProtocolHandler::UNKNOWN, shell_integration::NOT_DEFAULT,
          Action::PROMPT, GURL("mailto:test@test.test"), opaque_origin,
          precursor_origin, u"TestApp");
+}
+#endif
+
+TEST_F(ExternalProtocolHandlerTest, TestConsoleMessageElidesFullUrlOnBlock) {
+  GURL url("afp://server/path?code=SECRET_CODE&state=123");
+  url::Origin initiating_origin =
+      url::Origin::Create(GURL("https://example.test"));
+  content::RenderFrameHost* rfh = web_contents_->GetPrimaryMainFrame();
+  content::RenderFrameHostTester::For(rfh)->ClearConsoleMessages();
+
+  ExternalProtocolHandler::SetDelegateForTesting(&delegate_);
+  delegate_.set_block_state(ExternalProtocolHandler::BLOCK);
+  ExternalProtocolHandler::LaunchUrl(
+      url,
+      base::BindRepeating(&ExternalProtocolHandlerTest::GetWebContents,
+                          base::Unretained(this)),
+      ui::PAGE_TRANSITION_LINK, /*has_user_gesture=*/true,
+      /*is_in_fenced_frame_tree=*/false, initiating_origin,
+      rfh->GetWeakDocumentPtr()
+#if BUILDFLAG(IS_ANDROID)
+          ,
+      nullptr
+#endif
+  );
+  run_loop_.Run();
+  ExternalProtocolHandler::SetDelegateForTesting(nullptr);
+
+  const std::vector<std::string>& messages =
+      content::RenderFrameHostTester::For(rfh)->GetConsoleMessages();
+  ASSERT_EQ(1u, messages.size());
+  EXPECT_EQ("Not allowed to launch 'afp:'.", messages[0]);
+  EXPECT_EQ(std::string::npos, messages[0].find("SECRET_CODE"));
+}
+
+#if !BUILDFLAG(IS_ANDROID)
+TEST_F(ExternalProtocolHandlerTest,
+       TestConsoleMessageElidesFullUrlOnAntiFloodBlock) {
+  url::Origin initiating_origin =
+      url::Origin::Create(GURL("https://example.test"));
+  content::RenderFrameHost* rfh = web_contents_->GetPrimaryMainFrame();
+
+  // The first launch sets `g_accept_requests` to false, enabling anti-flood
+  // protection for subsequent launches without a user gesture.
+  DoTest(ExternalProtocolHandler::DONT_BLOCK, shell_integration::NOT_DEFAULT,
+         Action::LAUNCH);
+
+  content::RenderFrameHostTester::For(rfh)->ClearConsoleMessages();
+  GURL redirected_secret_url("nativeapp://cb?code=SECRET_OAUTH_CODE&state=42");
+  ExternalProtocolHandler::LaunchUrl(
+      redirected_secret_url,
+      base::BindRepeating(&ExternalProtocolHandlerTest::GetWebContents,
+                          base::Unretained(this)),
+      ui::PAGE_TRANSITION_LINK, /*has_user_gesture=*/false,
+      /*is_in_fenced_frame_tree=*/false, initiating_origin,
+      rfh->GetWeakDocumentPtr());
+
+  const std::vector<std::string>& messages =
+      content::RenderFrameHostTester::For(rfh)->GetConsoleMessages();
+  ASSERT_EQ(1u, messages.size());
+  EXPECT_EQ(
+      "Not allowed to launch 'nativeapp:' because a user gesture is required.",
+      messages[0]);
+  EXPECT_EQ(std::string::npos, messages[0].find("SECRET_OAUTH_CODE"));
 }
 #endif

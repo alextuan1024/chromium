@@ -52,8 +52,8 @@ class ContextualTasksEligibilityManagerTest : public testing::Test {
   }
 
  protected:
-  content::BrowserTaskEnvironment task_environment_;
   base::test::ScopedFeatureList scoped_feature_list_;
+  content::BrowserTaskEnvironment task_environment_;
   TestingPrefServiceSimple prefs_;
   std::unique_ptr<signin::IdentityTestEnvironment> identity_test_env_;
   std::unique_ptr<MockAimEligibilityService> aim_eligibility_service_;
@@ -253,6 +253,74 @@ TEST_F(ContextualTasksEligibilityManagerTest, Transition_RefreshTokensLoaded) {
   // Trigger OnRefreshTokensLoaded directly on Observer interface.
   manager_->OnRefreshTokensLoaded();
   EXPECT_TRUE(manager_->IsEligible());
+}
+
+TEST_F(ContextualTasksEligibilityManagerTest,
+       IsSidePanelAvailable_True_SignedOut) {
+  CreateManager();
+  EXPECT_FALSE(manager_->IsEligible());
+  EXPECT_TRUE(manager_->IsEligibleWithoutIdentity());
+  EXPECT_TRUE(manager_->IsSidePanelAvailable());
+}
+
+TEST_F(ContextualTasksEligibilityManagerTest,
+       IsSidePanelAvailable_True_SignedIn_AimIneligible) {
+  auto account_info = identity_test_env_->MakePrimaryAccountAvailable(
+      "test@example.com", signin::ConsentLevel::kSignin);
+  identity_test_env_->SetCookieAccounts(
+      {{.email = std::string(account_info.GetEmail()),
+        .gaia_id = account_info.GetGaiaId()}});
+
+  EXPECT_CALL(*aim_eligibility_service_, IsAimEligible())
+      .WillRepeatedly(Return(false));
+
+  CreateManager();
+  EXPECT_FALSE(manager_->IsEligible());
+  EXPECT_FALSE(manager_->IsEligibleWithoutIdentity());
+  EXPECT_TRUE(manager_->IsSidePanelAvailable());
+}
+
+TEST_F(ContextualTasksEligibilityManagerTest,
+       IsSidePanelAvailable_True_SignedOut_AimIneligible) {
+  EXPECT_CALL(*aim_eligibility_service_, IsAimEligible())
+      .WillRepeatedly(Return(false));
+
+  CreateManager();
+  EXPECT_FALSE(manager_->IsEligible());
+  EXPECT_FALSE(manager_->IsEligibleWithoutIdentity());
+  EXPECT_TRUE(manager_->IsSidePanelAvailable());
+}
+
+TEST_F(ContextualTasksEligibilityManagerTest,
+       IsSidePanelAvailable_False_SignedOut_ContextSharingDisabled) {
+  prefs_.SetInteger(contextual_search::kSearchContentSharingSettings, 1);
+
+  CreateManager();
+  EXPECT_FALSE(manager_->IsSidePanelAvailable());
+}
+
+TEST_F(ContextualTasksEligibilityManagerTest,
+       IsSidePanelAvailable_False_SignedIn_ContextSharingDisabled) {
+  auto account_info = identity_test_env_->MakePrimaryAccountAvailable(
+      "test@example.com", signin::ConsentLevel::kSignin);
+  identity_test_env_->SetCookieAccounts(
+      {{.email = std::string(account_info.GetEmail()),
+        .gaia_id = account_info.GetGaiaId()}});
+
+  prefs_.SetInteger(contextual_search::kSearchContentSharingSettings, 1);
+
+  CreateManager();
+  EXPECT_FALSE(manager_->IsSidePanelAvailable());
+}
+
+TEST_F(ContextualTasksEligibilityManagerTest,
+       IsSidePanelAvailable_True_ForceEntryPointEligibility) {
+  base::test::ScopedFeatureList feature_list(
+      kContextualTasksForceEntryPointEligibility);
+  prefs_.SetInteger(contextual_search::kSearchContentSharingSettings, 1);
+
+  CreateManager();
+  EXPECT_TRUE(manager_->IsSidePanelAvailable());
 }
 
 }  // namespace contextual_tasks

@@ -448,8 +448,7 @@ TEST_P(VisualRectMappingTest, SkipAncestorAndViewportClipsInSubframe) {
 
   UpdateAllLifecyclePhasesForTest();
 
-  auto* iframe_element = To<HTMLIFrameElement>(
-      GetDocument().getElementById(AtomicString("child")));
+  auto* iframe_element = To<HTMLIFrameElement>(GetElementById("child"));
   ASSERT_TRUE(iframe_element);
   auto* child_frame = DynamicTo<LocalFrame>(iframe_element->ContentFrame());
   ASSERT_TRUE(child_frame);
@@ -2142,15 +2141,16 @@ TEST_P(VisualRectMappingTest,
 }
 
 TEST_P(VisualRectMappingTest, ElementCanvasTransformVisualRectMapping) {
+  GetDocument().GetSettings()->SetScriptEnabled(true);
   SetBodyInnerHTML(R"HTML(
     <style>body { margin: 0; }</style>
     <canvas content=drawable id="canvas" style="width: 200px; height: 200px">
-      <div id="target" style="width: 100px; height: 100px"></div>
+      <div id="target" drawable style="width: 100px; height: 100px"></div>
     </canvas>
   )HTML");
 
-  auto* target_element = GetDocument().getElementById(AtomicString("target"));
-  auto* canvas_element = GetDocument().getElementById(AtomicString("canvas"));
+  auto* target_element = GetElementById("target");
+  auto* canvas_element = GetElementById("canvas");
   auto* target = target_element->GetLayoutObject();
   auto* canvas = canvas_element->GetLayoutObject();
 
@@ -2170,6 +2170,7 @@ TEST_P(VisualRectMappingTest, ElementCanvasTransformVisualRectMapping) {
 }
 
 TEST_P(VisualRectMappingTest, NestedElementCanvasTransformVisualRectMapping) {
+  GetDocument().GetSettings()->SetScriptEnabled(true);
   SetBodyInnerHTML(R"HTML(
     <style>body { margin: 0; }</style>
     <canvas content=drawable id="canvas" style="width: 400px; height: 200px">
@@ -2179,9 +2180,9 @@ TEST_P(VisualRectMappingTest, NestedElementCanvasTransformVisualRectMapping) {
     </canvas>
   )HTML");
 
-  auto* a_element = GetDocument().getElementById(AtomicString("a"));
-  auto* b_element = GetDocument().getElementById(AtomicString("b"));
-  auto* canvas_element = GetDocument().getElementById(AtomicString("canvas"));
+  auto* a_element = GetElementById("a");
+  auto* b_element = GetElementById("b");
+  auto* canvas_element = GetElementById("canvas");
   auto* b = b_element->GetLayoutObject();
   auto* canvas = canvas_element->GetLayoutObject();
 
@@ -2203,6 +2204,7 @@ TEST_P(VisualRectMappingTest, NestedElementCanvasTransformVisualRectMapping) {
 
 TEST_P(VisualRectMappingTest,
        NestedElementCanvasTransformWithOffsetVisualRectMapping) {
+  GetDocument().GetSettings()->SetScriptEnabled(true);
   SetBodyInnerHTML(R"HTML(
     <style>body { margin: 0; }</style>
     <canvas content=drawable id="canvas" style="width: 400px; height: 200px">
@@ -2212,9 +2214,9 @@ TEST_P(VisualRectMappingTest,
     </canvas>
   )HTML");
 
-  auto* a_element = GetDocument().getElementById(AtomicString("a"));
-  auto* b_element = GetDocument().getElementById(AtomicString("b"));
-  auto* canvas_element = GetDocument().getElementById(AtomicString("canvas"));
+  auto* a_element = GetElementById("a");
+  auto* b_element = GetElementById("b");
+  auto* canvas_element = GetElementById("canvas");
   auto* b = b_element->GetLayoutObject();
   auto* canvas = canvas_element->GetLayoutObject();
 
@@ -2237,6 +2239,7 @@ TEST_P(VisualRectMappingTest,
 TEST_P(
     VisualRectMappingTest,
     NestedElementCanvasTransformChildWithoutCanvasTransformVisualRectMapping) {
+  GetDocument().GetSettings()->SetScriptEnabled(true);
   SetBodyInnerHTML(R"HTML(
     <style>body { margin: 0; }</style>
     <canvas content=drawable id="canvas" style="width: 400px; height: 200px">
@@ -2246,9 +2249,9 @@ TEST_P(
     </canvas>
   )HTML");
 
-  auto* a_element = GetDocument().getElementById(AtomicString("a"));
-  auto* b_element = GetDocument().getElementById(AtomicString("b"));
-  auto* canvas_element = GetDocument().getElementById(AtomicString("canvas"));
+  auto* a_element = GetElementById("a");
+  auto* b_element = GetElementById("b");
+  auto* canvas_element = GetElementById("canvas");
   auto* b = b_element->GetLayoutObject();
   auto* canvas = canvas_element->GetLayoutObject();
 
@@ -2269,6 +2272,7 @@ TEST_P(
 
 TEST_P(VisualRectMappingTest,
        NestedElementCanvasTransformNonDrawableChildVisualRectMapping) {
+  GetDocument().GetSettings()->SetScriptEnabled(true);
   SetBodyInnerHTML(R"HTML(
     <style>body { margin: 0; }</style>
     <canvas content=drawable id="canvas" style="width: 400px; height: 200px">
@@ -2278,9 +2282,9 @@ TEST_P(VisualRectMappingTest,
     </canvas>
   )HTML");
 
-  auto* a_element = GetDocument().getElementById(AtomicString("a"));
-  auto* b_element = GetDocument().getElementById(AtomicString("b"));
-  auto* canvas_element = GetDocument().getElementById(AtomicString("canvas"));
+  auto* a_element = GetElementById("a");
+  auto* b_element = GetElementById("b");
+  auto* canvas_element = GetElementById("canvas");
   auto* b = b_element->GetLayoutObject();
   auto* canvas = canvas_element->GetLayoutObject();
 
@@ -2301,6 +2305,7 @@ TEST_P(VisualRectMappingTest,
 
 TEST_P(VisualRectMappingTest,
        NestedElementCanvasTransformInlineVisualRectMapping) {
+  GetDocument().GetSettings()->SetScriptEnabled(true);
   LoadAhem();
   SetBodyInnerHTML(R"HTML(
     <style>
@@ -2314,9 +2319,9 @@ TEST_P(VisualRectMappingTest,
     </canvas>
   )HTML");
 
-  auto* a_element = GetDocument().getElementById(AtomicString("a"));
-  auto* b_element = GetDocument().getElementById(AtomicString("b"));
-  auto* canvas_element = GetDocument().getElementById(AtomicString("canvas"));
+  auto* a_element = GetElementById("a");
+  auto* b_element = GetElementById("b");
+  auto* canvas_element = GetElementById("canvas");
   auto* b = b_element->GetLayoutObject();
   auto* canvas = canvas_element->GetLayoutObject();
 

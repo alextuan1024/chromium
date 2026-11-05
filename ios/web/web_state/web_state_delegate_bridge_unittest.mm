@@ -18,6 +18,7 @@
 #import "testing/platform_test.h"
 #import "third_party/ocmock/OCMock/OCMock.h"
 #import "third_party/ocmock/gtest_support.h"
+#import "ui/base/mojom/window_open_disposition.mojom-shared.h"
 #import "ui/base/page_transition_types.h"
 
 // Class which conforms to CRWWebStateDelegate protocol, but does not implement
@@ -103,7 +104,8 @@ TEST_F(WebStateDelegateBridgeTest, OpenURLFromWebState) {
   web::WebState::OpenURLParams params(
       GURL("https://chromium.test/"), GURL("https://virtual.chromium.test/"),
       web::Referrer(GURL("https://chromium2.test/"), ReferrerPolicyNever),
-      WindowOpenDisposition::NEW_WINDOW, ui::PAGE_TRANSITION_FORM_SUBMIT, true);
+      ui::mojom::WindowOpenDisposition::kNewWindow,
+      ui::PAGE_TRANSITION_FORM_SUBMIT, true);
   EXPECT_EQ(&fake_web_state_,
             bridge_->OpenURLFromWebState(&fake_web_state_, params));
 
@@ -177,6 +179,40 @@ TEST_F(WebStateDelegateBridgeTest,
         // when delegate doesn't implement
         // `webState:handlePermissions:decisionHandler:` method to handle the
         // permissions.
+        EXPECT_EQ(decision, PermissionDecisionShowDefaultPrompt);
+        callback_called = true;
+      });
+  EXPECT_TRUE(callback_called);
+}
+
+// Tests `RequestGeolocationPermission` forwarding.
+TEST_F(WebStateDelegateBridgeTest, RequestGeolocationPermission) {
+  __block bool callback_called = false;
+  EXPECT_FALSE([delegate_ geolocationRequestHandled]);
+  EXPECT_FALSE([delegate_ webState]);
+  const GURL origin("https://example.com");
+  bridge_->RequestGeolocationPermission(
+      &fake_web_state_, origin, ^(PermissionDecision decision) {
+        EXPECT_EQ(decision, PermissionDecisionGrant);
+        callback_called = true;
+      });
+  EXPECT_TRUE([delegate_ geolocationRequestHandled]);
+  EXPECT_EQ(origin, [delegate_ lastRequestedGeolocationOrigin]);
+  EXPECT_EQ(&fake_web_state_, [delegate_ webState]);
+  EXPECT_TRUE(callback_called);
+}
+
+// Tests `RequestGeolocationPermission` forwarding to delegate which does not
+// implement `webState:requestGeolocation:decisionHandler:` method.
+TEST_F(WebStateDelegateBridgeTest,
+       RequestGeolocationPermissionWithNoDelegateMethod) {
+  __block bool callback_called = false;
+  const GURL origin("https://example.com");
+  empty_delegate_bridge_->RequestGeolocationPermission(
+      nullptr, origin, ^(PermissionDecision decision) {
+        // Default decision `PermissionDecisionShowDefaultPrompt` will be used
+        // when delegate doesn't implement
+        // `webState:requestGeolocation:decisionHandler:` method.
         EXPECT_EQ(decision, PermissionDecisionShowDefaultPrompt);
         callback_called = true;
       });

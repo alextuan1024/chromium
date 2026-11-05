@@ -11,6 +11,8 @@
 #include "ash/public/cpp/session/session_controller.h"
 #include "base/barrier_closure.h"
 #include "base/files/file.h"
+#include "base/files/file_path.h"
+#include "base/files/safe_base_name.h"
 #include "base/functional/bind.h"
 #include "base/hash/hash.h"
 #include "base/logging.h"
@@ -25,7 +27,6 @@
 #include "base/task/thread_pool.h"
 #include "base/time/time.h"
 #include "build/chromeos_buildflags.h"
-#include "chrome/browser/browser_process.h"
 #include "chrome/browser/download/download_prefs.h"
 #include "chrome/browser/nearby_sharing/certificates/common.h"
 #include "chrome/browser/nearby_sharing/certificates/nearby_share_certificate_manager_impl.h"
@@ -254,6 +255,21 @@ int64_t GeneratePayloadId() {
   return payload_id;
 }
 
+std::optional<base::SafeBaseName> GetSafeFileAttachmentBaseName(
+    const std::string& file_name) {
+  if (file_name.empty() || file_name.find('\0') != std::string::npos) {
+    return std::nullopt;
+  }
+
+  base::FilePath file_path(file_name);
+  if (file_path != file_path.BaseName() ||
+      file_path.value() == base::FilePath::kCurrentDirectory) {
+    return std::nullopt;
+  }
+
+  return base::SafeBaseName::Create(file_path);
+}
+
 // Wraps a call to OnTransferUpdate() to filter any updates after receiving a
 // final status.
 class TransferUpdateDecorator : public TransferUpdateCallback {
@@ -308,7 +324,6 @@ NearbyShareEncryptedMetadataKey AdvertisementToKey(
 NearbySharingServiceImpl::NearbySharingServiceImpl(
     user_manager::User& user,
     Profile* profile,
-    NotificationDisplayService* notification_display_service,
     std::unique_ptr<NearbyConnectionsManager> nearby_connections_manager,
     ash::nearby::NearbyProcessManager* process_manager,
     std::unique_ptr<PowerClient> power_client,
@@ -391,8 +406,8 @@ NearbySharingServiceImpl::NearbySharingServiceImpl(
 
   GetBluetoothAdapter();
 
-  nearby_notification_manager_ = std::make_unique<NearbyNotificationManager>(
-      notification_display_service, this, prefs_, profile_);
+  nearby_notification_manager_ =
+      std::make_unique<NearbyNotificationManager>(this, prefs_, profile_, user);
 
   net::NetworkChangeNotifier::AddNetworkChangeObserver(this);
 
@@ -1070,15 +1085,6 @@ void NearbySharingServiceImpl::SetArcTransferCleanupCallback(
   }
 }
 
-NearbyNotificationDelegate* NearbySharingServiceImpl::GetNotificationDelegate(
-    const std::string& notification_id) {
-  if (!nearby_notification_manager_) {
-    return nullptr;
-  }
-
-  return nearby_notification_manager_->GetNotificationDelegate(notification_id);
-}
-
 void NearbySharingServiceImpl::RecordFastInitiationNotificationUsage(
     bool success) {
   fast_initiation_scanning_metrics_->RecordUsage(success);
@@ -1210,7 +1216,6 @@ bool NearbySharingServiceImpl::ShouldRestartNearbyProcess(
       return false;
     case NearbyProcessShutdownReason::kCrash:
     case NearbyProcessShutdownReason::kConnectionsMojoPipeDisconnection:
-    case NearbyProcessShutdownReason::kPresenceMojoPipeDisconnection:
     case NearbyProcessShutdownReason::kDecoderMojoPipeDisconnection:
       break;
   }
@@ -1279,7 +1284,9 @@ void NearbySharingServiceImpl::OnIncomingConnectionAccepted(
     NearbyConnection* connection) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   CHECK(connection, base::NotFatalUntil::M160);
-  CHECK(process_reference_, base::NotFatalUntil::M160);
+  // TODO(crbug.com/568672878): CHECK-exclusion: Convert to a CHECK once we are
+  // confident it won't be triggered.
+  DCHECK(process_reference_);
 
   sharing::mojom::NearbySharingDecoder* decoder = GetNearbySharingDecoder();
   if (!decoder) {
@@ -1472,15 +1479,6 @@ void NearbySharingServiceImpl::OnBandwidthUpgrade(
   for (auto& observer : observers_) {
     observer.OnBandwidthUpgrade(share_target, medium);
   }
-}
-
-void NearbySharingServiceImpl::OnBandwidthUpgradeV3(
-    nearby::presence::PresenceDevice remote_device,
-    const Medium medium) {
-  // Because `NearbySharingServiceImpl` is currently only consuming V1 APIs from
-  // `NearbyConnections`, this function is to be left as `NOTIMPLEMENTED()` as
-  // only Nearby Presence is using V3 APIs.
-  NOTIMPLEMENTED();
 }
 
 void NearbySharingServiceImpl::OnLockStateChanged(bool locked) {
@@ -2672,6 +2670,9 @@ void NearbySharingServiceImpl::ReceivePayloads(
       DownloadPrefs::FromDownloadManager(profile_->GetDownloadManager())
           ->DownloadPath();
 
+  auto aggregated_success = std::make_unique<bool>(true);
+  bool* aggregated_success_ptr = aggregated_success.get();
+
   // Register payload path for all valid file payloads.
   base::flat_map<int64_t, base::FilePath> valid_file_payloads;
   for (auto& file : share_target.file_attachments) {
@@ -2684,12 +2685,23 @@ void NearbySharingServiceImpl::ReceivePayloads(
       continue;
     }
 
-    base::FilePath file_path = download_path.Append(file.file_name());
+    std::optional<base::SafeBaseName> safe_file_name =
+        GetSafeFileAttachmentBaseName(file.file_name());
+    if (!safe_file_name) {
+      CD_LOG(WARNING, Feature::NS)
+          << __func__
+          << ": Failed to register payload path due to invalid file name for "
+             "attachment id - "
+          << file.id();
+      *aggregated_success = false;
+      OnPayloadPathsRegistered(share_target, std::move(aggregated_success),
+                               std::move(status_codes_callback));
+      return;
+    }
+
+    base::FilePath file_path = download_path.Append(*safe_file_name);
     valid_file_payloads.emplace(file.id(), std::move(file_path));
   }
-
-  auto aggregated_success = std::make_unique<bool>(true);
-  bool* aggregated_success_ptr = aggregated_success.get();
 
   if (valid_file_payloads.empty()) {
     OnPayloadPathsRegistered(share_target, std::move(aggregated_success),
@@ -3800,12 +3812,25 @@ void NearbySharingServiceImpl::OnReceivedIntroduction(
       return;
     }
 
+    std::optional<base::SafeBaseName> safe_file_name =
+        GetSafeFileAttachmentBaseName(file->name);
+    if (!safe_file_name) {
+      RecordNearbyShareError(
+          NearbyShareError::kReceivedIntroductionInvalidFrame);
+      Fail(share_target, TransferMetadata::Status::kUnsupportedAttachmentType);
+      CD_LOG(WARNING, Feature::NS)
+          << __func__
+          << ": Ignore introduction, due to invalid attachment file name";
+      return;
+    }
+
     CD_LOG(VERBOSE, Feature::NS)
         << __func__ << ": Found file attachment: id=" << file->id
         << ", type= " << file->type << ", size=" << file->size
         << ", payload_id=" << file->payload_id
         << ", mime_type=" << file->mime_type;
-    FileAttachment attachment(file->id, file->size, file->name, file->mime_type,
+    FileAttachment attachment(file->id, file->size,
+                              safe_file_name->path().value(), file->mime_type,
                               file->type);
     SetAttachmentPayloadId(attachment, file->payload_id);
     share_target.file_attachments.push_back(std::move(attachment));

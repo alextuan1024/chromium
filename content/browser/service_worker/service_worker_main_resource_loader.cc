@@ -54,6 +54,7 @@
 #include "services/network/public/cpp/cross_origin_embedder_policy.h"
 #include "services/network/public/cpp/document_isolation_policy.h"
 #include "services/network/public/cpp/features.h"
+#include "services/network/public/cpp/sri_message_signatures.h"
 #include "services/network/public/cpp/timing_allow_origin_parser.h"
 #include "services/network/public/mojom/fetch_api.mojom.h"
 #include "services/network/public/mojom/service_worker_router_info.mojom.h"
@@ -336,7 +337,7 @@ void ServiceWorkerMainResourceLoader::StartRequest(
 
     base::ElapsedTimer router_evaluation_timer;
     response_head_->load_timing.service_worker_router_evaluation_start =
-        base::TimeTicks::Now();
+        router_evaluation_timer.start_time();
     auto eval_result = active_worker->router_evaluator()->Evaluate(
         resource_request_, running_status);
     router_info->router_evaluation_time = router_evaluation_timer.Elapsed();
@@ -723,9 +724,14 @@ void ServiceWorkerMainResourceLoader::CommitResponseBody(
     }
   }
 
-  url_loader_client_->OnReceiveResponse(response_head.Clone(),
-                                        std::move(response_body),
-                                        std::move(cached_metadata));
+  auto head = response_head.Clone();
+  if (response_head_.get() == response_head.get()) {
+    head->cache_storage_side_data_writer =
+        std::move(cache_storage_side_data_writer_);
+  }
+
+  url_loader_client_->OnReceiveResponse(
+      std::move(head), std::move(response_body), std::move(cached_metadata));
 }
 
 void ServiceWorkerMainResourceLoader::CommitEmptyResponseAndComplete() {
@@ -743,8 +749,11 @@ void ServiceWorkerMainResourceLoader::CommitEmptyResponseAndComplete() {
   CommitCompleted(net::OK, "No body exists.");
 }
 
-void ServiceWorkerMainResourceLoader::CommitCompleted(int error_code,
-                                                      const char* reason) {
+void ServiceWorkerMainResourceLoader::CommitCompleted(
+    int error_code,
+    const char* reason,
+    std::optional<network::mojom::BlockedByResponseReason>
+        blocked_by_response_reason) {
   TRACE_EVENT("ServiceWorker",
               "ServiceWorkerMainResourceLoader::CommitCompleted",
               perfetto::Flow::FromPointer(this), "error_code",
@@ -773,8 +782,9 @@ void ServiceWorkerMainResourceLoader::CommitCompleted(int error_code,
   // |stream_waiter_| calls this when done.
   stream_waiter_.reset();
 
-  url_loader_client_->OnComplete(
-      network::URLLoaderCompletionStatus(error_code));
+  network::URLLoaderCompletionStatus status(error_code);
+  status.blocked_by_response_reason = blocked_by_response_reason;
+  url_loader_client_->OnComplete(status);
 }
 
 void ServiceWorkerMainResourceLoader::DidPrepareFetchEvent(
@@ -1146,6 +1156,12 @@ bool ServiceWorkerMainResourceLoader::MaybeStartSyntheticNetworkRequest(
         SyntheticResponseEligibility::kNotEligibleByReload);
     return false;
   }
+  if (resource_request_.load_flags & net::LOAD_SKIP_CACHE_VALIDATION) {
+    // Back/forward history navigations and tab restores set
+    // `net::LOAD_SKIP_CACHE_VALIDATION` to prefer cached content without
+    // revalidation. Synthetic response must not intercept these navigations.
+    return false;
+  }
 
   // Check if an embedder-level interceptor (like Search Prefetch) wants to
   // handle this request.
@@ -1342,6 +1358,8 @@ void ServiceWorkerMainResourceLoader::StartResponse(
 
   blink::ServiceWorkerLoaderHelpers::SaveResponseInfo(*response,
                                                       response_head_.get());
+  cache_storage_side_data_writer_ =
+      std::move(response->cache_storage_side_data_writer);
 
   response_head_->did_service_worker_navigation_preload =
       dispatched_preload_type() == DispatchedPreloadType::kNavigationPreload;
@@ -1406,6 +1424,16 @@ void ServiceWorkerMainResourceLoader::StartResponse(
                 perfetto::Flow::FromPointer(this), "result", "redirect",
                 "redirect url", redirect_info->new_url.spec());
     HandleRedirect(*redirect_info, response_head_);
+    return;
+  }
+
+  // SRI verification applies to the final response, not redirect hops.
+  if (std::optional<network::mojom::BlockedByResponseReason> blocked_reason =
+          network::MaybeBlockResponseForSRIMessageSignature(
+              resource_request_, *response_head_,
+              resource_request_.expected_public_keys)) {
+    CommitCompleted(net::ERR_BLOCKED_BY_RESPONSE,
+                    "SRI message signature mismatch", blocked_reason);
     return;
   }
 

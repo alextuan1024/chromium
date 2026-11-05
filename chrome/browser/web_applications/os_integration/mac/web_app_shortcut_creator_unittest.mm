@@ -53,8 +53,7 @@ class WebAppShortcutCreatorMock : public WebAppShortcutCreator {
                             const ShortcutInfo* shortcut_info)
       : WebAppShortcutCreator(app_data_dir,
                               GetChromeAppsFolder(),
-                              shortcut_info,
-                              web_app::UseAdHocSigningForWebAppShims()) {}
+                              shortcut_info) {}
 
   MOCK_CONST_METHOD0(GetAppBundlesByIdUnsorted, std::vector<base::FilePath>());
   MOCK_CONST_METHOD1(RevealAppShimInFinder, void(const base::FilePath&));
@@ -70,8 +69,7 @@ class WebAppShortcutCreatorSortingMock : public WebAppShortcutCreator {
                                    const ShortcutInfo* shortcut_info)
       : WebAppShortcutCreator(app_data_dir,
                               GetChromeAppsFolder(),
-                              shortcut_info,
-                              web_app::UseAdHocSigningForWebAppShims()) {}
+                              shortcut_info) {}
 
   MOCK_CONST_METHOD0(GetAppBundlesByIdUnsorted, std::vector<base::FilePath>());
 
@@ -961,7 +959,7 @@ TEST_F(WebAppShortcutCreatorTest, RevealAppShimInFinder) {
   EXPECT_TRUE(shortcut_creator.CreateShortcuts(SHORTCUT_CREATION_AUTOMATED,
                                                ShortcutLocations()));
 
-  EXPECT_CALL(shortcut_creator, RevealAppShimInFinder(_));
+  EXPECT_CALL(shortcut_creator, RevealAppShimInFinder(_)).Times(1);
   EXPECT_TRUE(shortcut_creator.CreateShortcuts(SHORTCUT_CREATION_BY_USER,
                                                ShortcutLocations()));
 }

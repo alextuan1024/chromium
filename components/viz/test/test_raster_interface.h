@@ -94,7 +94,6 @@ class TestRasterInterface : public gpu::raster::RasterInterface {
                            GLuint msaa_sample_count,
                            gpu::raster::MsaaMode msaa_mode,
                            GLboolean can_use_lcd_text,
-                           GLboolean visible,
                            const gfx::ColorSpace& color_space,
                            float hdr_headroom,
                            const GLbyte* mailbox) override {}
@@ -106,7 +105,7 @@ class TestRasterInterface : public gpu::raster::RasterInterface {
                       const gfx::Vector2dF& post_translate,
                       const gfx::Vector2dF& post_scale,
                       bool requires_clear,
-                      const ScrollOffsetMap* raster_inducing_scroll_offsets,
+                      const cc::RasterInducingValues* raster_inducing_values,
                       size_t* max_op_size_hint,
                       base::RepeatingCallback<void(SkCanvas*, uint32_t)>
                           custom_raster_callback) override {}
@@ -137,6 +136,7 @@ class TestRasterInterface : public gpu::raster::RasterInterface {
       base::OnceCallback<void()> release_mailbox,
       base::OnceCallback<void(bool)> readback_done) override {}
   bool ReadbackImagePixels(const gpu::Mailbox& source_mailbox,
+                           const gfx::Size& source_size,
                            const SkImageInfo& dst_info,
                            GLuint dst_row_bytes,
                            int src_x,

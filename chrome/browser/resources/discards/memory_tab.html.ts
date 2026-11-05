@@ -25,13 +25,11 @@ export function getHtml(this: MemoryTabElement) {
         <th class="pid-col" data-sort-key="pid" @click="${this.onSortClick}">
           PID
         </th>
-        <th class="process-desc-col"
-            data-sort-key="description"
+        <th class="process-desc-col" data-sort-key="description"
             @click="${this.onSortClick}">
           Process Description
         </th>
-        <th class="footprint-col"
-            data-sort-key="privateFootprintKb"
+        <th class="footprint-col" data-sort-key="privateFootprintKb"
             @click="${this.onSortClick}">
           Private Memory Footprint
         </th>
@@ -46,37 +44,38 @@ export function getHtml(this: MemoryTabElement) {
     <tbody>
       ${this.getSortedProcesses_().map(item => html`
         <tr class="process-row ${item.isDead ? 'dead' : ''}"
-            data-pid="${item.pid}"
-            @click="${this.onProcessRowClick_}">
+            data-pid="${item.pid}" @click="${this.onProcessRowClick_}">
           <td class="pid-col">${item.pid}</td>
           <td class="process-desc-col">
             <div class="process-desc-container">
-              <span class="toggle-arrow ${
-                  this.isExpanded_(item.pid) ? 'expanded' : ''}">▶</span>
-              <span class="process-desc-text"
-                    title="${item.description}">
+              <span
+                  class="${
+                      this.getToggleArrowClass_(this.isExpanded_(item.pid))}">
+                ▶
+              </span>
+              <span class="process-desc-text" title="${item.description}">
                 ${item.description}
               </span>
-              ${item.isDead ?
-                  html`<span class="dead-badge">Terminated</span>` : ''}
+              ${item.isDead ? html`
+                <span class="dead-badge">Terminated</span>
+              ` : ''}
             </div>
           </td>
           <td class="footprint-col">${item.privateFootprintFormatted}</td>
           <td class="magnitude-col">
             <div class="magnitude-bar-track">
               <div class="magnitude-bar-fill"
-                   style="width: ${item.magnitudePercent}%;"></div>
+                  style="${this.getMagnitudeStyle_(item.magnitudePercent)}">
+              </div>
             </div>
           </td>
           <td class="trend-col">
             <div class="trend-sparkline">
-              ${this.getSparklineBars(item.history, this.maxPrivateFootprintKb_).map(bar => html`
-                <div class="sparkline-bar ${bar.isEmpty ? 'empty' : ''} ${
-                    bar.isError ? 'error' : ''}"
-                     style="height: ${bar.height}px;"
-                     title="${bar.isEmpty ? '' :
-                         (bar.isError ? 'Memory dump unavailable' :
-                          (bar.value !== null ? bar.value.toLocaleString() : ''))}">
+              ${this.getSparklineBars(item.history, this.maxPrivateFootprintKb_)
+                  .map(bar => html`
+                <div class="${this.getSparklineBarClass_(bar)}"
+                    style="height: ${bar.height}px;"
+                    title="${this.getSparklineBarTitle_(bar)}">
                 </div>
               `)}
             </div>
@@ -88,14 +87,16 @@ export function getHtml(this: MemoryTabElement) {
               <div class="breakdown-card">
                 ${item.sections.map(section => html`
                   <div class="section-card">
-                    <div class="section-header"
-                         data-pid="${item.pid}"
-                         data-section-id="${section.id}"
-                         @click="${this.onSectionRowClick_}">
+                    <div class="section-header" data-pid="${item.pid}"
+                        data-section-id="${section.id}"
+                        @click="${this.onSectionRowClick_}">
                       <div class="section-header-title">
-                        <span class="toggle-arrow ${
-                            this.isSectionExpanded_(item.pid, section.id) ?
-                            'expanded' : ''}">▶</span>
+                        <span
+                            class="${this.getToggleArrowClass_(
+                                this.isSectionExpanded_(
+                                    item.pid, section.id))}">
+                          ▶
+                        </span>
                         <span class="section-label">${section.label}</span>
                       </div>
                       ${section.totalFormatted ? html`
@@ -116,35 +117,55 @@ export function getHtml(this: MemoryTabElement) {
                           </tr>
                         </thead>
                         <tbody>
-                          ${section.metrics.map(metric => html`
-                            <tr class="sub-table-row">
-                              <td class="sub-td-label">${metric.label}</td>
+                          ${this.getVisibleSectionMetrics_(item.pid, section)
+                              .map(({row, isSubMetric}) => html`
+                            <tr
+                                class="${
+                                    this.getMetricRowClass_(row, isSubMetric)}"
+                                data-pid="${item.pid}"
+                                data-section-id="${section.id}"
+                                data-metric-id="${row.id || ''}"
+                                @click="${this.onMetricRowClick_}">
+                              <td
+                                  class="${
+                                      this.getMetricLabelClass_(isSubMetric)}">
+                                <div class="metric-label-container">
+                                  ${row.subMetrics?.length ? html`
+                                    <span
+                                        class="${this.getToggleArrowClass_(
+                                            this.isMetricExpanded_(
+                                                item.pid, section.id,
+                                                row.id))}">
+                                      ▶
+                                    </span>
+                                  ` : ''}
+                                  <span>${row.label}</span>
+                                </div>
+                              </td>
                               <td class="sub-td-val num-col">
-                                ${metric.valueFormatted}
+                                ${row.valueFormatted}
                               </td>
                               <td class="magnitude-col">
-                                ${metric.magnitudePercent !== null ? html`
+                                ${row.magnitudePercent !== null ? html`
                                   <div class="magnitude-bar-track">
                                     <div class="magnitude-bar-fill"
-                                         style="width: ${
-                                             metric.magnitudePercent}%;">
+                                        style="${this.getMagnitudeStyle_(
+                                            row.magnitudePercent)}">
                                     </div>
                                   </div>
                                 ` : ''}
                               </td>
                               <td class="sub-td-trend trend-col">
                                 <div class="trend-sparkline">
-                                  ${this.getSparklineBars(metric.history, metric.maxScale)
+                                  ${this.getSparklineBars(
+                                          row.history, row.maxScale)
                                       .map(bar => html`
-                                    <div class="sparkline-bar ${
-                                        bar.isEmpty ? 'empty' : ''} ${
-                                        bar.isError ? 'error' : ''}"
-                                         style="height: ${bar.height}px;"
-                                         title="${bar.isEmpty ? '' :
-                                             (bar.isError ?
-                                              'Memory dump unavailable' :
-                                              (bar.value !== null ?
-                                               bar.value.toLocaleString() : ''))}">
+                                    <div
+                                        class="${
+                                            this.getSparklineBarClass_(bar)}"
+                                        style="height: ${bar.height}px;"
+                                        title="${
+                                            this.getSparklineBarTitle_(bar)}">
                                     </div>
                                   `)}
                                 </div>

@@ -453,33 +453,6 @@ export async function trashDeleteFromTrash() {
 }
 
 /**
- * Delete files (move them into trash) then permanently delete.
- */
-export async function trashDeleteFromTrashOriginallyFromDrive() {
-  const appId = await remoteCall.setupAndWaitUntilReady(
-      RootPath.DRIVE, [], [ENTRIES.hello]);
-
-  // Select hello.txt.
-  await remoteCall.waitAndClickElement(
-      appId, '#file-list [file-name="hello.txt"]');
-
-  // Delete item and wait for it to be removed (no dialog).
-  await remoteCall.clickTrashButton(appId);
-  await remoteCall.waitForElementLost(
-      appId, '#file-list [file-name="hello.txt"]');
-
-  // Navigate to /Trash and ensure the file is shown.
-  const directoryTree = await DirectoryTreePageObject.create(appId);
-  await directoryTree.navigateToPath('/Trash');
-  await remoteCall.waitAndClickElement(
-      appId, '#file-list [file-name="hello.txt"]');
-
-  // Confirm the permanent deletion of the file does not say 'forever'.
-  await clickDeleteButton(appId);
-  await confirmPermanentDeletion(appId, 'Delete');
-}
-
-/**
  * When selecting items whilst in the trash root, no files tasks should be
  * available.
  */
@@ -761,7 +734,7 @@ export async function trashDragDropNonModifiableEntriesCantBeTrashed() {
   await directoryTree.navigateToPath('/Trash');
 
   // Ensure the Downloads entry doesn't exist in Trash.
-  await remoteCall.waitForElement(appId, `[scan-completed="Trash"]`);
+  await remoteCall.waitForElement(appId, '[scan-completed="Trash"]');
   await remoteCall.waitForFiles(appId, []);
 }
 
@@ -779,7 +752,7 @@ export async function trashDontShowTrashRootOnSelectFileDialog() {
   // loaded and wait for My files to finish scanning.
   const directoryTree = await DirectoryTreePageObject.create(appId);
   await directoryTree.navigateToPath('/My files');
-  await remoteCall.waitForElement(appId, `[scan-completed="My files"]`);
+  await remoteCall.waitForElement(appId, '[scan-completed="My files"]');
 
   // Ensure the Trash root entry is not visible on the page.
   await directoryTree.waitForItemLostByLabel('Trash');
@@ -799,7 +772,7 @@ export async function trashDontShowTrashRootWhenOpeningAsAndroidFilePicker() {
   // loaded and wait for My files to finish scanning.
   const directoryTree = await DirectoryTreePageObject.create(appId);
   await directoryTree.navigateToPath('/My files');
-  await remoteCall.waitForElement(appId, `[scan-completed="My files"]`);
+  await remoteCall.waitForElement(appId, '[scan-completed="My files"]');
 
   // Ensure the Trash root entry is not visible on the page.
   await directoryTree.waitForItemLostByLabel('Trash');
@@ -840,7 +813,7 @@ export async function trashEnsureOldEntriesArePeriodicallyRemoved() {
 
   // Navigate to /Trash and ensure the file has been removed.
   await directoryTree.navigateToPath('/Trash');
-  await remoteCall.waitForElement(appId, `[scan-completed="Trash"]`);
+  await remoteCall.waitForElement(appId, '[scan-completed="Trash"]');
   await remoteCall.waitForElementLost(appId, fileNameSelector);
 
   // Expect no feedback panel element to appear as the IOTask was kicked off

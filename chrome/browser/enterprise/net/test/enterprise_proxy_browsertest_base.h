@@ -21,7 +21,9 @@
 #include "chrome/browser/signin/identity_test_environment_profile_adaptor.h"
 #include "chrome/test/base/mixin_based_in_process_browser_test.h"
 #include "chrome/test/base/platform_browser_test.h"
+#include "components/enterprise/net/core/auth_scope_metadata.h"
 #include "components/enterprise/net/core/features.h"
+#include "components/enterprise/net/core/scoped_extra_allowed_domains_for_testing.h"
 #include "components/enterprise/net/core/types.h"
 #include "components/keyed_service/content/browser_context_dependency_manager.h"
 #include "components/signin/public/identity_manager/identity_test_environment.h"
@@ -69,8 +71,15 @@ class EnterpriseProxyBrowserTestBase : public MixinBasedPlatformBrowserTest {
   // Sets the "ProxyProvisioningDomains" policy at the machine (device) scope.
   void SetMachineProxyProvisioningDomains(base::ListValue domains);
 
-  base::DictValue CreateDomainPolicyEntry(const std::string& domain_id,
-                                          bool use_oauth = false);
+#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX) || \
+    BUILDFLAG(IS_ANDROID)
+  void SetEnableForAllUsers(bool enable);
+#endif
+
+  base::DictValue CreateDomainPolicyEntry(
+      const std::string& domain_id,
+      bool use_oauth = false,
+      base::ListValue extra_headers = base::ListValue());
 
   std::string BuildValidPvdJson(const std::string& domain_id,
                                 const std::string& proxy_host_port,
@@ -106,6 +115,10 @@ class EnterpriseProxyBrowserTestBase : public MixinBasedPlatformBrowserTest {
   const std::string& last_received_auth_header() const {
     return last_received_auth_header_;
   }
+  const net::test_server::HttpRequest::HeaderMap& last_pvd_request_headers()
+      const {
+    return last_pvd_request_headers_;
+  }
 
  protected:
   void OnWillCreateBrowserContextServices(content::BrowserContext* context);
@@ -125,6 +138,7 @@ class EnterpriseProxyBrowserTestBase : public MixinBasedPlatformBrowserTest {
       const net::test_server::HttpRequest& request);
 
   base::test::ScopedFeatureList scoped_feature_list_;
+  const bool is_platform_managed_ = false;
   std::unique_ptr<ManagementContextMixin> management_context_mixin_;
   net::EmbeddedTestServer https_server_{net::EmbeddedTestServer::TYPE_HTTPS};
   net::RecordingNetLogObserver net_log_observer_;
@@ -154,6 +168,11 @@ class EnterpriseProxyBrowserTestBase : public MixinBasedPlatformBrowserTest {
   bool was_auth_header_received_ = false;
   // The value of the last received Proxy-Authorization header.
   std::string last_received_auth_header_;
+  // The HTTP headers received on the last request to `/.well-known/pvd`.
+  net::test_server::HttpRequest::HeaderMap last_pvd_request_headers_;
+
+  std::unique_ptr<enterprise_net::ScopedExtraAllowedDomainsForTesting>
+      scoped_extra_domains_;
 };
 
 }  // namespace enterprise::test

@@ -52,7 +52,6 @@
 #import "components/variations/synthetic_trial_registry.h"
 #import "components/variations/synthetic_trials.h"
 #import "components/variations/synthetic_trials_active_group_id_provider.h"
-#import "components/variations/variations_crash_keys.h"
 #import "components/variations/variations_ids_provider.h"
 #import "components/variations/variations_switches.h"
 #import "components/webui/flags/pref_service_flags_storage.h"
@@ -70,7 +69,7 @@
 #import "ios/chrome/browser/segmentation_platform/model/ukm_database_client.h"
 #import "ios/chrome/browser/shared/model/paths/paths.h"
 #import "ios/chrome/browser/shared/model/prefs/pref_names.h"
-#import "ios/chrome/browser/shared/model/profile/profile_dependency_manager_ios.h"
+#import "ios/chrome/browser/shared/model/profile/internal/profile_dependency_manager_ios.h"
 #import "ios/chrome/browser/shared/public/features/features.h"
 #import "ios/chrome/browser/signin/model/signin_util.h"
 #import "ios/chrome/browser/translate/model/translate_service_ios.h"
@@ -283,8 +282,6 @@ void IOSChromeMainParts::PreCreateThreads() {
                                    AllocationTraceRecorderInclusion::kIgnore,
                                "")
       .Initialize(memory_system_);
-
-  variations::InitCrashKeys();
 
   metrics::EnableExpiryChecker(::kExpiredHistogramsHashes);
 

@@ -52,6 +52,19 @@ class ValuableSyncBridge : public AutofillWebDataServiceObserverOnDBSequence,
     // An error occurred during the operation.
     kDatabaseError,
   };
+
+  // Validation status of a Wallet management URL received via sync.
+  // These values are persisted to logs. Entries should not be renumbered and
+  // numeric values should never be reused.
+  // LINT.IfChange(AutofillAiWalletManagementUrlSyncStatus)
+  enum class AutofillAiWalletManagementUrlSyncStatus {
+    kValid = 0,
+    kMissingOrEmpty = 1,
+    kInvalid = 2,
+    kMaxValue = kInvalid,
+  };
+  // LINT.ThenChange(//tools/metrics/histograms/metadata/autofill/enums.xml:AutofillAiWalletManagementUrlSyncStatus)
+
   ValuableSyncBridge(
       std::unique_ptr<syncer::DataTypeLocalChangeProcessor> change_processor,
       const std::string& app_locale,
@@ -95,7 +108,7 @@ class ValuableSyncBridge : public AutofillWebDataServiceObserverOnDBSequence,
   // AutofillWebDataServiceObserverOnDBSequence:
   void EntityInstanceChanged(
       const EntityInstanceChange& change,
-      std::optional<std::string_view> context_token) override;
+      std::optional<std::string_view> legal_message_token) override;
 
  private:
   // Synchronously load sync metadata from the `ValuablesTable` and pass it to

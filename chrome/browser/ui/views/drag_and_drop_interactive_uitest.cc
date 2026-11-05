@@ -70,7 +70,7 @@
 #include "ui/base/dragdrop/drop_target_event.h"
 #include "ui/base/dragdrop/mojom/drag_drop_types.mojom.h"
 #include "ui/base/dragdrop/os_exchange_data.h"
-#include "ui/base/window_open_disposition.h"
+#include "ui/base/mojom/window_open_disposition.mojom-shared.h"
 #include "ui/compositor/layer_tree_owner.h"
 #include "ui/gfx/geometry/point.h"
 #include "ui/gfx/geometry/point_f.h"
@@ -121,7 +121,7 @@ class DragStartWaiter : public aura::client::DragDropClient {
   explicit DragStartWaiter(content::WebContents* web_contents)
       : web_contents_(web_contents),
         message_loop_runner_(new content::MessageLoopRunner) {
-    DCHECK(web_contents_);
+    CHECK(web_contents_, base::NotFatalUntil::M162);
 
     // Intercept calls to the old DragDropClient.
     gfx::NativeWindow root_window =
@@ -162,7 +162,7 @@ class DragStartWaiter : public aura::client::DragDropClient {
     message_loop_runner_->Run();
 
     // message_loop_runner_->Quit is only called from StartDragAndDrop.
-    DCHECK(drag_started_);
+    CHECK(drag_started_, base::NotFatalUntil::M162);
 
     if (source_origin) {
       *source_origin = source_origin_;
@@ -200,7 +200,7 @@ class DragStartWaiter : public aura::client::DragDropClient {
                                  const gfx::Point& screen_location,
                                  int allowed_operations,
                                  ui::mojom::DragEventSource source) override {
-    DCHECK(!drag_started_);
+    CHECK(!drag_started_, base::NotFatalUntil::M162);
     if (!drag_started_) {
       drag_started_ = true;
       message_loop_runner_->Quit();
@@ -680,7 +680,7 @@ class DragAndDropBrowserTest : public InProcessBrowserTest,
     // going forward.
     frame = web_contents ? GetFrameByName(frame_name, web_contents)
                          : GetFrameByName(frame_name);
-    DCHECK(frame);
+    CHECK(frame, base::NotFatalUntil::M162);
 
     // Wait until hit testing data is ready.
     WaitForHitTestData(frame);
@@ -2031,7 +2031,7 @@ IN_PROC_BROWSER_TEST_P(DragAndDropBrowserTest, MAYBE_CrossTabDrag) {
   // Add a new tab navigated to the test page, and navigate the right subframe.
   GURL url = https_test_server()->GetURL("a.test", kTestPagePath);
   ui_test_utils::NavigateToURLWithDisposition(
-      browser(), url, WindowOpenDisposition::NEW_FOREGROUND_TAB,
+      browser(), url, ui::mojom::WindowOpenDisposition::kNewForegroundTab,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP);
   ASSERT_EQ(browser()->GetTabStripModel()->count(), 2);
 

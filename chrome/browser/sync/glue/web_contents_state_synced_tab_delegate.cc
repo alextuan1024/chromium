@@ -9,8 +9,6 @@
 #include "content/public/browser/browser_context.h"
 #include "content/public/browser/web_contents.h"
 
-namespace browser_sync {
-
 WebContentsStateSyncedTabDelegate::WebContentsStateSyncedTabDelegate(
     Profile* profile,
     TabAndroidDataProvider* tab_android_data_provider,
@@ -24,7 +22,9 @@ WebContentsStateSyncedTabDelegate::WebContentsStateSyncedTabDelegate(
   if (web_contents_) {
     web_contents_->SetOwnerLocationForDebug(FROM_HERE);
   }
-  TabContentsSyncedTabDelegate::SetWebContents(web_contents_.get());
+  TabContentsSyncedTabDelegate::SetWebContents(
+      web_contents_.get(), /*task_tab_helper=*/nullptr,
+      /*supervised_user_navigation_observer=*/nullptr);
 }
 
 WebContentsStateSyncedTabDelegate::~WebContentsStateSyncedTabDelegate() =
@@ -51,7 +51,7 @@ SessionID WebContentsStateSyncedTabDelegate::GetWindowId() const {
 }
 
 SessionID WebContentsStateSyncedTabDelegate::GetSessionId() const {
-  return browser_sync::SyncedTabDelegateAndroid::SessionIdFromAndroidId(
+  return SyncedTabDelegateAndroid::SessionIdFromAndroidId(
       tab_android_data_provider_->GetAndroidId());
 }
 
@@ -77,5 +77,3 @@ WebContentsStateSyncedTabDelegate::ReadPlaceholderTabSnapshotIfItShouldSync(
       << "ReadPlaceholderTabSnapshotIfItShouldSync should be called only "
          "via the SyncedTabDelegateAndroid implementation.";
 }
-
-}  // namespace browser_sync

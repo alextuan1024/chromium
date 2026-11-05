@@ -18,7 +18,6 @@
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
-#include "chrome/browser/apps/app_service/app_service_proxy.h"
 #include "chrome/browser/ash/app_list/search/common/icon_constants.h"
 #include "chrome/browser/ash/app_list/search/system_info/battery_answer_result.h"
 #include "chrome/browser/ash/app_list/search/system_info/cpu_answer_result.h"
@@ -495,8 +494,8 @@ void SystemInfoCardProvider::OnSizeCalculated(
   }
 
   // Store calculated item's size.
-  const int item_index = static_cast<int>(calculation_type);
-  UNSAFE_TODO(storage_items_total_bytes_[item_index]) = total_bytes;
+  const size_t item_index = static_cast<size_t>(calculation_type);
+  storage_items_total_bytes_[item_index] = total_bytes;
 
   // Mark item as calculated.
   calculation_state_.set(item_index);
@@ -510,10 +509,10 @@ void SystemInfoCardProvider::OnStorageInfoUpdated() {
     return;
   }
 
-  const int total_space_index =
-      static_cast<int>(SizeCalculator::CalculationType::kTotal);
-  const int free_disk_space_index =
-      static_cast<int>(SizeCalculator::CalculationType::kAvailable);
+  const size_t total_space_index =
+      static_cast<size_t>(SizeCalculator::CalculationType::kTotal);
+  const size_t free_disk_space_index =
+      static_cast<size_t>(SizeCalculator::CalculationType::kAvailable);
 
   int64_t total_bytes = storage_items_total_bytes_[total_space_index];
   int64_t available_bytes = storage_items_total_bytes_[free_disk_space_index];
@@ -527,10 +526,10 @@ void SystemInfoCardProvider::OnStorageInfoUpdated() {
 }
 
 void SystemInfoCardProvider::CreateStorageAnswerCard() {
-  const int total_space_index =
-      static_cast<int>(SizeCalculator::CalculationType::kTotal);
-  const int free_disk_space_index =
-      static_cast<int>(SizeCalculator::CalculationType::kAvailable);
+  const size_t total_space_index =
+      static_cast<size_t>(SizeCalculator::CalculationType::kTotal);
+  const size_t free_disk_space_index =
+      static_cast<size_t>(SizeCalculator::CalculationType::kAvailable);
   int64_t total_bytes = storage_items_total_bytes_[total_space_index];
   int64_t available_bytes = storage_items_total_bytes_[free_disk_space_index];
   int64_t in_use_bytes = total_bytes - available_bytes;

@@ -33,7 +33,6 @@ import org.chromium.chrome.browser.ntp_customization.NtpCustomizationUtils;
 import org.chromium.chrome.browser.ntp_customization.NtpCustomizationViewProperties;
 import org.chromium.chrome.browser.ntp_customization.R;
 import org.chromium.chrome.browser.ntp_customization.theme.chrome_colors.NtpChromeColorsCoordinator;
-import org.chromium.chrome.browser.ntp_customization.theme.chrome_colors.NtpThemeColorInfo.NtpThemeColorId;
 import org.chromium.chrome.browser.ntp_customization.theme.theme_collections.BackgroundCollection;
 import org.chromium.chrome.browser.ntp_customization.theme.theme_collections.NtpThemeCollectionManager;
 import org.chromium.chrome.browser.ntp_customization.theme.theme_collections.NtpThemeCollectionsCoordinator;
@@ -62,7 +61,7 @@ public class NtpThemeCoordinator {
     private final CallbackController mCallbackController = new CallbackController();
     private final boolean mIsNtpThemeSyncEnabled;
     private NtpThemeMediator mMediator;
-    private NtpThemeBottomSheetView mNtpThemeBottomSheetView;
+    private final NtpThemeBottomSheetView mNtpThemeBottomSheetView;
     private @Nullable UploadImagePreviewCoordinator mUploadPreviewCoordinator;
     private @Nullable NtpThemeCollectionsCoordinator mNtpThemeCollectionsCoordinator;
     private @Nullable NtpChromeColorsCoordinator mNtpChromeColorsCoordinator;
@@ -241,8 +240,8 @@ public class NtpThemeCoordinator {
     }
 
     @VisibleForTesting
-    void onChromeColorSelected(@NtpThemeColorId int colorId) {
-        mMediator.onChromeColorSelected(colorId);
+    void onChromeColorSelected() {
+        mMediator.onChromeColorSelected();
         notifyBottomSheetBackgroundTypeChanged();
     }
 
@@ -330,10 +329,6 @@ public class NtpThemeCoordinator {
         var oldValue = mMediator;
         mMediator = mediator;
         ResettersForTesting.register(() -> mMediator = oldValue);
-    }
-
-    void setNtpThemeBottomSheetViewForTesting(NtpThemeBottomSheetView ntpThemeBottomSheetView) {
-        mNtpThemeBottomSheetView = ntpThemeBottomSheetView;
     }
 
     NtpThemeCollectionManager getNtpThemeManagerForTesting() {

@@ -37,7 +37,6 @@
 #import "ios/chrome/grit/ios_strings.h"
 #import "ios/chrome/grit/ios_theme_resources.h"
 #import "skia/ext/skia_utils_ios.h"
-#import "ui/base/device_form_factor.h"
 #import "ui/base/l10n/l10n_util_mac.h"
 #import "ui/gfx/color_palette.h"
 #import "ui/gfx/image/image.h"
@@ -136,11 +135,6 @@ const CGFloat kVerticalOffset = 1;
     self.writingToolsBehavior = UIWritingToolsBehaviorNone;
     [self updateOmniboxTypingAttributes];
 
-    // Disable drag on iPhone because there's nowhere to drag to
-    if (ui::GetDeviceFormFactor() != ui::DEVICE_FORM_FACTOR_TABLET) {
-      self.textDragInteraction.enabled = NO;
-    }
-
     // Remove drop when presented by the Composebox so that the composebox can
     // handle all drop actions.
     if (_presentationContext == OmniboxPresentationContext::kComposebox) {
@@ -185,7 +179,7 @@ const CGFloat kVerticalOffset = 1;
 
 - (void)setPlaceholderLabel:(UILabel*)placeholderLabel {
   placeholderLabel.font = self.font;
-  placeholderLabel.textColor = [UIColor colorNamed:kTextSecondaryColor];
+  placeholderLabel.textColor = self.placeholderColor;
   placeholderLabel.isAccessibilityElement = NO;
   _placeholderLabel = placeholderLabel;
 
@@ -203,6 +197,11 @@ const CGFloat kVerticalOffset = 1;
     [placeholderLabel.trailingAnchor
         constraintEqualToAnchor:self.trailingAnchor],
   ]];
+}
+
+- (void)setPlaceholderColor:(UIColor*)placeholderColor {
+  _placeholderColor = placeholderColor;
+  self.placeholderLabel.textColor = placeholderColor;
 }
 
 - (void)setAllowsReturnKeyWithEmptyText:(BOOL)allowsReturnKeyWithEmptyText {

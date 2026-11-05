@@ -5,6 +5,7 @@
 #import "ios/chrome/browser/autofill/atmemory/coordinator/at_memory_granular_fill_mediator.h"
 
 #import <optional>
+#import <variant>
 
 #import "base/check.h"
 #import "components/autofill/core/browser/suggestions/suggestion.h"
@@ -21,7 +22,7 @@ using autofill::Suggestion;
   // Suggestion containing attributes to display.
   std::optional<Suggestion> _suggestion;
   // Settings page opened by the "Manage enhanced autofill" row. Defaults to
-  // the Enhanced Autofill page when `_suggestion` has no more specific
+  // the Suggestions from Gemini page when `_suggestion` has no more specific
   // destination, as the row is always displayed.
   AutofillSettingsPage _settingsPage;
 }
@@ -31,7 +32,7 @@ using autofill::Suggestion;
   if (self) {
     _suggestion = std::move(suggestion);
     _settingsPage = AutofillSettingsPageForAtMemorySuggestion(*_suggestion)
-                        .value_or(AutofillSettingsPage::kEnhancedAutofill);
+                        .value_or(AutofillSettingsPage::kSuggestionsFromGemini);
   }
   return self;
 }
@@ -46,7 +47,12 @@ using autofill::Suggestion;
   }
 
   CHECK(_suggestion);
+  const Suggestion::AtMemoryPayload* payload =
+      std::get_if<Suggestion::AtMemoryPayload>(&_suggestion->payload);
   [_consumer setTitle:GetAtMemoryGranularFillTitle(*_suggestion)];
+  [_consumer
+      setShowSuggestedByGeminiFooter:payload && payload->
+                                                is_personal_context_sourced];
   [_consumer setGranularFillItems:AtMemoryGranularFillItemsForSuggestion(
                                       *_suggestion)];
 }

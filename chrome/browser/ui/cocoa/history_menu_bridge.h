@@ -109,7 +109,7 @@ class HistoryMenuBridge : public sessions::TabRestoreServiceObserver,
     // that this is a list of weak references. The |menu_item_map_| is the owner
     // of all items. If it is not a window, then the entry is a single page and
     // the vector will be empty.
-    std::vector<HistoryItem*> tabs;
+    std::vector<raw_ptr<HistoryItem, DanglingUntriaged>> tabs;
 
    private:
     // Copying is explicitly allowed, but assignment is not.
@@ -261,6 +261,12 @@ class HistoryMenuBridge : public sessions::TabRestoreServiceObserver,
   friend class HistoryMenuCocoaControllerTest;
 
   void FinishCreateMenu();
+
+  // Returns up to `max_count` results, deduplicating visits with the same host
+  // and title, preferring more recent visits.
+  static std::vector<history::URLResult> DeduplicateVisitsByHostAndTitle(
+      const history::QueryResults& results,
+      size_t max_count);
 
   // history::HistoryServiceObserver:
   void OnURLVisited(history::HistoryService* history_service,

@@ -74,9 +74,8 @@ class DownloadController : public DownloadControllerBase {
 
   DownloadCallbackValidator* validator() { return &validator_; }
 
-  // The download item is not dangerous. Shows the DangerousDownloadDialog
-  // (confirmation dialog for safe downloads). Returns whether the dialog was
-  // shown.
+  // Shows or queues the DangerousDownloadDialog for `item`. Returns whether
+  // the dialog was shown or queued.
   bool ShowDangerousDownloadDialog(download::DownloadItem* item);
 
  private:
@@ -122,13 +121,16 @@ class DownloadController : public DownloadControllerBase {
   // Notify Java that download is complete, so the user can be informed.
   void OnDownloadComplete(download::DownloadItem* item);
 
+  // Notify Java that a transient inline PDF download failed, so the PDF
+  // page can inform the user.
+  void OnDownloadFailed(download::DownloadItem* item);
+
   // Whether or not we should show an app verification prompt for `item`
   bool ShouldShowAppVerificationPrompt(download::DownloadItem* item);
 
-  // Helper function to get the current active window.
+  // Helper function to get the window for a download item.
   ui::WindowAndroid* GetWindowHelper(download::DownloadItem* item,
-                                     bool should_schedule_removal,
-                                     bool fallback_to_current_window);
+                                     bool should_schedule_removal);
 
   std::string default_file_name_;
 

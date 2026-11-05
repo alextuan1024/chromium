@@ -29,8 +29,8 @@
 #include "components/strings/grit/components_strings.h"
 #include "components/tabs/public/tab_interface.h"
 #include "ui/base/l10n/l10n_util.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
 #include "ui/base/page_transition_types.h"
-#include "ui/base/window_open_disposition.h"
 
 namespace autofill {
 
@@ -52,8 +52,8 @@ void IbanBubbleControllerImpl::OfferLocalSave(
     bool should_show_prompt,
     payments::PaymentsAutofillClient::SaveIbanPromptCallback
         save_iban_prompt_callback) {
-  // Don't show the bubble if it's already visible.
-  if (bubble_view() || !MaySetUpBubble()) {
+  // Don't show the bubble if it's already visible or cannot be shown.
+  if (bubble_view() || !MaySetUpBubble() || !GetAutofillBubbleHandler()) {
     return;
   }
 
@@ -71,8 +71,8 @@ void IbanBubbleControllerImpl::OfferUploadSave(
     bool should_show_prompt,
     payments::PaymentsAutofillClient::SaveIbanPromptCallback
         save_iban_prompt_callback) {
-  // Don't show the bubble if it's already visible.
-  if (bubble_view() || !MaySetUpBubble()) {
+  // Don't show the bubble if it's already visible or cannot be shown.
+  if (bubble_view() || !MaySetUpBubble() || !GetAutofillBubbleHandler()) {
     return;
   }
 
@@ -152,6 +152,7 @@ void IbanBubbleControllerImpl::ShowConfirmationBubbleView(
 
   // Show upload confirmation bubble.
   AutofillBubbleHandler* autofill_bubble_handler = GetAutofillBubbleHandler();
+  CHECK(autofill_bubble_handler);
   SetBubbleView(*autofill_bubble_handler->ShowSaveIbanConfirmationBubble(
       web_contents(), this));
   UpdatePageActionIcon();
@@ -264,9 +265,6 @@ void IbanBubbleControllerImpl::OnAcceptButton(std::u16string_view nickname) {
   switch (current_bubble_type_) {
     case IbanBubbleType::kLocalSave:
       CHECK(!save_iban_prompt_callback_.is_null());
-      // Show an animated IBAN saved confirmation message next time
-      // UpdatePageActionIcon() is called.
-      should_show_iban_saved_label_animation_ = true;
       autofill_metrics::LogSaveIbanPromptResultSavedWithNicknameMetric(
           !nickname.empty(), /*is_upload_save=*/false);
       iban_.set_nickname(std::u16string(nickname));
@@ -303,10 +301,11 @@ void IbanBubbleControllerImpl::OnAcceptButton(std::u16string_view nickname) {
 }
 
 void IbanBubbleControllerImpl::OnLegalMessageLinkClicked(const GURL& url) {
-  web_contents()->OpenURL(content::OpenURLParams::CreateBrowserInitiated(
-                              url, WindowOpenDisposition::NEW_FOREGROUND_TAB,
-                              ui::PAGE_TRANSITION_LINK),
-                          /*navigation_handle_callback=*/{});
+  web_contents()->OpenURL(
+      content::OpenURLParams::CreateBrowserInitiated(
+          url, ui::mojom::WindowOpenDisposition::kNewForegroundTab,
+          ui::PAGE_TRANSITION_LINK),
+      /*navigation_handle_callback=*/{});
 }
 
 void IbanBubbleControllerImpl::OnManageSavedIbanExtraButtonClicked() {
@@ -437,20 +436,6 @@ std::u16string IbanBubbleControllerImpl::GetSavePaymentIconTooltipText() const {
   }
 }
 
-bool IbanBubbleControllerImpl::ShouldShowSavingPaymentAnimation() const {
-  return false;
-}
-
-bool IbanBubbleControllerImpl::ShouldShowPaymentSavedLabelAnimation() const {
-  return should_show_iban_saved_label_animation_;
-}
-
-void IbanBubbleControllerImpl::OnAnimationEnded() {
-  // Do not repeat the animation next time UpdatePageActionIcon() is called,
-  // unless explicitly set somewhere else.
-  should_show_iban_saved_label_animation_ = false;
-}
-
 bool IbanBubbleControllerImpl::IsIconVisible() const {
   // If there is no bubble to show, then there should be no icon.
   return current_bubble_type_ != IbanBubbleType::kInactive;
@@ -458,10 +443,6 @@ bool IbanBubbleControllerImpl::IsIconVisible() const {
 
 AutofillBubbleBase* IbanBubbleControllerImpl::GetPaymentBubbleView() const {
   return bubble_view();
-}
-
-int IbanBubbleControllerImpl::GetSaveSuccessAnimationStringId() const {
-  return IDS_AUTOFILL_IBAN_SAVED;
 }
 
 const SavePaymentMethodAndVirtualCardEnrollConfirmationUiParams&
@@ -489,6 +470,7 @@ IbanBubbleControllerImpl::GetPageActionTooltipText() {
 
 void IbanBubbleControllerImpl::DoShowBubble() {
   AutofillBubbleHandler* autofill_bubble_handler = GetAutofillBubbleHandler();
+  CHECK(autofill_bubble_handler);
   SetBubbleView(*autofill_bubble_handler->ShowIbanBubble(
       web_contents(), this,
       /*is_user_gesture=*/is_reshow_, current_bubble_type_));
@@ -540,14 +522,6 @@ Profile* IbanBubbleControllerImpl::GetProfile() {
     return nullptr;
   }
   return Profile::FromBrowserContext(web_contents()->GetBrowserContext());
-}
-
-AutofillBubbleHandler* IbanBubbleControllerImpl::GetAutofillBubbleHandler() {
-  tabs::TabInterface* tab = tabs::TabInterface::GetFromContents(web_contents());
-  CHECK(tab);
-  BrowserWindowInterface* browser = tab->GetBrowserWindowInterface();
-  CHECK(browser);
-  return AutofillBubbleHandler::Get(browser->GetUnownedUserDataHost());
 }
 
 void IbanBubbleControllerImpl::ShowIconOnly() {

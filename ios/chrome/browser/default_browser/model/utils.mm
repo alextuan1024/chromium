@@ -13,6 +13,7 @@
 #import "base/metrics/histogram_functions.h"
 #import "base/metrics/user_metrics.h"
 #import "base/notreached.h"
+#import "base/numerics/clamped_math.h"
 #import "base/strings/strcat.h"
 #import "base/strings/string_number_conversions.h"
 #import "base/time/time.h"
@@ -20,6 +21,7 @@
 #import "components/feature_engagement/public/feature_constants.h"
 #import "components/feature_engagement/public/tracker.h"
 #import "components/prefs/pref_service.h"
+#import "components/segmentation_platform/public/features.h"
 #import "ios/chrome/browser/default_browser/model/features.h"
 #import "ios/chrome/browser/default_browser/promo/contextual/public/contextual_default_browser_promo_constants.h"
 #import "ios/chrome/browser/default_browser/promo/public/features.h"
@@ -181,6 +183,17 @@ void SetObjectIntoStorageForKey(NSString* key, NSObject* data) {
 }
 
 void LogOpenHTTPURLFromExternalURL() {
+  if (!IsChromeLikelyDefaultBrowser()) {
+    IOSDefaultBrowserPromoSurface last_surface =
+        DefaultBrowserPromoLastActionSurface();
+    if (last_surface != IOSDefaultBrowserPromoSurface::kNone) {
+      base::UmaHistogramEnumeration(
+          "IOS.DefaultBrowser.Conversion.PromoSurface", last_surface);
+      GetApplicationContext()->GetLocalState()->ClearPref(
+          prefs::kIosDefaultBrowserPromoLastActionSurface);
+    }
+  }
+
   base::UmaHistogramBoolean("IOS.DefaultBrowser.Conversion7",
                             !IsChromeLikelyDefaultBrowserXDays(7));
   base::UmaHistogramBoolean("IOS.DefaultBrowser.Conversion14",
@@ -461,6 +474,66 @@ void LogDefaultBrowserPromoHistogramForAction(
   }
 }
 
+void LogDefaultBrowserFullscreenPromoOpportunity(std::optional<float> score) {
+  IOSDefaultBrowserVideoPromoOpportunity opportunity_bucket;
+  int opportunity_score = 0;
+
+  if (score.has_value()) {
+    float score_value = score.value();
+    opportunity_score = base::ClampRound(score_value * 100.0f);
+
+    if (score_value < 0.1f) {
+      opportunity_bucket =
+          IOSDefaultBrowserVideoPromoOpportunity::kScoreUnder0_1;
+    } else if (score_value < 0.2f) {
+      opportunity_bucket =
+          IOSDefaultBrowserVideoPromoOpportunity::kScore0_1To0_2;
+    } else if (score_value < 0.4f) {
+      opportunity_bucket =
+          IOSDefaultBrowserVideoPromoOpportunity::kScore0_2To0_4;
+    } else if (score_value < 0.6f) {
+      opportunity_bucket =
+          IOSDefaultBrowserVideoPromoOpportunity::kScore0_4To0_6;
+    } else {
+      opportunity_bucket =
+          IOSDefaultBrowserVideoPromoOpportunity::kScore0_6AndAbove;
+    }
+  } else {
+    // Fail-open: on model error, default to top bucket so promo can show.
+    opportunity_bucket =
+        IOSDefaultBrowserVideoPromoOpportunity::kScore0_6AndAbove;
+    opportunity_score = 100;
+  }
+
+  PrefService* local_state = GetApplicationContext()->GetLocalState();
+  if (local_state) {
+    int current_cohort =
+        segmentation_platform::features::
+            kDefaultBrowserPromoPropensityModelExperimentCohort.Get();
+    int logged_cohort = local_state->GetInteger(
+        prefs::kIosDefaultBrowserPromoOpportunityFirstTimeCohort);
+    // Log first-time opportunity metrics once per client per experiment cohort.
+    if (logged_cohort != current_cohort) {
+      base::UmaHistogramEnumeration(
+          "IOS.DefaultBrowserVideoPromo.Fullscreen.Opportunity.FirstTime",
+          opportunity_bucket);
+      base::UmaHistogramPercentage(
+          "IOS.DefaultBrowserVideoPromo.Fullscreen.OpportunityScore.FirstTime",
+          opportunity_score);
+      local_state->SetInteger(
+          prefs::kIosDefaultBrowserPromoOpportunityFirstTimeCohort,
+          current_cohort);
+    }
+  }
+
+  base::UmaHistogramEnumeration(
+      "IOS.DefaultBrowserVideoPromo.Fullscreen.Opportunity.Regular",
+      opportunity_bucket);
+  base::UmaHistogramPercentage(
+      "IOS.DefaultBrowserVideoPromo.Fullscreen.OpportunityScore.Regular",
+      opportunity_score);
+}
+
 const base::Feature& GetFeatureForPromoReason(
     NonModalDefaultBrowserPromoReason promo_reason) {
   switch (promo_reason) {
@@ -508,20 +581,46 @@ bool IsNonModalPromoMigrationDone() {
   return number.boolValue;
 }
 
-void RecordDefaultBrowserPromoLastAction(IOSDefaultBrowserPromoAction action) {
-  GetApplicationContext()->GetLocalState()->SetInteger(
-      prefs::kIosDefaultBrowserPromoLastAction, static_cast<int>(action));
+void RecordDefaultBrowserPromoLastAction(
+    IOSDefaultBrowserPromoAction action,
+    IOSDefaultBrowserPromoSurface surface) {
+  PrefService* local_state = GetApplicationContext()->GetLocalState();
+  local_state->SetInteger(prefs::kIosDefaultBrowserPromoLastAction,
+                          static_cast<int>(action));
+  if (action == IOSDefaultBrowserPromoAction::kActionButton &&
+      local_state->FindPreference(
+          prefs::kIosDefaultBrowserPromoLastActionSurface)) {
+    local_state->SetInteger(prefs::kIosDefaultBrowserPromoLastActionSurface,
+                            static_cast<int>(surface));
+  }
 }
 
 std::optional<IOSDefaultBrowserPromoAction> DefaultBrowserPromoLastAction() {
+  if (!GetApplicationContext() || !GetApplicationContext()->GetLocalState()) {
+    return std::nullopt;
+  }
   const PrefService::Preference* last_action =
       GetApplicationContext()->GetLocalState()->FindPreference(
           prefs::kIosDefaultBrowserPromoLastAction);
-  if (last_action->IsDefaultValue()) {
+  if (!last_action || last_action->IsDefaultValue()) {
     return std::nullopt;
   }
   int last_action_int = last_action->GetValue()->GetInt();
   return static_cast<IOSDefaultBrowserPromoAction>(last_action_int);
+}
+
+IOSDefaultBrowserPromoSurface DefaultBrowserPromoLastActionSurface() {
+  if (!GetApplicationContext() || !GetApplicationContext()->GetLocalState()) {
+    return IOSDefaultBrowserPromoSurface::kNone;
+  }
+  const PrefService::Preference* last_surface =
+      GetApplicationContext()->GetLocalState()->FindPreference(
+          prefs::kIosDefaultBrowserPromoLastActionSurface);
+  if (!last_surface || last_surface->IsDefaultValue()) {
+    return IOSDefaultBrowserPromoSurface::kNone;
+  }
+  return static_cast<IOSDefaultBrowserPromoSurface>(
+      last_surface->GetValue()->GetInt());
 }
 
 NSDate* LastTimeUserInteractedWithNonModalPromo() {

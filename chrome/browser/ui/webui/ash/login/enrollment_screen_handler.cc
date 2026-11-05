@@ -9,7 +9,6 @@
 #include <utility>
 #include <vector>
 
-#include "ash/constants/ash_features.h"
 #include "ash/login/resources/grit/ash_login_strings.h"
 #include "ash/strings/grit/ash_strings.h"
 #include "base/check_deref.h"
@@ -20,7 +19,6 @@
 #include "base/system/sys_info.h"
 #include "base/uuid.h"
 #include "base/values.h"
-#include "base/version_info/version_info.h"
 #include "build/build_config.h"
 #include "chrome/browser/ash/login/help_app_launcher.h"
 #include "chrome/browser/ash/login/oobe_screen.h"
@@ -65,7 +63,7 @@ const char kEnrollmentModeUIManual[] = "manual";
 const char kEnrollmentModeUIRecovery[] = "recovery";
 
 // Converts `mode` to a mode identifier for the UI.
-std::string EnrollmentModeToUIMode(policy::EnrollmentConfig::Mode mode) {
+std::string_view EnrollmentModeToUIMode(policy::EnrollmentConfig::Mode mode) {
   switch (mode) {
     case policy::EnrollmentConfig::MODE_NONE:
       NOTREACHED() << "Bad enrollment mode " << mode;
@@ -96,7 +94,7 @@ std::string EnrollmentModeToUIMode(policy::EnrollmentConfig::Mode mode) {
   }
 }
 
-std::string GetFlowString(EnrollmentScreenView::FlowType type) {
+std::string_view GetFlowString(EnrollmentScreenView::FlowType type) {
   switch (type) {
     case EnrollmentScreenView::FlowType::kEnterprise:
       return "enterprise";
@@ -111,10 +109,10 @@ std::string GetFlowString(EnrollmentScreenView::FlowType type) {
   }
 }
 
-std::string GetLicenseString(policy::LicenseType type) {
+std::string_view GetLicenseString(policy::LicenseType type) {
   switch (type) {
     case policy::LicenseType::kNone:
-      return std::string();
+      return "";
     case policy::LicenseType::kEnterprise:
       return "enterprise";
     case policy::LicenseType::kEducation:
@@ -125,7 +123,7 @@ std::string GetLicenseString(policy::LicenseType type) {
 }
 
 // String constants should be in sync with `OobeTypes.GaiaDialogButtonsType`.
-std::string GetGaiaButtonsTypeString(
+std::string_view GetGaiaButtonsTypeString(
     EnrollmentScreenView::GaiaButtonsType type) {
   switch (type) {
     case EnrollmentScreenView::GaiaButtonsType::kDefault:
@@ -201,7 +199,7 @@ void EnrollmentScreenHandler::ReloadSigninScreen() {
 void EnrollmentScreenHandler::ResetEnrollmentScreen() {
   // The empty string will be replaced by the correct initial step in the screen
   // initialization code.
-  ShowStep(std::string());
+  ShowStep("");
 }
 
 void EnrollmentScreenHandler::ShowUserError(const std::string& email) {
@@ -644,7 +642,7 @@ void EnrollmentScreenHandler::HandleToggleFakeEnrollmentAndCompleteLogin(
 }
 
 void EnrollmentScreenHandler::HandleClose(const std::string& reason) {
-  DCHECK(controller_);
+  CHECK(controller_, base::NotFatalUntil::M162);
   if (reason == "cancel") {
     controller_->OnCancel();
   } else if (reason == "done") {
@@ -680,8 +678,8 @@ void EnrollmentScreenHandler::HandleCompleteLogin(const std::string& user,
   }
 
   // Validity check that partition did not change during enrollment flow.
-  DCHECK_EQ(signin_partition_manager->GetCurrentStoragePartitionName(),
-            signin_partition_name_);
+  CHECK_EQ(signin_partition_manager->GetCurrentStoragePartitionName(),
+           signin_partition_name_, base::NotFatalUntil::M162);
 
   login::OnlineSigninArtifacts signin_artifacts;
   signin_artifacts.email = user;
@@ -707,7 +705,7 @@ void EnrollmentScreenHandler::CompleteAuthWithCookies(
     login::OnlineSigninArtifacts signin_artifacts,
     int license_type,
     login::GaiaCookiesData cookies) {
-  DCHECK(controller_);
+  CHECK(controller_, base::NotFatalUntil::M162);
   signin_artifacts.email = gaia::SanitizeEmail(signin_artifacts.email);
   controller_->OnLoginDone(std::move(signin_artifacts), license_type,
                            cookies.auth_code);
@@ -725,12 +723,12 @@ void EnrollmentScreenHandler::OnCookieWaitTimeout() {
 
 void EnrollmentScreenHandler::HandleIdentifierEntered(
     const std::string& email) {
-  DCHECK(controller_);
+  CHECK(controller_, base::NotFatalUntil::M162);
   controller_->OnIdentifierEntered(email);
 }
 
 void EnrollmentScreenHandler::HandleRetry() {
-  DCHECK(controller_);
+  CHECK(controller_, base::NotFatalUntil::M162);
   controller_->OnRetry();
 }
 
@@ -767,7 +765,7 @@ void EnrollmentScreenHandler::HandleGetDeviceId(
                             base::Uuid::GenerateRandomV4().AsLowercaseString());
 }
 
-void EnrollmentScreenHandler::ShowStep(const std::string& step) {
+void EnrollmentScreenHandler::ShowStep(std::string_view step) {
   CallExternalAPI("showStep", step);
 }
 
@@ -790,7 +788,7 @@ void EnrollmentScreenHandler::ShowEnrollmentDuringTrialNotAllowedError() {
       /*retry=*/false);
 }
 
-void EnrollmentScreenHandler::ShowErrorMessage(const std::string& message,
+void EnrollmentScreenHandler::ShowErrorMessage(std::string_view message,
                                                bool retry) {
   CallExternalAPI("showError", message, retry);
 }
@@ -847,14 +845,14 @@ base::DictValue EnrollmentScreenHandler::ScreenDataForOAuthEnrollment() {
   screen_data.Set("gaiaUrl", GaiaUrls::GetInstance()->gaia_url().spec());
   screen_data.Set(
       "gaiaPath",
-      GaiaUrls::GetInstance()->embedded_setup_chromeos_url().GetPath().substr(
-          1));
+      GaiaUrls::GetInstance()->embedded_setup_chromeos_url().path().substr(1));
   screen_data.Set("clientId",
                   GaiaUrls::GetInstance()->oauth2_chrome_client_id());
   screen_data.Set("management_domain", config_.management_domain);
   screen_data.Set("gaia_buttons_type",
                   GetGaiaButtonsTypeString(gaia_buttons_type_));
-  const std::string& app_locale = application_locale_storage_->Get();
+  std::string_view app_locale =
+      application_locale_storage_->GetTag().tag_string();
   if (!app_locale.empty()) {
     screen_data.Set("hl", app_locale);
   }
@@ -875,10 +873,6 @@ base::DictValue EnrollmentScreenHandler::ScreenDataCommon() {
   // auto-enrollment.
   screen_data.Set("attestationBased", config_.is_automatic_enrollment());
   screen_data.Set("flow", GetFlowString(flow_type_));
-
-  if (ash::features::IsOobeAddUserDuringEnrollmentEnabled()) {
-    screen_data.Set("clientVersion", version_info::GetVersionNumber());
-  }
 
   if (ShouldSpecifyLicenseType(config_)) {
     screen_data.Set("license", GetLicenseString(config_.license_type));

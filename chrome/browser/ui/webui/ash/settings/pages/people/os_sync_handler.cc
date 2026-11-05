@@ -13,7 +13,6 @@
 #include "base/functional/bind.h"
 #include "base/values.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/ui/webui/ash/settings/pref_names.h"
 #include "chromeos/ash/components/browser_context_helper/annotated_account_id.h"
 #include "chromeos/ash/components/signin/identity_manager_provider.h"
 #include "chromeos/ash/components/sync/sync_service_provider.h"
@@ -40,7 +39,7 @@ const char kWallpaperEnabledKey[] = "wallpaperEnabled";
 }  // namespace
 
 OSSyncHandler::OSSyncHandler(Profile* profile) : profile_(profile) {
-  DCHECK(profile_);
+  CHECK(profile_, base::NotFatalUntil::M162);
 }
 
 OSSyncHandler::~OSSyncHandler() {

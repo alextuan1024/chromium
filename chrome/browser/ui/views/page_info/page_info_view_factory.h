@@ -80,6 +80,8 @@ class PageInfoViewFactory {
     VIEW_ID_PAGE_INFO_PERMISSION_SUBTITLE_LABEL,
     VIEW_ID_PAGE_INFO_SUSPICIOUS_SITE_MARK_AS_SAFE_BUTTON,
     VIEW_ID_PAGE_INFO_SUSPICIOUS_SITE_BACK_TO_SAFETY_BUTTON,
+    VIEW_ID_PAGE_INFO_ONE_QWAC_INFORMATION,
+    VIEW_ID_PAGE_INFO_LINK_OR_BUTTON_TWO_QWAC_CERTIFICATE_VIEWER,
   };
 
   // Creates a separator view with padding on top and bottom. Use with flex
@@ -123,9 +125,6 @@ class PageInfoViewFactory {
 
   // Returns the icon for a button which opens a subpage within page info.
   static const ui::ImageModel GetOpenSubpageIcon();
-
-  // Returns a reference to the vector icon for 'About this site' button.
-  static const gfx::VectorIcon& GetAboutThisSiteVectorIcon();
 
   // Returns the image model for the vector icon.
   static const ui::ImageModel GetImageModel(const gfx::VectorIcon& icon);

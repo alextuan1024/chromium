@@ -529,6 +529,42 @@ class AutofillPrivateGetEntityInstanceByGuidFunction
   std::unique_ptr<device_reauth::DeviceAuthenticator> authenticator_;
 };
 
+class AutofillPrivateGetDetailsForUpsertPassFunction
+    : public AutofillPrivateExtensionFunction {
+ public:
+  AutofillPrivateGetDetailsForUpsertPassFunction() = default;
+  AutofillPrivateGetDetailsForUpsertPassFunction(
+      const AutofillPrivateGetDetailsForUpsertPassFunction&) = delete;
+  AutofillPrivateGetDetailsForUpsertPassFunction& operator=(
+      const AutofillPrivateGetDetailsForUpsertPassFunction&) = delete;
+  DECLARE_EXTENSION_FUNCTION("autofillPrivate.getDetailsForUpsertPass",
+                             AUTOFILLPRIVATE_GETDETAILSFORUPSERTPASS)
+
+ protected:
+  ~AutofillPrivateGetDetailsForUpsertPassFunction() override = default;
+
+  // ExtensionFunction overrides.
+  ResponseAction Run() override;
+};
+
+class AutofillPrivatePreloadDetailsForUpsertPassFunction
+    : public AutofillPrivateExtensionFunction {
+ public:
+  AutofillPrivatePreloadDetailsForUpsertPassFunction() = default;
+  AutofillPrivatePreloadDetailsForUpsertPassFunction(
+      const AutofillPrivatePreloadDetailsForUpsertPassFunction&) = delete;
+  AutofillPrivatePreloadDetailsForUpsertPassFunction& operator=(
+      const AutofillPrivatePreloadDetailsForUpsertPassFunction&) = delete;
+  DECLARE_EXTENSION_FUNCTION("autofillPrivate.preloadDetailsForUpsertPass",
+                             AUTOFILLPRIVATE_PRELOADDETAILSFORUPSERTPASS)
+
+ protected:
+  ~AutofillPrivatePreloadDetailsForUpsertPassFunction() override = default;
+
+  // ExtensionFunction overrides.
+  ResponseAction Run() override;
+};
+
 class AutofillPrivateGetWritableEntityTypesFunction
     : public AutofillPrivateExtensionFunction {
  public:

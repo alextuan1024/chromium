@@ -197,6 +197,11 @@ PerfettoTracedProcess& PerfettoTracedProcess::Get() {
   return *g_instance;
 }
 
+// static
+bool PerfettoTracedProcess::HasInstance() {
+  return g_instance != nullptr;
+}
+
 PerfettoTracedProcess::PerfettoTracedProcess(bool will_trace_thread_restart)
     : tracing_backend_(std::make_unique<PerfettoTracingBackend>()),
       trace_process_thread_(
@@ -286,7 +291,9 @@ void PerfettoTracedProcess::SetupClientLibrary(bool enable_consumer,
   init_args.backends |= perfetto::kCustomBackend;
   init_args.shmem_batch_commits_duration_ms = 1000;
   init_args.shmem_size_hint_kb =
-      features::kPerfettoSharedMemorySizeBytes.Get() / 1024;
+      (enable_consumer ? features::kPerfettoBrowserSharedMemorySizeBytes.Get()
+                       : features::kPerfettoSharedMemorySizeBytes.Get()) /
+      1024;
   init_args.shmem_direct_patching_enabled = true;
   init_args.use_monotonic_clock = true;
   init_args.disallow_merging_with_system_tracks = true;

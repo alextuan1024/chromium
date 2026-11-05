@@ -5,20 +5,22 @@
 #ifndef COMPONENTS_NETWORK_TIME_NETWORK_TIME_TRACKER_H_
 #define COMPONENTS_NETWORK_TIME_NETWORK_TIME_TRACKER_H_
 
+#include <stddef.h>
 #include <stdint.h>
 
 #include <memory>
 #include <optional>
-#include <string_view>
+#include <string>
 #include <vector>
 
+#include "base/containers/span.h"
 #include "base/feature_list.h"
+#include "base/functional/callback_forward.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/observer_list.h"
 #include "base/observer_list_types.h"
 #include "base/threading/thread_checker.h"
-#include "base/time/clock.h"
 #include "base/time/time.h"
 #include "base/timer/timer.h"
 #include "build/build_config.h"
@@ -30,12 +32,9 @@ class PrefRegistrySimple;
 class PrefService;
 
 namespace base {
+class Clock;
 class TickClock;
 }  // namespace base
-
-namespace client_update_protocol {
-class Ecdsa;
-}  // namespace client_update_protocol
 
 namespace network {
 class SimpleURLLoader;
@@ -107,8 +106,7 @@ class NetworkTimeTracker {
     NetworkTimeObserver& operator=(const NetworkTimeObserver&) = delete;
 
     // Called when the network time changes.
-    virtual void OnNetworkTimeChanged(
-        const TimeTracker::TimeTrackerState state) = 0;
+    virtual void OnNetworkTimeChanged(TimeTracker::TimeTrackerState state) = 0;
 
     // Called when the NetworkTimeTracker is destroyed. This allows the observer
     // to remove itself from the NetworkTimeTracker's observer list, and clear
@@ -237,7 +235,7 @@ class NetworkTimeTracker {
 
  private:
   // Checks whether a network time query should be issued, and issues one if so.
-  // Upon response, execution resumes in |OnURLFetchComplete|.
+  // Upon response, execution resumes in |OnURLLoaderComplete|.
   void CheckTime();
 
   // Updates network time from a time server response, returning true
@@ -255,6 +253,13 @@ class NetworkTimeTracker {
   // unconditionally every once in a long while, just to be on the safe side.
   bool ShouldIssueTimeQuery();
 
+  // Returns true if GetNetworkTime() would currently report
+  // NETWORK_TIME_AVAILABLE. Note that this is not a free predicate: like any
+  // GetNetworkTime() call, a successful query records a
+  // NetworkTime.EstimatedTimeUncertainty sample. Do not add calls without
+  // considering the effect on that histogram.
+  bool IsNetworkTimeAvailable() const;
+
   void NotifyObservers();
 
   // State variables for internally-managed secure time service queries.
@@ -267,6 +272,7 @@ class NetworkTimeTracker {
   base::RepeatingTimer timer_;
   scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory_;
   std::unique_ptr<network::SimpleURLLoader> time_fetcher_;
+  base::TimeTicks fetch_started_;
   client_update_protocol::Cup query_signer_;
 
   // The |Clock| and |TickClock| are used to sanity-check one another, allowing
@@ -275,11 +281,11 @@ class NetworkTimeTracker {
   std::unique_ptr<base::Clock> clock_;
   std::unique_ptr<const base::TickClock> tick_clock_;
 
-  raw_ptr<PrefService> pref_service_;
+  raw_ptr<PrefService> pref_service_ = nullptr;
 
   // True if any time query has completed (but not necessarily succeeded) in
   // this NetworkTimeTracker's lifetime.
-  bool time_query_completed_;
+  bool time_query_completed_ = false;
 
   // The time that was received from the last network time fetch made by
   // CheckTime(). Unlike the time used inside |tracker_| this time is not

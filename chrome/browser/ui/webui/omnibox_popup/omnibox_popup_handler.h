@@ -48,6 +48,15 @@ class OmniboxPopupHandler : public omnibox_popup::mojom::PageHandler,
     embedder_ = embedder;
   }
 
+  // Stops using the omnibox of the browser window that embeds the popup and
+  // drops the text state the page reported there. Called before the popup's
+  // WebContents moves to another browser window.
+  void DetachFromOmniboxController();
+
+  // Uses `controller`, the omnibox of the browser window that now embeds the
+  // popup.
+  void AttachToOmniboxController(OmniboxController* controller);
+
   // omnibox_popup::mojom::PageHandler:
   void ShowContextMenu(const gfx::Point& point) override;
   void CloseUI() override;
@@ -69,6 +78,16 @@ class OmniboxPopupHandler : public omnibox_popup::mojom::PageHandler,
                    const gfx::Range& selection) override;
   void SetEditHistoryState(bool can_undo, bool can_redo) override;
   void OpenDevTools() override;
+  void OpenDogfoodFeedback() override;
+  void AdvanceFocus(bool reverse) override;
+
+  // Computes URL emphasis metadata for the given text.
+  // This implementation is based on `OmniboxViewViews::UpdateTextStyle()`
+  // (for URL component parsing and deemphasis mode determination) and
+  // `OmniboxViewViews::UpdateSchemeStyle()` (for security-related scheme
+  // styling).
+  searchbox::mojom::UrlEmphasisPtr ComputeUrlEmphasis(
+      const std::string& text) const;
 
   // omnibox_popup::mojom::Page:
   void OnShow();
@@ -80,12 +99,14 @@ class OmniboxPopupHandler : public omnibox_popup::mojom::PageHandler,
                      bool is_focused,
                      const std::string& permanent_display_text,
                      bool show_full_url,
-                     bool query_zps,
+                     omnibox_popup::mojom::MatchesUpdate matches_update,
                      searchbox::mojom::InputKeywordModelPtr keyword_model,
                      bool is_tab_switch);
   void SetFocus(bool is_focused,
                 bool query_zps = false,
-                bool select_all = false);
+                bool select_all = false,
+                bool show_full_url = false);
+  void FocusSearchWithDefaultSearchEngineKeywordMode();
   void ClearAutocompleteMatches();
   void ClearPopup(base::OnceClosure callback);
 

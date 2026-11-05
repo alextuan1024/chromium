@@ -19,8 +19,8 @@
 #include "base/auto_reset.h"
 #include "content/browser/haptics/haptics_waveforms_statics3_win.h"
 #include "content/public/test/browser_task_environment.h"
+#include "services/device/public/mojom/haptics.mojom.h"
 #include "testing/gtest/include/gtest/gtest.h"
-#include "third_party/blink/public/mojom/haptics/haptics.mojom.h"
 
 namespace content {
 namespace {
@@ -43,6 +43,8 @@ constexpr uint16_t kCollideId = 11;
 constexpr uint16_t kStepId = 12;
 constexpr uint16_t kAlignId = 13;
 constexpr uint16_t kClickId = 14;
+constexpr uint16_t kSuccessId = 15;
+constexpr uint16_t kErrorId = 16;
 
 class FakeSimpleHapticsControllerFeedback
     : public RuntimeClass<RuntimeClassFlags<WinRt | InhibitRoOriginateError>,
@@ -325,6 +327,14 @@ class FakeKnownWaveformsWithStatics3
     *value = kStepId;
     return S_OK;
   }
+  IFACEMETHODIMP get_Success(UINT16* value) override {
+    *value = kSuccessId;
+    return S_OK;
+  }
+  IFACEMETHODIMP get_Error(UINT16* value) override {
+    *value = kErrorId;
+    return S_OK;
+  }
   WAVEFORM_STUB(get_Grow)
 
   // IKnownSimpleHapticsControllerWaveformsStatics (base v1) stubs.
@@ -336,17 +346,14 @@ class FakeKnownWaveformsWithStatics3
   WAVEFORM_STUB(get_BrushContinuous)
   WAVEFORM_STUB(get_ChiselMarkerContinuous)
   WAVEFORM_STUB(get_EraserContinuous)
-  WAVEFORM_STUB(get_Error)
   WAVEFORM_STUB(get_GalaxyPenContinuous)
   WAVEFORM_STUB(get_InkContinuous)
   WAVEFORM_STUB(get_MarkerContinuous)
   WAVEFORM_STUB(get_PencilContinuous)
-  WAVEFORM_STUB(get_Success)
 };
 
-// Models a pre-24H2 system: implements only Statics2 and the base v1 statics,
-// so the Statics3 QueryInterface fails and non-hint effects fall back to the
-// device-type default.
+// Exposes the Statics2 waveforms without Statics3, so tests can verify that
+// Hint, Success, and Error still resolve while Edge, Tick, and Align fall back.
 class FakeKnownWaveformsStatics2Only
     : public RuntimeClass<
           RuntimeClassFlags<WinRt | InhibitRoOriginateError>,
@@ -361,6 +368,14 @@ class FakeKnownWaveformsStatics2Only
     *value = kClickId;
     return S_OK;
   }
+  IFACEMETHODIMP get_Success(UINT16* value) override {
+    *value = kSuccessId;
+    return S_OK;
+  }
+  IFACEMETHODIMP get_Error(UINT16* value) override {
+    *value = kErrorId;
+    return S_OK;
+  }
 
   // IKnownSimpleHapticsControllerWaveformsStatics (base v1) stubs.
   WAVEFORM_STUB(get_BuzzContinuous)
@@ -371,12 +386,10 @@ class FakeKnownWaveformsStatics2Only
   WAVEFORM_STUB(get_BrushContinuous)
   WAVEFORM_STUB(get_ChiselMarkerContinuous)
   WAVEFORM_STUB(get_EraserContinuous)
-  WAVEFORM_STUB(get_Error)
   WAVEFORM_STUB(get_GalaxyPenContinuous)
   WAVEFORM_STUB(get_InkContinuous)
   WAVEFORM_STUB(get_MarkerContinuous)
   WAVEFORM_STUB(get_PencilContinuous)
-  WAVEFORM_STUB(get_Success)
 };
 
 #undef WAVEFORM_STUB
@@ -459,18 +472,22 @@ class HapticsManagerImplWinTest : public testing::Test {
 
 TEST_F(HapticsManagerImplWinTest,
        ForwardsSemanticWaveformWhenDeviceSupportsIt) {
-  FakeInputHapticsManager* manager =
-      InstallDeviceScenario({kHoverId, kCollideId, kStepId, kAlignId});
+  FakeInputHapticsManager* manager = InstallDeviceScenario(
+      {kHoverId, kCollideId, kStepId, kAlignId, kSuccessId, kErrorId});
   HapticsManagerImplWin haptics_manager;
 
-  haptics_manager.PlayHaptics(blink::mojom::HapticEffect::kHint, 1.0);
+  haptics_manager.PlayHaptics(device::mojom::HapticEffect::kHint, 1.0);
   EXPECT_EQ(manager->last_waveform(), kHoverId);
-  haptics_manager.PlayHaptics(blink::mojom::HapticEffect::kEdge, 1.0);
+  haptics_manager.PlayHaptics(device::mojom::HapticEffect::kEdge, 1.0);
   EXPECT_EQ(manager->last_waveform(), kCollideId);
-  haptics_manager.PlayHaptics(blink::mojom::HapticEffect::kTick, 1.0);
+  haptics_manager.PlayHaptics(device::mojom::HapticEffect::kTick, 1.0);
   EXPECT_EQ(manager->last_waveform(), kStepId);
-  haptics_manager.PlayHaptics(blink::mojom::HapticEffect::kAlign, 1.0);
+  haptics_manager.PlayHaptics(device::mojom::HapticEffect::kAlign, 1.0);
   EXPECT_EQ(manager->last_waveform(), kAlignId);
+  haptics_manager.PlayHaptics(device::mojom::HapticEffect::kSuccess, 1.0);
+  EXPECT_EQ(manager->last_waveform(), kSuccessId);
+  haptics_manager.PlayHaptics(device::mojom::HapticEffect::kError, 1.0);
+  EXPECT_EQ(manager->last_waveform(), kErrorId);
 }
 
 TEST_F(HapticsManagerImplWinTest, FallsBackToDeviceDefaultHoverForMouse) {
@@ -479,7 +496,7 @@ TEST_F(HapticsManagerImplWinTest, FallsBackToDeviceDefaultHoverForMouse) {
       InstallDeviceScenario({kHoverId}, haptics::HapticDeviceType_Mouse);
   HapticsManagerImplWin haptics_manager;
 
-  haptics_manager.PlayHaptics(blink::mojom::HapticEffect::kEdge, 1.0);
+  haptics_manager.PlayHaptics(device::mojom::HapticEffect::kEdge, 1.0);
 
   // Mouse falls back to Hover, not to an arbitrary supported waveform.
   EXPECT_EQ(manager->last_waveform(), kHoverId);
@@ -492,9 +509,31 @@ TEST_F(HapticsManagerImplWinTest, NoDeviceDefaultWhenDeviceTypeNone) {
       InstallDeviceScenario({kHoverId}, haptics::HapticDeviceType_None);
   HapticsManagerImplWin haptics_manager;
 
-  haptics_manager.PlayHaptics(blink::mojom::HapticEffect::kEdge, 1.0);
+  haptics_manager.PlayHaptics(device::mojom::HapticEffect::kEdge, 1.0);
 
   EXPECT_EQ(manager->play_count(), 0);
+}
+
+TEST_F(HapticsManagerImplWinTest, NoDeviceDefaultWhenDeviceTypeGeneric) {
+  FakeInputHapticsManager* manager =
+      InstallDeviceScenario({kHoverId}, haptics::HapticDeviceType_Generic);
+  HapticsManagerImplWin haptics_manager;
+
+  haptics_manager.PlayHaptics(device::mojom::HapticEffect::kEdge, 1.0);
+
+  EXPECT_EQ(manager->play_count(), 0);
+}
+
+TEST_F(HapticsManagerImplWinTest,
+       SupportedGenericEffectUsesRequestedWaveformAsFallback) {
+  FakeInputHapticsManager* manager =
+      InstallDeviceScenario({kCollideId}, haptics::HapticDeviceType_Generic);
+  HapticsManagerImplWin haptics_manager;
+
+  haptics_manager.PlayHaptics(device::mojom::HapticEffect::kEdge, 1.0);
+
+  EXPECT_EQ(manager->last_waveform(), kCollideId);
+  EXPECT_EQ(manager->last_fallback(), kCollideId);
 }
 
 TEST_F(HapticsManagerImplWinTest, FallsBackToDeviceDefaultClickForPen) {
@@ -503,12 +542,39 @@ TEST_F(HapticsManagerImplWinTest, FallsBackToDeviceDefaultClickForPen) {
       InstallDeviceScenario({kClickId}, haptics::HapticDeviceType_Pen);
   HapticsManagerImplWin haptics_manager;
 
-  haptics_manager.PlayHaptics(blink::mojom::HapticEffect::kEdge, 1.0);
+  haptics_manager.PlayHaptics(device::mojom::HapticEffect::kEdge, 1.0);
 
   // Pen falls back to Click.
   EXPECT_EQ(manager->last_waveform(), kClickId);
   EXPECT_EQ(manager->last_fallback(), kClickId);
   EXPECT_TRUE(manager->last_sent());
+}
+
+TEST_F(HapticsManagerImplWinTest,
+       TouchpadDropsUnsupportedProcessConfirmationEffects) {
+  FakeInputHapticsManager* manager =
+      InstallDeviceScenario({kHoverId}, haptics::HapticDeviceType_Touchpad);
+  HapticsManagerImplWin haptics_manager;
+
+  haptics_manager.PlayHaptics(device::mojom::HapticEffect::kSuccess, 1.0);
+  haptics_manager.PlayHaptics(device::mojom::HapticEffect::kError, 1.0);
+
+  EXPECT_EQ(manager->play_count(), 0);
+}
+
+TEST_F(HapticsManagerImplWinTest,
+       SupportedTouchpadProcessConfirmationUsesRequestedWaveformAsFallback) {
+  FakeInputHapticsManager* manager = InstallDeviceScenario(
+      {kSuccessId, kErrorId}, haptics::HapticDeviceType_Touchpad);
+  HapticsManagerImplWin haptics_manager;
+
+  haptics_manager.PlayHaptics(device::mojom::HapticEffect::kSuccess, 1.0);
+  EXPECT_EQ(manager->last_waveform(), kSuccessId);
+  EXPECT_EQ(manager->last_fallback(), kSuccessId);
+
+  haptics_manager.PlayHaptics(device::mojom::HapticEffect::kError, 1.0);
+  EXPECT_EQ(manager->last_waveform(), kErrorId);
+  EXPECT_EQ(manager->last_fallback(), kErrorId);
 }
 
 TEST_F(HapticsManagerImplWinTest, PassesDeviceDefaultAsFallbackArgument) {
@@ -518,7 +584,7 @@ TEST_F(HapticsManagerImplWinTest, PassesDeviceDefaultAsFallbackArgument) {
       InstallDeviceScenario({kCollideId}, haptics::HapticDeviceType_Mouse);
   HapticsManagerImplWin haptics_manager;
 
-  haptics_manager.PlayHaptics(blink::mojom::HapticEffect::kEdge, 1.0);
+  haptics_manager.PlayHaptics(device::mojom::HapticEffect::kEdge, 1.0);
 
   EXPECT_EQ(manager->last_waveform(), kCollideId);
   EXPECT_EQ(manager->last_fallback(), kHoverId);
@@ -531,7 +597,7 @@ TEST_F(HapticsManagerImplWinTest, DropsEffectWhenNoSupportedWaveforms) {
       InstallDeviceScenario({}, haptics::HapticDeviceType_Mouse);
   HapticsManagerImplWin haptics_manager;
 
-  haptics_manager.PlayHaptics(blink::mojom::HapticEffect::kHint, 1.0);
+  haptics_manager.PlayHaptics(device::mojom::HapticEffect::kHint, 1.0);
 
   EXPECT_FALSE(manager->last_sent());
 }
@@ -542,7 +608,7 @@ TEST_F(HapticsManagerImplWinTest, DropsEffectWhenNoCurrentInputDevice) {
       /*manager_reachable=*/false);
   HapticsManagerImplWin haptics_manager;
 
-  haptics_manager.PlayHaptics(blink::mojom::HapticEffect::kHint, 1.0);
+  haptics_manager.PlayHaptics(device::mojom::HapticEffect::kHint, 1.0);
 
   EXPECT_EQ(manager->play_count(), 0);
 }
@@ -552,23 +618,23 @@ TEST_F(HapticsManagerImplWinTest, NoOpWhenPlatformUnsupported) {
   HapticsManagerImplWin haptics_manager;
 
   // Must not crash when the platform lacks InputHapticsManager.
-  haptics_manager.PlayHaptics(blink::mojom::HapticEffect::kHint, 1.0);
+  haptics_manager.PlayHaptics(device::mojom::HapticEffect::kHint, 1.0);
 }
 
 TEST_F(HapticsManagerImplWinTest, FallsBackToDeviceDefaultWhenStatics3Absent) {
-  // Pre-24H2: Hover (Statics2) resolves but Collide/Step/Align (Statics3) do
-  // not, so a non-hint effect degrades to the device-type default.
-  FakeInputHapticsManager* manager =
-      InstallDeviceScenario({kHoverId}, haptics::HapticDeviceType_Mouse,
-                            /*with_statics3=*/false);
+  FakeInputHapticsManager* manager = InstallDeviceScenario(
+      {kHoverId, kSuccessId, kErrorId}, haptics::HapticDeviceType_Mouse,
+      /*with_statics3=*/false);
   HapticsManagerImplWin haptics_manager;
 
-  haptics_manager.PlayHaptics(blink::mojom::HapticEffect::kHint, 1.0);
+  haptics_manager.PlayHaptics(device::mojom::HapticEffect::kHint, 1.0);
   EXPECT_EQ(manager->last_waveform(), kHoverId);
+  haptics_manager.PlayHaptics(device::mojom::HapticEffect::kSuccess, 1.0);
+  EXPECT_EQ(manager->last_waveform(), kSuccessId);
+  haptics_manager.PlayHaptics(device::mojom::HapticEffect::kError, 1.0);
+  EXPECT_EQ(manager->last_waveform(), kErrorId);
 
-  // kEdge cannot resolve its semantic waveform, so it falls back to the Mouse
-  // default (Hover).
-  haptics_manager.PlayHaptics(blink::mojom::HapticEffect::kEdge, 1.0);
+  haptics_manager.PlayHaptics(device::mojom::HapticEffect::kEdge, 1.0);
   EXPECT_EQ(manager->last_waveform(), kHoverId);
 }
 
@@ -576,11 +642,11 @@ TEST_F(HapticsManagerImplWinTest, ClampsAndForwardsIntensity) {
   FakeInputHapticsManager* manager = InstallDeviceScenario({kHoverId});
   HapticsManagerImplWin haptics_manager;
 
-  haptics_manager.PlayHaptics(blink::mojom::HapticEffect::kHint, 0.25);
+  haptics_manager.PlayHaptics(device::mojom::HapticEffect::kHint, 0.25);
   EXPECT_EQ(manager->last_intensity(), 0.25);
-  haptics_manager.PlayHaptics(blink::mojom::HapticEffect::kHint, 2.0);
+  haptics_manager.PlayHaptics(device::mojom::HapticEffect::kHint, 2.0);
   EXPECT_EQ(manager->last_intensity(), 1.0);
-  haptics_manager.PlayHaptics(blink::mojom::HapticEffect::kHint, -1.0);
+  haptics_manager.PlayHaptics(device::mojom::HapticEffect::kHint, -1.0);
   EXPECT_EQ(manager->last_intensity(), 0.0);
 }
 

@@ -60,6 +60,7 @@ import org.chromium.base.test.util.ApplicationTestUtils;
 import org.chromium.base.test.util.Batch;
 import org.chromium.base.test.util.CommandLineFlags;
 import org.chromium.base.test.util.DisableLeakChecks;
+import org.chromium.base.test.util.DisabledTest;
 import org.chromium.base.test.util.Feature;
 import org.chromium.base.test.util.Features.DisableFeatures;
 import org.chromium.base.test.util.Features.EnableFeatures;
@@ -74,7 +75,7 @@ import org.chromium.chrome.browser.night_mode.ChromeNightModeTestUtils;
 import org.chromium.chrome.browser.preferences.Pref;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.profiles.ProfileManager;
-import org.chromium.chrome.browser.settings.SettingsActivity;
+import org.chromium.chrome.browser.settings.MainSettings;
 import org.chromium.chrome.browser.signin.SigninAndHistorySyncActivity;
 import org.chromium.chrome.browser.signin.services.IdentityServicesProvider;
 import org.chromium.chrome.browser.signin.services.SigninManager;
@@ -90,7 +91,7 @@ import org.chromium.chrome.test.transit.ntp.RegularNewTabPageStation;
 import org.chromium.chrome.test.util.ActivityTestUtils;
 import org.chromium.chrome.test.util.ChromeRenderTestRule;
 import org.chromium.chrome.test.util.ChromeTabUtils;
-import org.chromium.chrome.test.util.NewTabPageTestUtils;
+import org.chromium.chrome.test.util.SettingsTestUtils;
 import org.chromium.chrome.test.util.browser.signin.SigninTestRule;
 import org.chromium.components.browser_ui.bottomsheet.BottomSheetController;
 import org.chromium.components.browser_ui.device_lock.DeviceLockActivityLauncher;
@@ -120,13 +121,7 @@ import java.io.IOException;
 @RunWith(ParameterizedRunner.class)
 @UseRunnerDelegate(ChromeJUnit4RunnerDelegate.class)
 @CommandLineFlags.Add({ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE})
-@DisableFeatures({
-    SigninFeatures.SIGNIN_LEVEL_UP_BUTTON,
-    ChromeFeatureList.ANDROID_BOTTOM_BAR,
-    ChromeFeatureList.SETTINGS_IN_TAB, // crbug.com/521895796
-    ChromeFeatureList.SETTINGS_IN_TAB_DESKTOP, // crbug.com/556881398
-    ChromeFeatureList.USE_WEB_UI_NTP_ANDROID // crbug.com/555414915
-})
+@DisableFeatures({SigninFeatures.SIGNIN_LEVEL_UP_BUTTON, ChromeFeatureList.ANDROID_BOTTOM_BAR})
 @DisableLeakChecks("crbug.com/527131198")
 public class IdentityDiscControllerTest {
 
@@ -194,7 +189,6 @@ public class IdentityDiscControllerTest {
                 () -> mProfileSupplier = ObservableSuppliers.createMonotonic());
         mPage = mActivityTestRule.startOnNtp();
         mTab = mPage.getTab();
-        NewTabPageTestUtils.waitForNtpLoaded(mTab);
         mActivity = mPage.getActivity();
         assertNotNull(mActivity);
         mActivityTestRule.getActivityTestRule().setActivity(mActivity);
@@ -269,10 +263,7 @@ public class IdentityDiscControllerTest {
     @Test
     @MediumTest
     @RequiresRestart("Requires clean platform account list with zero accounts")
-    @DisableFeatures({
-        SigninFeatures.ENABLE_SEAMLESS_SIGNIN,
-        SigninFeatures.ENABLE_ACTIVITYLESS_SIGNIN_ALL_ENTRY_POINT
-    })
+    @DisableFeatures(SigninFeatures.ENABLE_ACTIVITYLESS_SIGNIN_ALL_ENTRY_POINT)
     public void testIdentityDiscSignedOut_noAccount_legacy() throws Exception {
         // When user is signed out, a signed-out avatar should be visible on the NTP.
         @StringRes int descriptionId = R.string.accessibility_toolbar_btn_signed_out_identity_disc;
@@ -296,10 +287,7 @@ public class IdentityDiscControllerTest {
     @Test
     @MediumTest
     @RequiresRestart("Requires clean platform account list with zero accounts")
-    @EnableFeatures({
-        SigninFeatures.ENABLE_SEAMLESS_SIGNIN,
-        SigninFeatures.ENABLE_ACTIVITYLESS_SIGNIN_ALL_ENTRY_POINT
-    })
+    @EnableFeatures(SigninFeatures.ENABLE_ACTIVITYLESS_SIGNIN_ALL_ENTRY_POINT)
     public void testIdentityDiscSignedOut_noAccount() {
         // When user is signed out, a signed-out avatar should be visible on the NTP.
         @StringRes int descriptionId = R.string.accessibility_toolbar_btn_signed_out_identity_disc;
@@ -343,12 +331,11 @@ public class IdentityDiscControllerTest {
                                 R.string.accessibility_toolbar_btn_signed_out_identity_disc)));
 
         // Clicking the signed-out avatar should lead to the settings screen.
-        Activity settingsActivity =
-                ActivityTestUtils.waitForActivity(
-                        InstrumentationRegistry.getInstrumentation(),
-                        SettingsActivity.class,
-                        () -> onView(withId(R.id.optional_toolbar_button)).perform(click()));
-        ApplicationTestUtils.finishActivity(settingsActivity);
+        Activity settingsHost =
+                SettingsTestUtils.waitForSettingsFragment(
+                        () -> onView(withId(R.id.optional_toolbar_button)).perform(click()),
+                        MainSettings.class);
+        SettingsTestUtils.closeSettings(settingsHost);
     }
 
     @Test
@@ -463,6 +450,7 @@ public class IdentityDiscControllerTest {
 
     @Test
     @MediumTest
+    @DisabledTest(message = "https://crbug.com/572045372")
     public void testIdentityDiscWithErrorBadgeSignedIn() {
         // Fake an identity error.
         ThreadUtils.runOnUiThreadBlocking(
@@ -530,6 +518,7 @@ public class IdentityDiscControllerTest {
     @Test
     @MediumTest
     @SuppressWarnings("CheckReturnValue")
+    @DisabledTest(message = "https://crbug.com/572045372")
     public void testIdentityDiscWithSwitchToIncognito() {
         mSigninTestRule.addAccountThenSignin(TestAccounts.ACCOUNT1);
         ViewUtils.waitForVisibleView(withId(R.id.optional_toolbar_button));
@@ -802,10 +791,7 @@ public class IdentityDiscControllerTest {
 
     @Test
     @MediumTest
-    @EnableFeatures({
-        SigninFeatures.ENABLE_SEAMLESS_SIGNIN,
-        SigninFeatures.ENABLE_ACTIVITYLESS_SIGNIN_ALL_ENTRY_POINT
-    })
+    @EnableFeatures(SigninFeatures.ENABLE_ACTIVITYLESS_SIGNIN_ALL_ENTRY_POINT)
     public void testSetProfile_IncognitoProfile_DoesNotCreateSigninCoordinator() {
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
@@ -824,10 +810,7 @@ public class IdentityDiscControllerTest {
 
     @Test
     @MediumTest
-    @EnableFeatures({
-        SigninFeatures.ENABLE_SEAMLESS_SIGNIN,
-        SigninFeatures.ENABLE_ACTIVITYLESS_SIGNIN_ALL_ENTRY_POINT
-    })
+    @EnableFeatures(SigninFeatures.ENABLE_ACTIVITYLESS_SIGNIN_ALL_ENTRY_POINT)
     public void testSetProfile_SwitchToIncognito_DestroysSigninCoordinator() {
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {

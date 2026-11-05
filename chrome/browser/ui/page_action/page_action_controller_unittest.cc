@@ -90,6 +90,10 @@ class TestDelegate : public PageActionController::Delegate {
       base::RepeatingClosure callback) override {
     collapse_callback_ = std::move(callback);
   }
+  void SetAnchoredMessageDowngradeCallback(
+      base::RepeatingClosure callback) override {
+    downgrade_callback_ = std::move(callback);
+  }
   void SetClickCallback(
       base::RepeatingCallback<void(PageActionTrigger)> callback) override {
     click_callback_ = std::move(callback);
@@ -97,6 +101,7 @@ class TestDelegate : public PageActionController::Delegate {
 
   base::RepeatingClosure expand_callback_;
   base::RepeatingClosure collapse_callback_;
+  base::RepeatingClosure downgrade_callback_;
   base::RepeatingCallback<void(PageActionTrigger)> click_callback_;
 };
 
@@ -185,6 +190,8 @@ class PageActionControllerTest : public testing::Test {
         .Build();
   }
 
+  void ResetController() { controller_.reset(); }
+
  protected:
   TestPageActionPropertiesProvider properties_provider_;
 
@@ -196,6 +203,16 @@ class PageActionControllerTest : public testing::Test {
   std::unique_ptr<PinnedToolbarActionsModel> pinned_actions_model_;
   std::unique_ptr<FakeTabInterface> tab_interface_;
 };
+
+// Tests that PageActionController::From resolves the active controller on a tab
+// and returns nullptr once the controller is destroyed.
+TEST_F(PageActionControllerTest,
+       FromReturnsRegisteredControllerForTabLifecycle) {
+  EXPECT_EQ(PageActionController::From(tab_interface()), controller());
+
+  ResetController();
+  EXPECT_EQ(PageActionController::From(tab_interface()), nullptr);
+}
 
 // Tests adding/removing observers.
 TEST_F(PageActionControllerTest, AddAndRemoveObserver) {

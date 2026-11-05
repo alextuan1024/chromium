@@ -55,7 +55,8 @@ std::unique_ptr<ChildProcessHost> ChildProcessHost::Create(
 }
 
 // static
-base::FilePath ChildProcessHost::GetChildPath(int flags) {
+base::FilePath ChildProcessHost::GetChildPath(int flags,
+                                              ChildProcessId child_process_id) {
   // The order of operations here is important; the first valid (non-empty) path
   // found is returned.
   base::FilePath child_path =
@@ -66,7 +67,8 @@ base::FilePath ChildProcessHost::GetChildPath(int flags) {
   }
 
   if (GetContentClient()->browser()) {
-    child_path = GetContentClient()->browser()->GetChildProcessPath(flags);
+    child_path = GetContentClient()->browser()->GetChildProcessPath(
+        flags, child_process_id);
     if (!child_path.empty()) {
       return child_path;
     }
@@ -258,11 +260,6 @@ uint64_t ChildProcessHostImpl::ChildProcessIdToTracingProcessId(
   return static_cast<uint64_t>(
              base::PersistentHash(base::byte_span_from_ref(child_process_id))) +
          1;
-}
-
-uint64_t ChildProcessHostImpl::ChildProcessUniqueIdToTracingProcessId(
-    int child_process_id) {
-  return ChildProcessIdToTracingProcessId(ChildProcessId(child_process_id));
 }
 
 void ChildProcessHostImpl::Ping(PingCallback callback) {

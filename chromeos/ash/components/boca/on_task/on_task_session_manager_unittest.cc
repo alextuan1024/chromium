@@ -28,6 +28,8 @@
 #include "chromeos/ash/components/boca/proto/bundle.pb.h"
 #include "chromeos/ash/components/boca/proto/roster.pb.h"
 #include "chromeos/ash/components/boca/proto/session.pb.h"
+#include "components/prefs/testing_pref_service.h"
+#include "components/session_manager/test/user_session_test_environment.h"
 #include "components/sessions/core/session_id.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -52,6 +54,8 @@ constexpr char kTestUrl3[] = "https://www.test3.com";
 constexpr char kTestUrl4[] = "https://www.test4.com";
 constexpr char kTestUrl5[] = "https://www.test5.com";
 
+using ObserverList = std::vector<raw_ptr<boca::BocaWindowObserver>>;
+
 // Mock implementation of the `OnTaskSystemWebAppManager`.
 class OnTaskSystemWebAppManagerMock : public OnTaskSystemWebAppManager {
  public:
@@ -74,8 +78,7 @@ class OnTaskSystemWebAppManagerMock : public OnTaskSystemWebAppManager {
               (override));
   MOCK_METHOD(void,
               SetWindowTrackerForSystemWebAppWindow,
-              (SessionID window_id,
-               const std::vector<boca::BocaWindowObserver*> observers),
+              (SessionID window_id, const ObserverList observers),
               (override));
   MOCK_METHOD(
       SessionID,
@@ -159,6 +162,11 @@ class FakeOnTaskNotificationsManagerDelegate
 class OnTaskSessionManagerTest : public ::testing::Test {
  protected:
   void SetUp() override {
+    ash::test::UserSessionTestEnvironment::RegisterLocalStatePrefs(
+        local_state_.registry());
+    user_session_test_environment_ =
+        std::make_unique<ash::test::UserSessionTestEnvironment>(&local_state_);
+
     auto system_web_app_manager =
         std::make_unique<NiceMock<OnTaskSystemWebAppManagerMock>>();
     system_web_app_manager_ptr_ = system_web_app_manager.get();
@@ -179,6 +187,15 @@ class OnTaskSessionManagerTest : public ::testing::Test {
     session_manager_->SetNotificationManagerForTesting(
         OnTaskNotificationsManager::CreateForTest(
             std::move(fake_notifications_delegate)));
+  }
+
+  void TearDown() override {
+    fake_notifications_delegate_ptr_ = nullptr;
+    extensions_manager_ptr_ = nullptr;
+    system_web_app_manager_ptr_ = nullptr;
+    session_manager_.reset();
+    boca_session_manager_.reset();
+    user_session_test_environment_.reset();
   }
 
   base::flat_map<GURL, ::boca::UrlType>* provider_url_map() {
@@ -209,6 +226,9 @@ class OnTaskSessionManagerTest : public ::testing::Test {
 
   base::test::SingleThreadTaskEnvironment task_environment_{
       base::test::TaskEnvironment::TimeSource::MOCK_TIME};
+  TestingPrefServiceSimple local_state_;
+  std::unique_ptr<ash::test::UserSessionTestEnvironment>
+      user_session_test_environment_;
   std::unique_ptr<NiceMock<MockSessionManager>> boca_session_manager_;
   std::unique_ptr<OnTaskSessionManager> session_manager_;
   raw_ptr<NiceMock<OnTaskSystemWebAppManagerMock>> system_web_app_manager_ptr_;
@@ -231,8 +251,8 @@ TEST_F(OnTaskSessionManagerTest, ShouldLaunchBocaSWAOnSessionStart) {
 }
 
 TEST_F(OnTaskSessionManagerTest, ShouldPrepareBocaSWAOnLaunch) {
-  const std::vector<boca::BocaWindowObserver*> kWindowObservers = {
-      session_manager_->active_tab_tracker(), session_manager_.get()};
+  const ObserverList kWindowObservers = {session_manager_->active_tab_tracker(),
+                                         session_manager_.get()};
   const SessionID kWindowId = SessionID::NewUnique();
   EXPECT_CALL(*system_web_app_manager_ptr_,
               GetActiveSystemWebAppWindowID())
@@ -265,8 +285,8 @@ TEST_F(OnTaskSessionManagerTest,
   EXPECT_CALL(*system_web_app_manager_ptr_, GetActiveSystemWebAppWindowID())
       .WillOnce(Return(kWindowId));
 
-  const std::vector<boca::BocaWindowObserver*> kWindowObservers = {
-      session_manager_->active_tab_tracker(), session_manager_.get()};
+  const ObserverList kWindowObservers = {session_manager_->active_tab_tracker(),
+                                         session_manager_.get()};
   Sequence s;
   EXPECT_CALL(*system_web_app_manager_ptr_,
               PrepareSystemWebAppWindowForOnTask(kWindowId,
@@ -861,8 +881,8 @@ TEST_F(OnTaskSessionManagerTest, RestoreTabsOnAppReload) {
   const SessionID kWindowId = SessionID::NewUnique();
   const SessionID kTabId1 = SessionID::NewUnique();
   const SessionID kTabId2 = SessionID::NewUnique();
-  const std::vector<boca::BocaWindowObserver*> kWindowObservers = {
-      session_manager_->active_tab_tracker(), session_manager_.get()};
+  const ObserverList kWindowObservers = {session_manager_->active_tab_tracker(),
+                                         session_manager_.get()};
   Sequence s;
   EXPECT_CALL(*system_web_app_manager_ptr_, GetActiveSystemWebAppWindowID())
       .WillRepeatedly(Return(kWindowId));
@@ -920,8 +940,8 @@ TEST_F(OnTaskSessionManagerTest, LockWindowOnAppReload) {
   Sequence s;
   EXPECT_CALL(*system_web_app_manager_ptr_, GetActiveSystemWebAppWindowID())
       .WillRepeatedly(Return(kWindowId));
-  const std::vector<boca::BocaWindowObserver*> kWindowObservers = {
-      session_manager_->active_tab_tracker(), session_manager_.get()};
+  const ObserverList kWindowObservers = {session_manager_->active_tab_tracker(),
+                                         session_manager_.get()};
   EXPECT_CALL(
       *system_web_app_manager_ptr_,
       SetWindowTrackerForSystemWebAppWindow(kWindowId, kWindowObservers))

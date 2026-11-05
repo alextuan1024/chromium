@@ -19,12 +19,14 @@
 #import "components/optimization_guide/core/delivery/prediction_manager.h"
 #import "components/optimization_guide/core/hints/command_line_top_host_provider.h"
 #import "components/optimization_guide/core/hints/hints_processing_util.h"
+#import "components/optimization_guide/core/hints/optimization_guide_decision.h"
 #import "components/optimization_guide/core/hints/optimization_guide_navigation_data.h"
 #import "components/optimization_guide/core/hints/optimization_guide_store.h"
 #import "components/optimization_guide/core/hints/top_host_provider.h"
 #import "components/optimization_guide/core/model_execution/model_execution_features_controller.h"
 #import "components/optimization_guide/core/model_execution/model_execution_manager.h"
 #import "components/optimization_guide/core/model_execution/remote_model_executor.h"
+#import "components/optimization_guide/core/model_quality/model_quality_log_entry.h"
 #import "components/optimization_guide/core/optimization_guide_features.h"
 #import "components/optimization_guide/core/optimization_guide_logger.h"
 #import "components/optimization_guide/core/optimization_guide_util.h"
@@ -65,7 +67,7 @@ OptimizationGuideService::OptimizationGuideService(
     signin::IdentityManager* identity_manager,
     std::unique_ptr<optimization_guide::ModelExecutionManager::Delegate>
         delegate,
-    NetworkContextGetter network_context_getter)
+    network::NetworkContextGetter network_context_getter)
     : pref_service_(pref_service),
       network_context_getter_(std::move(network_context_getter)),
       identity_manager_(identity_manager),
@@ -112,9 +114,7 @@ OptimizationGuideService::OptimizationGuideService(
         std::make_unique<optimization_guide::ModelExecutionFeaturesController>(
             pref_service, identity_manager,
             policy::BrowserManagementServiceFactory::GetForPlatform(),
-            dogfood_status, version_info::IsOfficialBuild(),
-            optimization_guide::ModelExecutionFeaturesController::
-                HistorySearchNotSupported());
+            dogfood_status, version_info::IsOfficialBuild());
 
     if (optimization_guide::features::IsModelQualityLoggingEnabled()) {
       model_quality_logs_uploader_service_ =
@@ -125,8 +125,8 @@ OptimizationGuideService::OptimizationGuideService(
 
     model_execution_manager_ =
         std::make_unique<optimization_guide::ModelExecutionManager>(
-            url_loader_factory, identity_manager, std::move(delegate),
-            optimization_guide_logger_.get(),
+            url_loader_factory, network_context_getter_, identity_manager,
+            std::move(delegate), optimization_guide_logger_.get(),
             model_quality_logs_uploader_service_
                 ? model_quality_logs_uploader_service_->GetWeakPtr()
                 : nullptr);
@@ -366,6 +366,14 @@ OptimizationGuideService::StartStreamingSession(
     return nullptr;
   }
   return optimization_guide::RemoteModelExecutionSession::Create(
-      feature, options, std::move(callback), network_context_getter_.Run(),
+      feature, options, std::move(callback), network_context_getter_,
       identity_manager_, optimization_guide_logger_.get());
+}
+
+void OptimizationGuideService::PrewarmModelExecution(
+    optimization_guide::ModelBasedCapabilityKey feature) {
+  DCHECK_CURRENTLY_ON(web::WebThread::UI);
+  if (model_execution_manager_) {
+    model_execution_manager_->PrewarmModelExecution(feature);
+  }
 }

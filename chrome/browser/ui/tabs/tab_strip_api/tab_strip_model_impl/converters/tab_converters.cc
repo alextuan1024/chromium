@@ -86,9 +86,6 @@ tabs_api::mojom::TabFieldMaskPtr BuildTabFieldMask(TabChangeType type) {
     case TabChangeType::kAttentionOnly:
       // AttentionOnly affects "needs_attention" which is not yet exposed.
       break;
-    case TabChangeType::kBlockedOnly:
-      mask->is_blocked = true;
-      break;
     case TabChangeType::kResourceUsageOnly:
       break;
   }
@@ -162,6 +159,7 @@ tabs_api::mojom::DataPtr BuildMojoTabCollectionData(
       const TabGroup* tab_group = group_collection->GetTabGroup();
       CHECK(tab_group);
       mojo_tab_group->data = *tab_group->visual_data();
+      mojo_tab_group->is_ephemeral = tab_group->is_ephemeral();
       return tabs_api::mojom::Data::NewTabGroup(std::move(mojo_tab_group));
     }
     case tabs::TabCollection::Type::SPLIT: {

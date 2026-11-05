@@ -235,8 +235,8 @@ class WTF_EXPORT StringView {
   // string. If the offset points an unpaired surrogate, this function returns
   // the surrogate code unit as is. If you'd like to check such surroagtes,
   // use U_IS_SURROGATE() defined in unicode/utf.h.
-  // PRECONDITIONS: `i` must be less than `length()`.
-  UNSAFE_BUFFER_USAGE UChar32 CodePointAt(size_type i) const;
+  // If `i` is out of bounds, it crashes by CHECK().
+  UChar32 CodePointAt(size_type i) const;
 
   // Returns i+2 if a pair of [i] and [i+1] is a valid surrogate pair.
   // Returns i+1 otherwise.
@@ -244,8 +244,8 @@ class WTF_EXPORT StringView {
 
   // Does `CodePointAt()`, and the specified `i` is updated by
   // `NextCodePointOffset()`.
-  // PRECONDITIONS: `i` must be less than `length()`.
-  UNSAFE_BUFFER_USAGE UChar32 CodePointAtAndNext(size_type& i) const;
+  // If `i` is out of bounds, it crashes by CHECK().
+  UChar32 CodePointAtAndNext(size_type& i) const;
 
   // [string.view.modifiers] ----------------------------------------
 
@@ -297,7 +297,7 @@ class WTF_EXPORT StringView {
     if (Is8Bit()) {
       return Span8();
     }
-    return base::as_byte_span(Span16());
+    return base::as_bytes(Span16());
   }
 
   // This is not named impl() like String because it has different semantics.
@@ -414,15 +414,6 @@ class WTF_EXPORT StringView {
   bool IsAllSpecialCharacters() const;
 
   // Functions creating new string(s) from `this` string ------------
-
-  // This will return a StringView with a version of |this| that has all ASCII
-  // characters lowercased. The returned StringView is guarantee to be valid for
-  // as long as |backing_store| is valid.
-  //
-  // The odd lifetime of the returned object occurs because lowercasing may
-  // require allocation. When that happens, |backing_store| is used as the
-  // backing store and the returned StringView has the same lifetime.
-  StringView LowerAsciiMaybeUsingBuffer(StackBackingStore& backing_store) const;
 
   // Returns a substring removing leading and trailing white spaces.
   // This function removes spaces, \n, \t, \r, \f, \v, and unicode spaces such
@@ -618,8 +609,14 @@ inline bool StringView::IsAllSpecialCharacters() const {
   if (empty()) {
     return true;
   }
-  return Is8Bit() ? std::ranges::all_of(Span8(), is_special_character)
-                  : std::ranges::all_of(Span16(), is_special_character);
+  // Not `std::ranges::all_of()`: checking its constraints is expensive at
+  // compile time.
+  if (Is8Bit()) {
+    auto span = Span8();
+    return std::all_of(span.begin(), span.end(), is_special_character);
+  }
+  auto span = Span16();
+  return std::all_of(span.begin(), span.end(), is_special_character);
 }
 
 WTF_EXPORT std::ostream& operator<<(std::ostream&, const StringView&);

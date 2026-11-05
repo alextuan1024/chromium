@@ -39,6 +39,7 @@ class BrowserViewLayoutDelegateImpl : public BrowserViewLayoutDelegate {
   const ImmersiveModeController* GetImmersiveModeController() const override;
   BrowserAnimationController* GetAnimationController() const override;
   ExclusiveAccessBubbleViews* GetExclusiveAccessBubble() const override;
+  OrganizerPanelLocation GetOrganizerPanelLocation() const override;
   bool IsTopControlsSlideBehaviorEnabled() const override;
   float GetTopControlsSlideBehaviorShownRatio() const override;
   gfx::NativeView GetHostViewForAnchoring() const override;
@@ -52,6 +53,7 @@ class BrowserViewLayoutDelegateImpl : public BrowserViewLayoutDelegate {
   base::CallbackListSubscription AddOnGlassModeChangedCallback(
       base::RepeatingCallback<void(bool)> callback,
       bool* current_state_out) override;
+  int GetRestoredWindowCornerRadius() const override;
 
  protected:
   BrowserView& browser_view() { return browser_view_.get(); }

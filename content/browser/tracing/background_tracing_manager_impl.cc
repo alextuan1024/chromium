@@ -25,15 +25,6 @@ namespace {
 
 BackgroundTracingManagerImpl* g_background_tracing_manager_impl = nullptr;
 
-class PreferenceManagerImpl
-    : public BackgroundTracingManagerImpl::PreferenceManager {
-  bool GetBackgroundStartupTracingEnabled() const override {
-    return tracing::TraceStartupConfig::GetInstance().IsEnabled() &&
-           tracing::TraceStartupConfig::GetInstance().GetSessionOwner() ==
-               tracing::TraceStartupConfig::SessionOwner::kBackgroundTracing;
-  }
-};
-
 }  // namespace
 
 // static
@@ -44,7 +35,7 @@ BackgroundTracingManagerImpl& BackgroundTracingManagerImpl::GetInstance() {
 
 // static
 void BackgroundTracingManagerImpl::ActivateForProcess(
-    int child_process_id,
+    content::ChildProcessId child_process_id,
     mojom::ChildProcess* child_process) {
   // NOTE: Called from any thread.
 
@@ -64,7 +55,6 @@ BackgroundTracingManagerImpl::BackgroundTracingManagerImpl(
   CHECK(delegate_);
   g_background_tracing_manager_impl = this;
   TracingAgentObserverManager::SetInstance(this);
-  preferences_ = std::make_unique<PreferenceManagerImpl>();
   state_manager_ = delegate_->CreateStateManager();
 }
 
@@ -97,12 +87,9 @@ BackgroundTracingManagerImpl::GetLocalTracesDirectory() {
 }
 
 bool BackgroundTracingManagerImpl::GetBackgroundStartupTracingEnabled() const {
-  return preferences_->GetBackgroundStartupTracingEnabled();
-}
-
-void BackgroundTracingManagerImpl::SetPreferenceManagerForTesting(
-    std::unique_ptr<PreferenceManager> preferences) {
-  preferences_ = std::move(preferences);
+  return tracing::TraceStartupConfig::GetInstance().IsEnabled() &&
+         tracing::TraceStartupConfig::GetInstance().GetSessionOwner() ==
+             tracing::TraceStartupConfig::SessionOwner::kBackgroundTracing;
 }
 
 std::vector<traces_internals::mojom::ScenarioPtr>
@@ -171,7 +158,7 @@ void BackgroundTracingManagerImpl::RemoveAgentObserver(
 
 // static
 void BackgroundTracingManagerImpl::AddPendingAgent(
-    int child_process_id,
+    content::ChildProcessId child_process_id,
     mojo::PendingRemote<tracing::mojom::BackgroundTracingAgentProvider>
         pending_provider) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(GetInstance().sequence_checker_);
@@ -188,7 +175,8 @@ void BackgroundTracingManagerImpl::AddPendingAgent(
 }
 
 // static
-void BackgroundTracingManagerImpl::ClearPendingAgent(int child_process_id) {
+void BackgroundTracingManagerImpl::ClearPendingAgent(
+    content::ChildProcessId child_process_id) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(GetInstance().sequence_checker_);
   GetInstance().pending_agents_.erase(child_process_id);
 }

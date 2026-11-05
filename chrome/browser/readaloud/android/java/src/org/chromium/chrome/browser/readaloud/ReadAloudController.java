@@ -7,6 +7,7 @@ package org.chromium.chrome.browser.readaloud;
 import static org.chromium.build.NullUtil.assertNonNull;
 import static org.chromium.build.NullUtil.assumeNonNull;
 import static org.chromium.chrome.modules.readaloud.PlaybackListener.State.PAUSED;
+import static org.chromium.chrome.modules.readaloud.PlaybackListener.State.PLAYBACK_CREATION;
 import static org.chromium.chrome.modules.readaloud.PlaybackListener.State.PLAYING;
 import static org.chromium.chrome.modules.readaloud.PlaybackListener.State.STOPPED;
 
@@ -105,6 +106,7 @@ import org.chromium.url.GURL;
 
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
@@ -343,6 +345,8 @@ public class ReadAloudController
         // Value of dateModified tag or 0
         private final long mDateModified;
         private final PlaybackData mData;
+        // Word to resume from if the saved playback was a NativePlayback. Always null for legacy.
+        private final NativePlayback.@Nullable WordPosition mNativeWordPosition;
 
         /**
          * Constructor.
@@ -389,6 +393,15 @@ public class ReadAloudController
             } else {
                 mPlaying = data == null ? true : data.state() != PAUSED && data.state() != STOPPED;
             }
+
+            // Only capture from the current playback, not from state re-wrapped from another
+            // activity (see onTabSelected()).
+            boolean isCurrentPlaybackData = data != null && data == mCurrentPlaybackData;
+            if (isCurrentPlaybackData && mPlayback instanceof NativePlayback nativePlayback) {
+                mNativeWordPosition = nativePlayback.getCurrentWordPosition();
+            } else {
+                mNativeWordPosition = null;
+            }
         }
 
         Tab getTab() {
@@ -422,13 +435,23 @@ public class ReadAloudController
                             playback -> {
                                 assumeNonNull(mPlayerCoordinator);
                                 if (mPlaying) {
-                                    mPlayerCoordinator.playbackReady(playback, PLAYING);
+                                    mPlayerCoordinator.playbackReady(
+                                            playback, getInitialPlaybackState(playback));
                                     playback.play();
                                 } else {
                                     mPlayerCoordinator.playbackReady(playback, PAUSED);
                                 }
 
+                                // Native only: mNativeWordPosition is always null for legacy.
+                                // The seek is queued before the text: distillation is async,
+                                // and the utility holds seeks received before the text.
                                 if (restorePlaybackPosition
+                                        && mNativeWordPosition != null
+                                        && playback instanceof NativePlayback nativePlayback) {
+                                    nativePlayback.resumeFromWord(mNativeWordPosition);
+                                }
+                                if (restorePlaybackPosition
+                                        && !(playback instanceof NativePlayback)
                                         && (mParagraphIndex != 0 || mOffsetNanos != 0)) {
                                     playback.seekToParagraph(
                                             mParagraphIndex, /* offsetNanos= */ mOffsetNanos);
@@ -461,6 +484,8 @@ public class ReadAloudController
                     ObservableSuppliers.createNonNull(
                             PlaybackModeSelectionEnablementStatus.FEATURE_DISABLED);
 
+    // Voices populated by the native C++ ReadAloudService, keyed by language code.
+    private final Map<String, List<PlaybackVoice>> mNativeVoiceCatalog = new HashMap<>();
     // Voices to show in voice selection menu.
     private final SettableMonotonicObservableSupplier<List<PlaybackVoice>> mCurrentLanguageVoices =
             ObservableSuppliers.createMonotonic();
@@ -709,6 +734,7 @@ public class ReadAloudController
         // Initialize native C++ ReadAloudService binding when native Read Aloud is enabled.
         if (ReadAloudFeatures.isNativeEnabled()) {
             mNativeBridge.initialize(profile, this);
+            mNativeBridge.initVoices();
         }
         ReadAloudReadabilityHooksFactory factory =
                 ServiceLoaderUtil.maybeCreate(ReadAloudReadabilityHooksFactory.class);
@@ -923,7 +949,7 @@ public class ReadAloudController
             return;
         }
         if (ReadAloudFeatures.isNativeEnabled()) {
-            if (mNativeBridge != null) {
+            if (mNativeBridge.isInitialized()) {
                 mPendingRequests.add(urlSpecHash);
                 mNativeBridge.checkReadability(url);
             }
@@ -1116,7 +1142,8 @@ public class ReadAloudController
         createOverviewPlaybackForUrl(new GURL(url), 0, mEntrypoint)
                 .then(
                         playback -> {
-                            assumeNonNull(mPlayerCoordinator).playbackReady(playback, PLAYING);
+                            assumeNonNull(mPlayerCoordinator)
+                                    .playbackReady(playback, getInitialPlaybackState(playback));
                             playback.play();
                             ReadAloudMetrics.recordPlaybackStarted();
                         },
@@ -1196,13 +1223,19 @@ public class ReadAloudController
                                 return;
                             }
                             mDateModified = dateModified;
-                            assumeNonNull(mPlayerCoordinator).playbackReady(playback, PLAYING);
+                            assumeNonNull(mPlayerCoordinator)
+                                    .playbackReady(playback, getInitialPlaybackState(playback));
                             playback.play();
                             ReadAloudMetrics.recordPlaybackStarted();
                         },
                         exception -> {
                             Log.d(TAG, "playTab failed: %s", assumeNonNull(exception).getMessage());
                         });
+    }
+
+    private static @PlaybackListener.State int getInitialPlaybackState(Playback playback) {
+        // Native starts asynchronously; keep loading screen until ready.
+        return playback instanceof NativePlayback ? PLAYBACK_CREATION : PLAYING;
     }
 
     private Promise<Long> extractDateModified(Tab tab) {
@@ -1298,7 +1331,8 @@ public class ReadAloudController
         mPlayingTabTranslationObserver.observeTab(tab);
         mCurrentlyPlayingGurl = tab.getUrl();
 
-        if (!assumeNonNull(mPlaybackHooks).voicesInitialized()) {
+        if (!ReadAloudFeatures.isNativeEnabled()
+                && !assumeNonNull(mPlaybackHooks).voicesInitialized()) {
             mPlaybackHooks.initVoices();
         }
 
@@ -1315,7 +1349,7 @@ public class ReadAloudController
         assumeNonNull(mPlayerCoordinator).playTabRequested(playbackModes.get(0));
 
         boolean isTranslated = isTranslated(tab);
-        var voices = mPlaybackHooks.getVoicesFor(playbackLanguage);
+        var voices = getVoicesForLanguage(playbackLanguage);
         // TODO: Don't show entrypoints for unsupported languages
         if (voices == null || voices.isEmpty()) {
             onCreatePlaybackFailed(entrypoint);
@@ -1331,8 +1365,11 @@ public class ReadAloudController
                         isTranslated
                                 ? playbackLanguage
                                 : null,
-                        mPlaybackHooks.getPlaybackVoiceList(
-                                ReadAloudPrefs.getVoices(getPrefService())),
+                        ReadAloudFeatures.isNativeEnabled()
+                                ? voices
+                                : assumeNonNull(mPlaybackHooks)
+                                        .getPlaybackVoiceList(
+                                                ReadAloudPrefs.getVoices(getPrefService())),
                         /* dateModifiedMsSinceEpoch= */ dateModified,
                         /* playbackModes= */ playbackModes);
         Log.d(TAG, "Creating playback with args: %s", args);
@@ -1344,7 +1381,12 @@ public class ReadAloudController
                     ReadAloudMetrics.recordTabCreationSuccess(entrypoint, Entrypoint.NUM_ENTRIES);
                     Playback.Metadata metadata = assumeNonNull(playback.getMetadata());
                     mFeedbackType.set(FeedbackType.NONE);
-                    maybeSetUpHighlighter(metadata);
+                    // Native playback has no paragraphs yet: they arrive later via
+                    // onTextChunked(), which sets up the highlighter. Setting it up here would
+                    // lock it to empty metadata, since initialization is one-shot per tab.
+                    if (!(playback instanceof NativePlayback)) {
+                        maybeSetUpHighlighter(metadata);
+                    }
                     updatePlaybackModeSelectionEnabled(readabilityInfo, playbackLanguage, playback, playbackModes);
                     updateVoiceMenu(
                             isTranslated
@@ -1630,12 +1672,19 @@ public class ReadAloudController
                 : TranslateBridge.isPageTranslated(tab.getWebContents());
     }
 
-    /** If language string includes locale, strip it */
+    /** If language string includes locale, strip it and map to ReadAloud language code. */
     private String getLanguage(String language) {
         if (language.contains("-")) {
-            return language.split("-")[0];
+            language = language.split("-")[0];
         }
-        return language;
+        // TODO(crbug.com/573188805): Update readaloud_voices.textproto to match the modern ISO 639
+        // language code standard and remove this mapping.
+        // Map ISO 639 language codes returned by TranslateBridge to the codes expected by
+        // ReadAloud.
+        return switch (language) {
+            case "he" -> "iw";
+            default -> language;
+        };
     }
 
     private static boolean isAudioOverviewsAllowed() {
@@ -1693,12 +1742,21 @@ public class ReadAloudController
         mPlaybackModeSelectionEnabled.set(PlaybackModeSelectionEnablementStatus.MODE_SELECTION_DISABLED_CLASSIC_UNAVAILABLE);
     }
 
+    private @Nullable List<PlaybackVoice> getVoicesForLanguage(String language) {
+        return ReadAloudFeatures.isNativeEnabled()
+                ? mNativeVoiceCatalog.get(language)
+                : assumeNonNull(mPlaybackHooks).getVoicesFor(language);
+    }
+
     private void updateVoiceMenu(@Nullable String language) {
         if (language == null) {
             return;
         }
 
-        List<PlaybackVoice> voices = assumeNonNull(mPlaybackHooks).getVoicesFor(language);
+        List<PlaybackVoice> voices = getVoicesForLanguage(language);
+        if (voices == null || voices.isEmpty()) {
+            return;
+        }
         mCurrentLanguageVoices.set(voices);
 
         String selectedVoiceId = ReadAloudPrefs.getVoices(getPrefService()).get(language);
@@ -1706,6 +1764,10 @@ public class ReadAloudController
             selectedVoiceId = voices.get(0).getVoiceId();
         }
         mSelectedVoiceId.set(selectedVoiceId);
+        if (ReadAloudFeatures.isNativeEnabled() && mNativeBridge.isInitialized()) {
+            mNativeBridge.setLanguageCode(language);
+            mNativeBridge.setVoice(selectedVoiceId);
+        }
     }
 
     /**
@@ -2000,11 +2062,29 @@ public class ReadAloudController
     private Playback createNativeVoicePreviewPlayback(PlaybackVoice voice) {
         Playback playback =
                 new NativeVoicePreviewPlayback(
-                        mNativeBridge, voice.getLanguage(), voice.getVoiceId());
+                        mNativeBridge,
+                        voice.getLanguage(),
+                        voice.getVoiceId(),
+                        getPreviewMessage(voice));
         mVoicePreviewPlayback = playback;
         playback.addListener(mVoicePreviewPlaybackListener);
         mVoicePreviewPlayback.play();
         return playback;
+    }
+
+    /**
+     * Returns the voice preview text localized to the voice's language.
+     *
+     * <p>Falls back to the UI-language string if {@link VoicePreviewMessages} has no translation
+     * for the voice's language.
+     *
+     * @param voice Voice being previewed.
+     */
+    private String getPreviewMessage(PlaybackVoice voice) {
+        String message = VoicePreviewMessages.get(voice.getLanguage());
+        return message != null
+                ? message
+                : mActivity.getString(R.string.readaloud_voice_preview_message);
     }
 
     @Override
@@ -2393,38 +2473,59 @@ public class ReadAloudController
         if (mPlayback instanceof NativePlayback nativePlayback) {
             nativePlayback.onTextChunked(chunks);
             Playback.Metadata metadata = mPlayback.getMetadata();
-            if (metadata != null && mActivePlaybackTabSupplier.get() != null) {
+            if (nativePlayback.isHighlightingSupported()
+                    && metadata != null
+                    && mActivePlaybackTabSupplier.get() != null) {
                 maybeSetUpHighlighter(metadata);
             }
         }
     }
 
     // Called when the list of available synthesis voices is loaded or changed.
-    void onVoicesAvailable(String[] voiceIds, String[] voiceDisplayNames, String selectedVoiceId) {
-        // TODO: Update property model with available voices.
-        Log.d(
-                TAG,
-                "onVoicesAvailable: voiceIds count = %d, voiceDisplayNames count = %d,"
-                        + " selectedVoiceId = %s",
-                voiceIds.length,
-                voiceDisplayNames.length,
-                selectedVoiceId);
+    void onVoicesAvailable(
+            String[] voiceIds,
+            String[] voiceDisplayNames,
+            String[] voiceLangs,
+            String[] voiceRegions,
+            int[] voicePitches,
+            int[] voiceTones) {
+        assert voiceIds.length == voiceDisplayNames.length
+                && voiceIds.length == voiceLangs.length
+                && voiceIds.length == voiceRegions.length
+                && voiceIds.length == voicePitches.length
+                && voiceIds.length == voiceTones.length;
+        mNativeVoiceCatalog.clear();
+        for (int i = 0; i < voiceIds.length; i++) {
+            String lang = voiceLangs[i];
+            mNativeVoiceCatalog
+                    .computeIfAbsent(lang, k -> new ArrayList<>())
+                    .add(
+                            new PlaybackVoice(
+                                    lang,
+                                    voiceRegions[i],
+                                    voiceIds[i],
+                                    voiceDisplayNames[i],
+                                    voicePitches[i],
+                                    voiceTones[i]));
+        }
     }
 
     // Called when the active word highlight boundary shifts in the text.
     void onWordHighlightUpdated(int absoluteStartIndex, int absoluteEndIndex) {
-        // TODO: Update property model with word highlight boundaries.
-        Log.d(
-                TAG,
-                "onWordHighlightUpdated: absoluteStartIndex = %d, absoluteEndIndex = %d",
-                absoluteStartIndex,
-                absoluteEndIndex);
+        if (mPlayback instanceof NativePlayback nativePlayback) {
+            // Painted via onPhraseChanged() if highlighting is supported.
+            nativePlayback.notifyWordHighlightUpdated(absoluteStartIndex, absoluteEndIndex);
+        }
     }
 
     // Called to notify if synchronized word highlighting is supported for the current content.
     void onHighlightingSupported(boolean supported) {
-        // TODO: Update property to toggle highlight visibility.
-        Log.d(TAG, "onHighlightingSupported: supported = %b", supported);
+        if (mPlayback instanceof NativePlayback nativePlayback) {
+            nativePlayback.setHighlightingSupported(supported);
+            if (!supported) {
+                maybeClearHighlights();
+            }
+        }
     }
 
     // Called when playback switches to the on-device system TTS engine.

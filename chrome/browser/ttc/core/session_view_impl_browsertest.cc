@@ -5,6 +5,7 @@
 #include "chrome/browser/ttc/core/session_view_impl.h"
 
 #include "build/build_config.h"
+#include "chrome/browser/ttc/core/session_controller.h"
 #include "chrome/browser/ttc/core/ttc_interactive_browser_test_base.h"
 #include "chrome/browser/ttc/core/ttc_keyed_service.h"
 #include "chrome/browser/ui/browser_commands.h"
@@ -12,8 +13,10 @@
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/interaction/browser_elements.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
-#include "chrome/browser/ui/views/dictation/dictation_bubble_ui.h"
+#include "chrome/browser/ui/toasts/toast_view.h"
+#include "chrome/browser/ui/views/ttc/ttc_voice_plate.h"
 #include "chrome/test/base/ui_test_utils.h"
+#include "components/ttc/app/public/error_codes.h"
 #include "content/public/test/browser_test.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/base/page_transition_types.h"
@@ -39,11 +42,11 @@ IN_PROC_BROWSER_TEST_F(SessionViewImplBrowserTest, StartSessionShowsUI) {
   // clang-format off
   RunTestSequence(
     CheckHasSession(false),
-    EnsureNotPresent(dictation::DictationBubbleUi::kViewElementIdForTesting),
+    EnsureNotPresent(TtcVoicePlate::kViewElementId),
 
     StartSession(),
     CheckHasSession(true),
-    WaitForShow(dictation::DictationBubbleUi::kViewElementIdForTesting)
+    WaitForShow(TtcVoicePlate::kViewElementId)
   );
   // clang-format on
 }
@@ -52,11 +55,11 @@ IN_PROC_BROWSER_TEST_F(SessionViewImplBrowserTest, EndSessionTearsDownUI) {
   // clang-format off
   RunTestSequence(
     StartSession(),
-    WaitForShow(dictation::DictationBubbleUi::kViewElementIdForTesting),
+    WaitForShow(TtcVoicePlate::kViewElementId),
 
-    PressButton(dictation::DictationBubbleUi::kCloseButtonElementIdForTesting),
+    PressButton(TtcVoicePlate::kCloseButtonElementId),
 
-    WaitForHide(dictation::DictationBubbleUi::kViewElementIdForTesting),
+    WaitForHide(TtcVoicePlate::kViewElementId),
     CheckHasSession(false)
   );
   // clang-format on
@@ -67,11 +70,11 @@ IN_PROC_BROWSER_TEST_F(SessionViewImplBrowserTest,
   // clang-format off
   RunTestSequence(
     StartSession(),
-    WaitForShow(dictation::DictationBubbleUi::kViewElementIdForTesting),
+    WaitForShow(TtcVoicePlate::kViewElementId),
 
     Do([this]() { ttc_service().EndSession(); }),
 
-    WaitForHide(dictation::DictationBubbleUi::kViewElementIdForTesting),
+    WaitForHide(TtcVoicePlate::kViewElementId),
     CheckHasSession(false)
   );
   // clang-format on
@@ -84,11 +87,11 @@ IN_PROC_BROWSER_TEST_F(SessionViewImplBrowserTest, TabSwitchLeavesUIInPlace) {
   RunTestSequence(
     SelectTab(kTabStripElementId, 0),
     StartSession(),
-    WaitForShow(dictation::DictationBubbleUi::kViewElementIdForTesting),
+    WaitForShow(TtcVoicePlate::kViewElementId),
 
     SelectTab(kTabStripElementId, 1),
 
-    EnsurePresent(dictation::DictationBubbleUi::kViewElementIdForTesting),
+    EnsurePresent(TtcVoicePlate::kViewElementId),
     CheckHasSession(true)
   );
   // clang-format on
@@ -100,7 +103,7 @@ IN_PROC_BROWSER_TEST_F(SessionViewImplBrowserTest, NewWindowMovesUI) {
   // clang-format off
   RunTestSequence(
     StartSession(),
-    WaitForShow(dictation::DictationBubbleUi::kViewElementIdForTesting)
+    WaitForShow(TtcVoicePlate::kViewElementId)
   );
   // clang-format on
 
@@ -110,11 +113,10 @@ IN_PROC_BROWSER_TEST_F(SessionViewImplBrowserTest, NewWindowMovesUI) {
   RunTestSequence(
     InContext(
         BrowserElements::From(second_browser)->GetContext(),
-        WaitForShow(dictation::DictationBubbleUi::kViewElementIdForTesting)),
+        WaitForShow(TtcVoicePlate::kViewElementId)),
     InContext(
         BrowserElements::From(browser())->GetContext(),
-        EnsureNotPresent(
-            dictation::DictationBubbleUi::kViewElementIdForTesting)),
+        EnsureNotPresent(TtcVoicePlate::kViewElementId)),
     CheckHasSession(true)
   );
   // clang-format on
@@ -139,18 +141,17 @@ IN_PROC_BROWSER_TEST_F(SessionViewImplBrowserTest, ActivatingWindowMovesUI) {
               ActivateSurface(kBrowserViewElementId)),
 
     StartSession(),
-    WaitForShow(dictation::DictationBubbleUi::kViewElementIdForTesting),
+    WaitForShow(TtcVoicePlate::kViewElementId),
 
     InContext(BrowserElements::From(second_browser)->GetContext(),
               ActivateSurface(kBrowserViewElementId)),
 
     InContext(
         BrowserElements::From(second_browser)->GetContext(),
-        WaitForShow(dictation::DictationBubbleUi::kViewElementIdForTesting)),
+        WaitForShow(TtcVoicePlate::kViewElementId)),
     InContext(
         BrowserElements::From(browser())->GetContext(),
-        EnsureNotPresent(
-            dictation::DictationBubbleUi::kViewElementIdForTesting)),
+        EnsureNotPresent(TtcVoicePlate::kViewElementId)),
     CheckHasSession(true)
   );
   // clang-format on
@@ -163,7 +164,7 @@ IN_PROC_BROWSER_TEST_F(SessionViewImplBrowserTest, DetachedTabMovesUI) {
   // clang-format off
   RunTestSequence(
     StartSession(),
-    WaitForShow(dictation::DictationBubbleUi::kViewElementIdForTesting)
+    WaitForShow(TtcVoicePlate::kViewElementId)
   );
   // clang-format on
 
@@ -180,12 +181,23 @@ IN_PROC_BROWSER_TEST_F(SessionViewImplBrowserTest, DetachedTabMovesUI) {
   RunTestSequence(
     InContext(
         BrowserElements::From(detached_browser)->GetContext(),
-        WaitForShow(dictation::DictationBubbleUi::kViewElementIdForTesting)),
+        WaitForShow(TtcVoicePlate::kViewElementId)),
     InContext(
         BrowserElements::From(browser())->GetContext(),
-        EnsureNotPresent(
-            dictation::DictationBubbleUi::kViewElementIdForTesting)),
+        EnsureNotPresent(TtcVoicePlate::kViewElementId)),
     CheckHasSession(true)
+  );
+  // clang-format on
+}
+
+IN_PROC_BROWSER_TEST_F(SessionViewImplBrowserTest, ToastShowsOnError) {
+  // clang-format off
+  RunTestSequence(
+      StartSession(),
+      Do([this]() {
+        session_controller().OnError(ErrorCode::kUnknown);
+      }),
+      WaitForShow(toasts::ToastView::kToastViewId)
   );
   // clang-format on
 }

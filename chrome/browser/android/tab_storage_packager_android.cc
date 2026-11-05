@@ -31,7 +31,6 @@
 #include "chrome/browser/tab/tab_storage_package.h"
 #include "chrome/browser/tab/tab_storage_packager.h"
 #include "chrome/browser/tab/web_contents_state.h"
-#include "components/tabs/public/android/jni_conversion.h"
 #include "components/tabs/public/tab_strip_collection.h"
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/web_contents.h"
@@ -159,7 +158,7 @@ std::string TabStoragePackagerAndroid::GetWindowTag(
 
 std::unique_ptr<StoragePackage> TabStoragePackagerAndroid::Package(
     const TabInterface* tab) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
   CHECK(tab);
   const TabAndroid* tab_android = TabAndroid::FromTabInterface(tab);
   CHECK(tab_android);

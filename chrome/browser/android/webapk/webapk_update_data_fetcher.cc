@@ -26,9 +26,11 @@
 #include "content/public/browser/browser_context.h"
 #include "content/public/browser/storage_partition.h"
 #include "content/public/browser/web_contents.h"
+#include "third_party/blink/public/common/manifest/manifest.h"
 #include "third_party/blink/public/common/manifest/manifest_util.h"
 #include "third_party/blink/public/mojom/manifest/manifest.mojom.h"
 #include "third_party/jni_zero/default_conversions.h"
+#include "third_party/jni_zero/jni_zero.h"
 #include "third_party/smhasher/src/src/MurmurHash2.h"
 #include "ui/android/color_utils_android.h"
 #include "ui/gfx/android/java_bitmap.h"
@@ -52,7 +54,8 @@ bool IsInScope(const GURL& url, const GURL& scope) {
 
 }  // anonymous namespace
 
-static int64_t JNI_WebApkUpdateDataFetcher_Initialize(
+static jni_zero::JniUniquePtr<WebApkUpdateDataFetcher>
+JNI_WebApkUpdateDataFetcher_Initialize(
     JNIEnv* env,
     const JavaRef<jobject>& obj,
     const std::string& java_start_url,
@@ -63,9 +66,8 @@ static int64_t JNI_WebApkUpdateDataFetcher_Initialize(
   GURL scope(java_scope_url);
   GURL web_manifest_url(java_web_manifest_url);
   GURL web_manifest_id(java_web_manifest_id);
-  WebApkUpdateDataFetcher* fetcher = new WebApkUpdateDataFetcher(
+  return jni_zero::MakeUnique<WebApkUpdateDataFetcher>(
       env, obj, start_url, scope, web_manifest_url, web_manifest_id);
-  return reinterpret_cast<intptr_t>(fetcher);
 }
 
 WebApkUpdateDataFetcher::WebApkUpdateDataFetcher(
@@ -92,10 +94,6 @@ void WebApkUpdateDataFetcher::ReplaceWebContents(
   content::WebContents* web_contents =
       content::WebContents::FromJavaWebContents(java_web_contents);
   content::WebContentsObserver::Observe(web_contents);
-}
-
-void WebApkUpdateDataFetcher::Destroy(JNIEnv* env) {
-  delete this;
 }
 
 void WebApkUpdateDataFetcher::Start(JNIEnv* env,
@@ -150,19 +148,22 @@ void WebApkUpdateDataFetcher::OnDidGetInstallableData(
   // observing too. It is based on our assumption that it is invalid for
   // web developers to change the Web Manifest location. When it does
   // change, we will treat the new Web Manifest as the one of another WebAPK.
-  if (!data.errors.empty() || blink::IsEmptyManifest(*data.manifest) ||
-      !webapps::WebappsUtils::AreWebManifestUrlsWebApkCompatible(
+  if (!data.manifest || !data.errors.empty()) {
+    return;
+  }
+
+  if (!webapps::WebappsUtils::AreWebManifestUrlsWebApkCompatible(
           *data.manifest)) {
     return;
   }
 
-  CHECK(!data.manifest->id.is_empty());
+  CHECK(!data.manifest->id().is_empty());
 
   // If there isn't an existing manifest ID, check if either manifest URL or
   // start URL are the same. If neither of them are the same, we treat the
   // manifest as one of another WebAPK.
   if (web_manifest_id_.is_empty() && web_manifest_url_ != *data.manifest_url &&
-      start_url_ != data.manifest->start_url) {
+      start_url_ != data.manifest->start_url()) {
     return;
   }
 
@@ -170,7 +171,7 @@ void WebApkUpdateDataFetcher::OnDidGetInstallableData(
   // different from the current one, continue observing as the id is the
   // identity for the application. We will treat the manifest with different id
   // as the one of another WebAPK.
-  if (!web_manifest_id_.is_empty() && web_manifest_id_ != data.manifest->id) {
+  if (!web_manifest_id_.is_empty() && web_manifest_id_ != data.manifest->id()) {
     return;
   }
 
@@ -257,7 +258,8 @@ void WebApkUpdateDataFetcher::OnGotIconMurmur2Hashes(
   // Each entry contains the icon data for the corresponding entry in
   // |shortcuts|.
   std::vector<std::string> shortcut_icon_data;
-  DCHECK_EQ(info_.shortcut_items.size(), info_.best_shortcut_icon_urls.size());
+  CHECK_EQ(info_.shortcut_items.size(), info_.best_shortcut_icon_urls.size(),
+           base::NotFatalUntil::M161);
 
   for (size_t i = 0; i < info_.shortcut_items.size(); i++) {
     const auto& shortcut = info_.shortcut_items[i];

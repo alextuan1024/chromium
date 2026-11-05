@@ -11,8 +11,8 @@ function waitForIframeMessage(action) {
   });
 }
 
-// Helper to compare tool objects that should conform to the `RegisteredTool`
-// dictionary.
+// Helper to compare tool objects. `actual` may either be a `Tool`, or a plain
+// object derived from one (see `convertToCloneableTools()`).
 function toolsAreEqual(actual, expected) {
   if (actual.name !== expected.name) {
     return `names are unequal: ${actual.name} !== ${expected.name}`;
@@ -25,6 +25,12 @@ function toolsAreEqual(actual, expected) {
     return `inputSchemas are unequal: ${
         JSON.stringify(
             actual.inputSchema)} !== ${JSON.stringify(expected.inputSchema)}`;
+  }
+  if (JSON.stringify(actual.outputSchema) !==
+      JSON.stringify(expected.outputSchema)) {
+    return `outputSchemas are unequal: ${
+        JSON.stringify(
+            actual.outputSchema)} !== ${JSON.stringify(expected.outputSchema)}`;
   }
   if (actual.origin !== expected.origin) {
     return `origins are unequal: ${actual.origin} !== ${expected.origin}`;
@@ -44,4 +50,18 @@ function toolsAreEqual(actual, expected) {
   }
 
   return true;
+}
+
+// Helper to wait for a `toolcancel` event on `document.modelContext` for a
+// specific `toolName`.
+function waitForToolCancel(toolName) {
+  return new Promise(resolve => {
+    const listener = e => {
+      if (e.toolName === toolName) {
+        document.modelContext.removeEventListener('toolcancel', listener);
+        resolve(e);
+      }
+    };
+    document.modelContext.addEventListener('toolcancel', listener);
+  });
 }

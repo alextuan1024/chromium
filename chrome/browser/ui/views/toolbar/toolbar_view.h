@@ -14,7 +14,7 @@
 #include "base/memory/weak_ptr.h"
 #include "base/scoped_observation.h"
 #include "chrome/browser/command_observer.h"
-#include "chrome/browser/glic/browser_ui/glic_split_button_view_delegate.h"
+#include "chrome/browser/glic/browser_ui/glic_split_button_delegate.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_features.h"
 #include "chrome/browser/ui/page_action/page_action_icon_type.h"
 #include "chrome/browser/ui/toolbar/app_menu_icon_controller.h"
@@ -46,7 +46,9 @@
 #include "chromeos/ash/experiences/arc/mojom/intent_helper.mojom-forward.h"  // nogncheck https://crbug.com/784179
 #endif  // BUILDFLAG(IS_CHROMEOS)
 
-class ActorTaskListBubble;
+namespace glic {
+class GlicActivityListBubble;
+}
 class AvatarToolbarButton;
 class AvatarToolbarButtonInterface;
 class BatterySaverButton;
@@ -75,6 +77,7 @@ class LabelButton;
 
 namespace glic {
 class ToolbarGlicButton;
+class ToolbarGlicButtonInterface;
 class ToolbarGlicActorTaskIcon;
 class GlicButtonInterface;
 class GlicSplitButtonController;
@@ -98,7 +101,7 @@ class ToolbarView : public views::AccessiblePaneView,
                     public AppMenuIconController::Delegate,
                     public ToolbarButtonProvider,
                     public BrowserRootView::DropTarget,
-                    public glic::GlicSplitButtonViewDelegate {
+                    public glic::GlicSplitButtonDelegate {
   METADATA_HEADER(ToolbarView, views::AccessiblePaneView)
 
  public:
@@ -177,7 +180,7 @@ class ToolbarView : public views::AccessiblePaneView,
   // Accessors.
   BrowserWindowInterface* browser() const { return browser_; }
   views::Button* GetChromeLabsButton() const;
-  ExtensionsToolbarDesktop* extensions_container() const {
+  ExtensionsToolbarDesktop* extensions_container_for_testing() const {
     return extensions_container_;
   }
   ToolbarButton* back_button() const { return back_; }
@@ -188,6 +191,9 @@ class ToolbarView : public views::AccessiblePaneView,
   ToolbarButton* vertical_tabs_collapse_button() const {
     return vertical_tabs_collapse_button_;
   }
+  // Returns the Views extensions (puzzle piece) button, or null if the toolbar
+  // doesn't host the Views extensions container (e.g. when
+  // features::IsWebUIExtensionsContainerEnabled()).
   ExtensionsToolbarButton* GetExtensionsButton() const;
   ReloadButton* reload_button() const { return reload_; }
   LocationBarView* location_bar_view() const { return location_bar_view_; }
@@ -202,7 +208,10 @@ class ToolbarView : public views::AccessiblePaneView,
   MediaToolbarButton* media_button() const { return media_button_; }
   HomeButton* home_button() const { return home_; }
 
+  // Returns the native Views Glic button, or nullptr if the Glic button is not
+  // created or is rendered by the WebUI toolbar (`features::kWebUIGlicButton`).
   views::LabelButton* GetGlicButton();
+  glic::ToolbarGlicButtonInterface* glic_button() { return glic_button_; }
 
   // TODO(crbug.com/513238408): Remove this once toolbar layout/overflow is
   // fixed.
@@ -218,13 +227,9 @@ class ToolbarView : public views::AccessiblePaneView,
     return toolbar_controller_.get();
   }
 
-  WebUIToolbarWebView* detached_toolbar_webview_for_testing() {
-    return detached_toolbar_webview_.get();
-  }
-
   // Forwards an early teardown request to any child WebUIToolbarWebView
-  // instances (both embedded and detached) to destroy their hosted
-  // WebContents before browser-side IPC services disconnect.
+  // instance to destroy its hosted WebContents before browser-side IPC
+  // services disconnect.
   void DestroyWebUIToolbarWebContents();
 
   glic::ToolbarGlicActorTaskIcon* glic_actor_task_icon() {
@@ -257,7 +262,7 @@ class ToolbarView : public views::AccessiblePaneView,
 
   friend class AvatarToolbarButtonBaseBrowserTest;
 
-  // GlicSplitButtonViewDelegate:
+  // GlicSplitButtonDelegate:
   void SetGlicShowState(bool show) override;
   void SetGlicPanelIsOpen(bool open) override;
   // Called when the glic nudge UI needs to be triggered. `label' holds the
@@ -272,9 +277,9 @@ class ToolbarView : public views::AccessiblePaneView,
   void SetGlicActorNudgeLabel(const std::u16string& nudge_label) override;
   void TriggerGlicActorNudge(const std::u16string& nudge_label) override;
   void SetGlicActorNudgePressedState(bool pressed) override;
-  void ShowActorTaskListBubble() override;
-  void CloseActorTaskListBubble() override;
-  bool IsActorTaskListBubbleShowing() override;
+  void ShowActivityListBubble() override;
+  void CloseActivityListBubble() override;
+  bool IsActivityListBubbleShowing() override;
 
   // Updates glic button parenting after hiding glic actor task icon.
   void FinalizeHideGlicActorTaskIcon();
@@ -417,7 +422,6 @@ class ToolbarView : public views::AccessiblePaneView,
   raw_ptr<ToolbarButton> forward_ = nullptr;
   raw_ptr<ReloadButton> reload_ = nullptr;
   raw_ptr<WebUIToolbarWebView> toolbar_webview_ = nullptr;
-  std::unique_ptr<WebUIToolbarWebView> detached_toolbar_webview_;
   raw_ptr<HomeButton> home_ = nullptr;
   raw_ptr<SplitTabsToolbarButton> split_tabs_ = nullptr;
   raw_ptr<CustomTabBarView> custom_tab_bar_ = nullptr;
@@ -444,10 +448,12 @@ class ToolbarView : public views::AccessiblePaneView,
   // The button currently holding the lock to be shown/hidden.
   raw_ptr<glic::GlicButtonInterface> locked_expansion_button_ = nullptr;
   raw_ptr<GlicAndActorButtonsContainer> glic_actor_button_container_ = nullptr;
-  raw_ptr<glic::ToolbarGlicButton> glic_button_ = nullptr;
+  raw_ptr<glic::ToolbarGlicButton> glic_button_view_ = nullptr;
+  // An alias for `glic_button_view_` or `toolbar_webview_->GetGlicControl()`.
+  raw_ptr<glic::ToolbarGlicButtonInterface> glic_button_ = nullptr;
   raw_ptr<glic::ToolbarGlicActorTaskIcon> glic_actor_task_icon_ = nullptr;
   raw_ptr<ToolbarDivider> glic_button_divider_ = nullptr;
-  std::unique_ptr<ActorTaskListBubble> actor_task_list_bubble_;
+  std::unique_ptr<glic::GlicActivityListBubble> activity_list_bubble_;
 
   // When locked, the container is unable to change its expanded state.
   // Changes will be staged until after this is unlocked.
@@ -516,5 +522,9 @@ class ToolbarView : public views::AccessiblePaneView,
 };
 
 extern const ui::ClassProperty<bool>* const kActionItemUnderlineIndicatorKey;
+extern const ui::ClassProperty<ActionItemEngagedIndicatorStyle>* const
+    kActionItemEngagedIndicatorStyleKey;
+
+DECLARE_UI_CLASS_PROPERTY_TYPE(ActionItemEngagedIndicatorStyle)
 
 #endif  // CHROME_BROWSER_UI_VIEWS_TOOLBAR_TOOLBAR_VIEW_H_

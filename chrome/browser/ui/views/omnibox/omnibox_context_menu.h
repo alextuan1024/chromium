@@ -8,6 +8,7 @@
 #include "base/containers/flat_map.h"
 #include "base/functional/callback_forward.h"
 #include "base/memory/raw_ptr.h"
+#include "base/memory/weak_ptr.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/omnibox/omnibox_context_menu_controller.h"
 #include "chrome/browser/ui/webui/top_chrome/top_chrome_web_ui_controller.h"
@@ -18,7 +19,7 @@ namespace views {
 class MenuItemView;
 class MenuRunner;
 class View;
-class ViewShadow;
+class ViewDecoration;
 class Widget;
 }  // namespace views
 
@@ -71,7 +72,7 @@ class OmniboxContextMenu : public views::MenuDelegate,
 
  private:
   void BuildMenuTree();
-  const raw_ptr<views::Widget> parent_widget_;
+  base::WeakPtr<views::Widget> parent_widget_;
   std::unique_ptr<OmniboxContextMenuController> controller_;
 
   // Responsible for running the menu.
@@ -84,7 +85,7 @@ class OmniboxContextMenu : public views::MenuDelegate,
   base::WeakPtr<content::WebContents> web_contents_;
 
   // The drop shadows of the menus, mapped from the shadowed container view.
-  base::flat_map<raw_ptr<views::View>, std::unique_ptr<views::ViewShadow>>
+  base::flat_map<raw_ptr<views::View>, std::unique_ptr<views::ViewDecoration>>
       view_shadows_;
 
   bool was_add_tabs_button_shown_logged_ = false;

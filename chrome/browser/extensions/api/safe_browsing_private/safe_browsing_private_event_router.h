@@ -16,7 +16,7 @@
 #include "components/enterprise/buildflags/buildflags.h"
 #include "components/enterprise/common/proto/connectors.pb.h"
 #include "components/keyed_service/core/keyed_service.h"
-#include "components/safe_browsing/content/browser/safe_browsing_navigation_observer_manager.h"
+#include "components/safe_browsing/content/browser/navigation_observer/safe_browsing_navigation_observer_manager.h"
 #include "components/safe_browsing/core/common/proto/realtimeapi.pb.h"
 
 namespace content {
@@ -25,10 +25,6 @@ class BrowserContext;
 
 namespace extensions {
 class EventRouter;
-}
-
-namespace signin {
-class IdentityManager;
 }
 
 class GURL;
@@ -81,10 +77,7 @@ class SafeBrowsingPrivateEventRouter : public KeyedService {
                                        const std::string& reason,
                                        int net_error_code);
 
-  void SetIdentityManagerForTesting(signin::IdentityManager* identity_manager);
-
  private:
-  raw_ptr<signin::IdentityManager> identity_manager_ = nullptr;
   raw_ptr<content::BrowserContext> context_;
   raw_ptr<EventRouter> event_router_ = nullptr;
   base::WeakPtrFactory<SafeBrowsingPrivateEventRouter> weak_ptr_factory_{this};

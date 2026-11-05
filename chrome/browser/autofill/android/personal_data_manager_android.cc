@@ -8,10 +8,12 @@
 
 #include <algorithm>
 #include <memory>
+#include <string>
 #include <utility>
 
 #include "base/android/jni_array.h"
 #include "base/android/jni_string.h"
+#include "base/check_op.h"
 #include "base/command_line.h"
 #include "base/containers/span.h"
 #include "base/containers/to_vector.h"
@@ -62,8 +64,10 @@
 
 // Must come after headers that provide symbols used by @JniType.
 #include "chrome/browser/autofill/android/jni_headers/PersonalDataManager_jni.h"
+#include "components/autofill/android/main_autofill_jni_headers/AutofillProfile_jni.h"
 #include "components/autofill/android/payments_jni_headers/BankAccount_jni.h"
 #include "components/autofill/android/payments_jni_headers/BnplIssuerForSettings_jni.h"
+#include "components/autofill/android/payments_jni_headers/Iban_jni.h"
 #include "components/autofill/android/payments_jni_headers/PaymentInstrument_jni.h"
 
 namespace autofill {
@@ -138,7 +142,7 @@ PersonalDataManagerAndroid::CreateJavaCreditCardFromNative(
           GetIconResourceID(card.CardIconForAutofillSuggestion())),
       card.billing_address_id(), card.server_id(), card.instrument_id(),
       card.CardNameAndLastFourDigits(), card.nickname(), card.card_art_url(),
-      static_cast<int32_t>(card.virtual_card_enrollment_state()),
+      std::to_underlying(card.virtual_card_enrollment_state()),
       card.product_description(), card.CardNameForAutofillDisplay(),
       card.ObfuscatedNumberWithVisibleLastFourDigits(), card.cvc(),
       card.issuer_id(), card.benefit_source(), card.product_terms_url());
@@ -170,7 +174,7 @@ void PersonalDataManagerAndroid::PopulateNativeCreditCardFromJava(
     card->set_record_type(CreditCard::RecordType::kLocalCard);
   } else {
     // Native copies of virtual credit card objects should not be created.
-    DCHECK(!Java_CreditCard_getIsVirtual(env, jcard));
+    CHECK(!Java_CreditCard_getIsVirtual(env, jcard), base::NotFatalUntil::M161);
     card->set_record_type(CreditCard::RecordType::kMaskedServerCard);
     card->SetNetworkForMaskedCard(
         data_util::GetIssuerNetworkForBasicCardIssuerNetwork(
@@ -191,14 +195,16 @@ bool PersonalDataManagerAndroid::IsDataLoaded() const {
   return pdm_observation_.GetSource()->IsDataLoaded();
 }
 
-std::vector<std::string>
-PersonalDataManagerAndroid::GetProfileGUIDsForSettings() {
-  return GetProfileGUIDs(address_data_manager().GetProfilesForSettings());
+std::vector<ScopedJavaLocalRef<jobject>>
+PersonalDataManagerAndroid::GetProfilesForSettings(JNIEnv* env) {
+  return GetProfiles(env, /*address_only=*/false,
+                     address_data_manager().GetProfilesForSettings());
 }
 
-std::vector<std::string>
-PersonalDataManagerAndroid::GetProfileGUIDsToSuggest() {
-  return GetProfileGUIDs(address_data_manager().GetProfilesToSuggest());
+std::vector<ScopedJavaLocalRef<jobject>>
+PersonalDataManagerAndroid::GetProfilesToSuggest(JNIEnv* env) {
+  return GetProfiles(env, /*address_only=*/true,
+                     address_data_manager().GetProfilesToSuggest());
 }
 
 ScopedJavaLocalRef<jobject> PersonalDataManagerAndroid::GetProfileByGUID(
@@ -208,7 +214,7 @@ ScopedJavaLocalRef<jobject> PersonalDataManagerAndroid::GetProfileByGUID(
   if (!profile) {
     return nullptr;
   }
-  return profile->CreateJavaObject(g_browser_process->GetApplicationLocale());
+  return profile->CreateJavaObject();
 }
 
 bool PersonalDataManagerAndroid::IsEligibleForAddressAccountStorage() {
@@ -261,12 +267,6 @@ std::string PersonalDataManagerAndroid::SetProfileToLocal(
   return profile.guid();
 }
 
-std::vector<std::u16string>
-PersonalDataManagerAndroid::GetProfileLabelsForSettings() {
-  return GetProfileLabels(false /* address_only */,
-                          address_data_manager().GetProfilesForSettings());
-}
-
 std::u16string PersonalDataManagerAndroid::GetProfileDescriptionForEditor(
     const std::string& guid) {
   const AutofillProfile* profile =
@@ -275,12 +275,6 @@ std::u16string PersonalDataManagerAndroid::GetProfileDescriptionForEditor(
                        *profile, g_browser_process->GetApplicationLocale(),
                        /*include_address_and_contacts=*/true)
                  : std::u16string();
-}
-
-std::vector<std::u16string>
-PersonalDataManagerAndroid::GetProfileLabelsToSuggest() {
-  return GetProfileLabels(true /* address_only */,
-                          address_data_manager().GetProfilesToSuggest());
 }
 
 std::u16string
@@ -308,14 +302,15 @@ PersonalDataManagerAndroid::GetShippingAddressLabelForPaymentRequest(
       g_browser_process->GetApplicationLocale());
 }
 
-std::vector<std::string>
-PersonalDataManagerAndroid::GetCreditCardGUIDsForSettings() {
-  return GetCreditCardGUIDs(payments_data_manager().GetCreditCards());
+std::vector<ScopedJavaLocalRef<jobject>>
+PersonalDataManagerAndroid::GetCreditCardsForSettings(JNIEnv* env) {
+  return GetCreditCards(env, payments_data_manager().GetCreditCards());
 }
 
-std::vector<std::string>
-PersonalDataManagerAndroid::GetCreditCardGUIDsToSuggest() {
-  return GetCreditCardGUIDs(GetCreditCardsToSuggest(payments_data_manager()));
+std::vector<ScopedJavaLocalRef<jobject>>
+PersonalDataManagerAndroid::GetCreditCardsToSuggest(JNIEnv* env) {
+  return GetCreditCards(
+      env, autofill::GetCreditCardsToSuggest(payments_data_manager()));
 }
 
 ScopedJavaLocalRef<jobject> PersonalDataManagerAndroid::GetCreditCardByGUID(
@@ -416,7 +411,7 @@ PersonalDataManagerAndroid::CreateJavaBankAccountFromNative(
       supported_payment_rails_array,
       static_cast<bool>(bank_account.payment_instrument().is_fido_enrolled()),
       bank_account.bank_name(), bank_account.account_number_suffix(),
-      static_cast<int32_t>(bank_account.account_type()));
+      std::to_underlying(bank_account.account_type()));
 }
 
 // static
@@ -437,9 +432,9 @@ BankAccount PersonalDataManagerAndroid::CreateNativeBankAccountFromJava(
   int jaccount_type = Java_BankAccount_getAccountType(env, jbank_account);
   BankAccount::AccountType bank_account_type =
       BankAccount::AccountType::kUnknown;
-  if (jaccount_type > static_cast<int>(BankAccount::AccountType::kUnknown) &&
+  if (jaccount_type > std::to_underlying(BankAccount::AccountType::kUnknown) &&
       jaccount_type <=
-          static_cast<int>(BankAccount::AccountType::kTransactingAccount)) {
+          std::to_underlying(BankAccount::AccountType::kTransactingAccount)) {
     bank_account_type = static_cast<BankAccount::AccountType>(jaccount_type);
   }
   return BankAccount(instrument_id, nickname, display_icon_url, bank_name,
@@ -450,29 +445,36 @@ base::span<const Ewallet> PersonalDataManagerAndroid::GetEwallets() {
   return payments_data_manager().GetEwalletAccounts();
 }
 
-std::vector<std::string> PersonalDataManagerAndroid::GetProfileGUIDs(
-    const std::vector<const AutofillProfile*>& profiles) {
-  std::vector<std::string> guids;
-  guids.reserve(profiles.size());
-  for (const AutofillProfile* profile : profiles) {
-    guids.push_back(profile->guid());
+std::vector<ScopedJavaLocalRef<jobject>>
+PersonalDataManagerAndroid::GetProfiles(
+    JNIEnv* env,
+    bool address_only,
+    base::span<const AutofillProfile* const> profiles) {
+  std::vector<std::u16string> labels = GetProfileLabels(address_only, profiles);
+  CHECK_EQ(profiles.size(), labels.size());
+
+  std::vector<ScopedJavaLocalRef<jobject>> jprofiles;
+  jprofiles.reserve(profiles.size());
+  for (size_t i = 0; i < profiles.size(); ++i) {
+    ScopedJavaLocalRef<jobject> jprofile = profiles[i]->CreateJavaObject();
+    Java_AutofillProfile_setLabel(env, jprofile, labels[i]);
+    jprofiles.push_back(std::move(jprofile));
   }
-  return guids;
+  return jprofiles;
 }
 
-std::vector<std::string> PersonalDataManagerAndroid::GetCreditCardGUIDs(
-    const std::vector<const CreditCard*>& credit_cards) {
-  std::vector<std::string> guids;
-  guids.reserve(credit_cards.size());
-  for (const CreditCard* credit_card : credit_cards) {
-    guids.push_back(credit_card->guid());
-  }
-  return guids;
+std::vector<ScopedJavaLocalRef<jobject>>
+PersonalDataManagerAndroid::GetCreditCards(
+    JNIEnv* env,
+    base::span<const CreditCard* const> credit_cards) {
+  return base::ToVector(credit_cards, [env](const CreditCard* card) {
+    return CreateJavaCreditCardFromNative(env, *card);
+  });
 }
 
 std::vector<std::u16string> PersonalDataManagerAndroid::GetProfileLabels(
     bool address_only,
-    std::vector<const AutofillProfile*> profiles) {
+    base::span<const AutofillProfile* const> profiles) {
   FieldTypeSet suggested_fields;
   size_t minimal_fields_shown = 2;
   if (address_only) {
@@ -504,7 +506,7 @@ PersonalDataManagerAndroid::GetPaymentRailsFromPaymentInstrument(
       payment_instrument.supported_rails();
   return base::ToVector(payment_instrument_supported_rails,
                         [](PaymentInstrument::PaymentRail rail) {
-                          return static_cast<int32_t>(rail);
+                          return std::to_underlying(rail);
                         });
 }
 
@@ -574,14 +576,12 @@ ScopedJavaLocalRef<jobject> PersonalDataManagerAndroid::GetIbanByGuid(
 
 ScopedJavaLocalRef<jobjectArray>
 PersonalDataManagerAndroid::GetIbansForSettings(JNIEnv* env) {
-  std::vector<ScopedJavaLocalRef<jobject>> j_ibans_list;
-  for (const Iban* iban : payments_data_manager().GetIbans()) {
-    j_ibans_list.push_back(CreateJavaIbanFromNative(env, *iban));
-  }
-  ScopedJavaLocalRef<jclass> type = base::android::GetClass(
-      env, "org/chromium/chrome/browser/autofill/PersonalDataManager$Iban");
-  return base::android::ToTypedJavaArrayOfObjects(env, j_ibans_list,
-                                                  type.obj());
+  std::vector<ScopedJavaLocalRef<jobject>> j_ibans_list = base::ToVector(
+      payments_data_manager().GetIbans(),
+      [env](const Iban* iban) { return CreateJavaIbanFromNative(env, *iban); });
+  return base::android::ToTypedJavaArrayOfObjects(
+      env, j_ibans_list,
+      org_chromium_components_autofill_payments_Iban_clazz(env));
 }
 
 std::string PersonalDataManagerAndroid::AddOrUpdateLocalIban(
@@ -616,10 +616,9 @@ PersonalDataManagerAndroid::GetMaskedBankAccounts(JNIEnv* env) {
                        return CreateJavaBankAccountFromNative(env,
                                                               bank_account);
                      });
-  ScopedJavaLocalRef<jclass> type = base::android::GetClass(
-      env, "org/chromium/components/autofill/payments/BankAccount");
-  return base::android::ToTypedJavaArrayOfObjects(env, j_bank_accounts_list,
-                                                  type.obj());
+  return base::android::ToTypedJavaArrayOfObjects(
+      env, j_bank_accounts_list,
+      org_chromium_components_autofill_payments_BankAccount_clazz(env));
 }
 
 bool PersonalDataManagerAndroid::IsAutofillTypeDisabledByEnterprisePolicy(
@@ -636,9 +635,8 @@ bool PersonalDataManagerAndroid::IsAutofillProfileManaged() {
   // categories. Therefore, if this method returns true, Autofill profiles
   // setting will be disabled.
   return prefs::IsAutofillProfileManaged(prefs_) ||
-         IsAutofillTypeDisabledByEnterprisePolicy(
-             static_cast<int>(
-                 AutofillClient::AutofillPolicyDataCategory::kContactInfo));
+         IsAutofillTypeDisabledByEnterprisePolicy(std::to_underlying(
+             AutofillClient::AutofillPolicyDataCategory::kContactInfo));
 }
 
 bool PersonalDataManagerAndroid::IsAutofillCreditCardManaged() {
@@ -648,9 +646,8 @@ bool PersonalDataManagerAndroid::IsAutofillCreditCardManaged() {
   // categories. Therefore, if this method returns true, Autofill payment
   // methods setting will be disabled.
   return prefs::IsAutofillCreditCardManaged(prefs_) ||
-         IsAutofillTypeDisabledByEnterprisePolicy(
-             static_cast<int>(
-                      AutofillClient::AutofillPolicyDataCategory::kPayments));
+         IsAutofillTypeDisabledByEnterprisePolicy(std::to_underlying(
+             AutofillClient::AutofillPolicyDataCategory::kPayments));
 }
 
 // Returns the issuer network string according to PaymentRequest spec, or an
@@ -705,10 +702,10 @@ PersonalDataManagerAndroid::GetBnplIssuersForSettings(JNIEnv* env) {
                        return CreateBnplIssuerForSettingsFromNative(
                            env, bnpl_issuer);
                      });
-  ScopedJavaLocalRef<jclass> type = base::android::GetClass(
-      env, "org/chromium/components/autofill/payments/BnplIssuerForSettings");
-  return base::android::ToTypedJavaArrayOfObjects(env, jbnpl_issuers_list,
-                                                  type.obj());
+  return base::android::ToTypedJavaArrayOfObjects(
+      env, jbnpl_issuers_list,
+      org_chromium_components_autofill_payments_BnplIssuerForSettings_clazz(
+          env));
 }
 
 // static
@@ -733,12 +730,7 @@ std::vector<std::string>
 PersonalDataManagerAndroid::GetEmailVerificationAddresses() {
   const base::DictValue& state =
       prefs_->GetDict(prefs::kAutofillEmailVerificationState);
-  std::vector<std::string> emails;
-  emails.reserve(state.size());
-  for (auto it : state) {
-    emails.push_back(it.first);
-  }
-  return emails;
+  return base::ToVector(state, [](const auto& pair) { return pair.first; });
 }
 
 std::string PersonalDataManagerAndroid::GetEmailVerificationIssuer(

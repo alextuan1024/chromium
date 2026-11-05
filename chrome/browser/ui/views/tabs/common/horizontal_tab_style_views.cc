@@ -36,6 +36,7 @@
 #include "ui/gfx/geometry/insets.h"
 #include "ui/gfx/geometry/skia_conversions.h"
 #include "ui/gfx/scoped_canvas.h"
+#include "ui/views/controls/separator.h"
 #include "ui/views/widget/widget.h"
 
 HorizontalTabStyleViews::HorizontalTabStyleViews(
@@ -712,7 +713,7 @@ bool HorizontalTabStyleViews::ShouldPaintTabBackgroundColor(
 
 SkColor HorizontalTabStyleViews::GetTabSeparatorColor() const {
   const auto* cp = delegate_->GetView()->GetWidget()->GetColorProvider();
-  DCHECK(cp);
+  CHECK(cp, base::NotFatalUntil::M162);
   if (!cp) {
     return gfx::kPlaceholderColor;
   }
@@ -756,7 +757,7 @@ void HorizontalTabStyleViews::PaintTabBackground(
   PaintTabBackgroundFill(canvas, hovered, fill_id);
 
   const auto* widget = delegate_->GetView()->GetWidget();
-  DCHECK(widget);
+  CHECK(widget, base::NotFatalUntil::M162);
   const SkColor tab_stroke_color =
       (delegate_->IsPinned() && !delegate_->IsActive() &&
        tabs::IsNewHorizontalPinnedTabStylingEnabled())

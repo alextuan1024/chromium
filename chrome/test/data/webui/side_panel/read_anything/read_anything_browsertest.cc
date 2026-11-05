@@ -7,6 +7,7 @@
 #include "base/test/scoped_feature_list.h"
 #include "build/build_config.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_features.h"
+#include "chrome/browser/ui/read_anything/read_anything_entry_point_controller.h"
 #include "chrome/browser/ui/side_panel/side_panel_entry_id.h"
 #include "chrome/browser/ui/side_panel/side_panel_enums.h"
 #include "chrome/browser/ui/side_panel/side_panel_ui.h"
@@ -24,13 +25,15 @@ class ReadAnythingMochaBrowserTest : public WebUIMochaBrowserTest {
     set_test_loader_host(chrome::kChromeUIUntrustedReadAnythingSidePanelHost);
     set_test_loader_scheme(content::kChromeUIUntrustedScheme);
     scoped_feature_list_.InitWithFeatures(
-        {}, {features::kReadAnythingReadAloudPhraseHighlighting,
-             ax::mojom::features::kReadAnythingDocsIntegration});
+        {}, {features::kReadAnythingReadAloudPhraseHighlighting});
   }
 
   void RunSidePanelTest(const std::string& file, const std::string& trigger) {
+    read_anything::ReadAnythingEntryPointController::ShowUI(
+        browser(), ReadAnythingOpenTrigger::kAppMenu,
+        read_anything::ReadAnythingEntryPointController::Presentation::
+            kSidePanel);
     auto* side_panel_ui = SidePanelUI::From(browser());
-    side_panel_ui->Show(SidePanelEntryId::kReadAnything);
     auto* web_contents =
         side_panel_ui->GetWebContentsForTest(SidePanelEntryId::kReadAnything);
     ASSERT_TRUE(web_contents);
@@ -64,6 +67,12 @@ IN_PROC_BROWSER_TEST_F(ReadAnythingMochaTest, SpeechPresentationRules) {
 IN_PROC_BROWSER_TEST_F(ReadAnythingMochaTest, NodeStore) {
   RunSidePanelTest("side_panel/read_anything/node_store_test.js",
                    "mocha.run()");
+}
+
+IN_PROC_BROWSER_TEST_F(ReadAnythingMochaTest, TranslatedSelectionMapper) {
+  RunSidePanelTest(
+      "side_panel/read_anything/translated_selection_mapper_test.js",
+      "mocha.run()");
 }
 
 IN_PROC_BROWSER_TEST_F(ReadAnythingMochaTest, SpeechControllerContent) {
@@ -150,6 +159,11 @@ IN_PROC_BROWSER_TEST_F(ReadAnythingMochaTest, AppContent) {
                    "mocha.run()");
 }
 
+IN_PROC_BROWSER_TEST_F(ReadAnythingMochaTest, AppLineFocus) {
+  RunSidePanelTest("side_panel/read_anything/app_line_focus_test.js",
+                   "mocha.run()");
+}
+
 IN_PROC_BROWSER_TEST_F(ReadAnythingMochaTest, VoiceSelectionMenu) {
   RunSidePanelTest("side_panel/read_anything/voice_selection_menu_test.js",
                    "mocha.run()");
@@ -168,6 +182,11 @@ IN_PROC_BROWSER_TEST_F(ReadAnythingMochaTest, VoiceLanguageUtil) {
 
 IN_PROC_BROWSER_TEST_F(ReadAnythingMochaTest, VoiceMenuDisplay) {
   RunSidePanelTest("side_panel/read_anything/voice_menu_display_test.js",
+                   "mocha.run()");
+}
+
+IN_PROC_BROWSER_TEST_F(ReadAnythingMochaTest, VoiceNatureNaming) {
+  RunSidePanelTest("side_panel/read_anything/voice_nature_naming_test.js",
                    "mocha.run()");
 }
 

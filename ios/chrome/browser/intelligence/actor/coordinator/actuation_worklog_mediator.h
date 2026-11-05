@@ -7,31 +7,35 @@
 
 #import <Foundation/Foundation.h>
 
-#import "ios/chrome/browser/intelligence/actor/public/actor_task_updates_observer.h"
+#import "ios/chrome/browser/intelligence/actor/coordinator/actuation_suggestions_delegate.h"
 #import "ios/chrome/browser/intelligence/actor/ui/actuation_worklog_mutator.h"
 
-namespace actor {
-class ActorService;
-}  // namespace actor
-
+@protocol ActorTaskActionHandler;
+@protocol ActorTaskDataSource;
+@protocol ActuationSuggestionsConsumer;
 @protocol ActuationWorklogConsumer;
 
-// Translates `ActorTask` execution updates into displayable timeline items and
-// action chips for an `ActuationWorklogConsumer`.
+// Translates the worklog published by an `ActorTaskDataSource` into
+// displayable timeline items and action chips for an
+// `ActuationWorklogConsumer`.
 @interface ActuationWorklogMediator
-    : NSObject <ActorTaskUpdatesObserver, ActuationWorklogMutator>
+    : NSObject <ActuationSuggestionsDelegate, ActuationWorklogMutator>
 
 // The consumer that receives formatted worklog updates.
 @property(nonatomic, weak) id<ActuationWorklogConsumer> consumer;
 
-// Designated initializer with task update service to observe.
-- (instancetype)initWithActorService:(actor::ActorService*)actorService
-    NS_DESIGNATED_INITIALIZER;
+// Consumer handling suggestion coordinator lifecycle.
+@property(nonatomic, weak) id<ActuationSuggestionsConsumer> suggestionsConsumer;
 
-- (instancetype)init NS_UNAVAILABLE;
+// Starts displaying the worklog published by `dataSource`, replacing any
+// previously observed one. The user actions on the worklog are forwarded to
+// `actionHandler`.
+- (void)startObservingDataSource:(id<ActorTaskDataSource>)dataSource
+                   actionHandler:(id<ActorTaskActionHandler>)actionHandler;
 
-// Starts observing task updates from `ActorService`.
-- (void)connect;
+// Stops observing the current data source and resets the worklog. No-op if
+// none is observed.
+- (void)stopObservingTask;
 
 // Disconnects the mediator and cleans up references.
 - (void)disconnect;

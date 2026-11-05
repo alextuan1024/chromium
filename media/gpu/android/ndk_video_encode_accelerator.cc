@@ -13,7 +13,6 @@
 #include <optional>
 
 #include "base/android/android_info.h"
-#include "base/android/jni_android.h"
 #include "base/bits.h"
 #include "base/compiler_specific.h"
 #include "base/containers/span.h"
@@ -24,6 +23,7 @@
 #include "base/memory/unsafe_shared_memory_region.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/notimplemented.h"
+#include "base/numerics/safe_conversions.h"
 #include "base/strings/strcat.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/stringprintf.h"
@@ -34,7 +34,6 @@
 #include "gpu/command_buffer/service/shared_image/shared_image_manager.h"
 #include "gpu/command_buffer/service/shared_image/shared_image_representation.h"
 #include "media/base/android/media_codec_util.h"
-#include "media/base/android/media_jni_headers/VideoAcceleratorUtil_jni.h"
 #include "media/base/bitstream_buffer.h"
 #include "media/base/encoder_status.h"
 #include "media/base/media_serializers_base.h"
@@ -86,11 +85,8 @@ constexpr const char* kMediaFormatKeyVideoBitrateLayering =
     "video-bitrate-layering";
 
 bool IsTemporalLayerEncodingEnabled() {
-  static bool enabled = []() {
-    JNIEnv* env = base::android::AttachCurrentThread();
-    return Java_VideoAcceleratorUtil_isTemporalLayerEncodingEnabled(env);
-  }();
-  return enabled;
+  return base::android::android_info::sdk_int() >=
+         base::android::android_info::SDK_VERSION_CINNAMON_BUN;
 }
 
 bool IsNdkSvcApiSupported() {
@@ -648,11 +644,12 @@ bool ProfileNeedsConfigDataInBitstream(VideoCodecProfile profile) {
   }
 }
 
-void WaitForSyncTokenOnGpuThread(
+void WaitForSyncTokensOnGpuThread(
     scoped_refptr<CommandBufferHelper> command_buffer_helper,
-    gpu::SyncToken sync_token,
+    std::vector<gpu::SyncToken> sync_tokens,
     base::OnceClosure done_cb) {
-  command_buffer_helper->WaitForSyncToken(sync_token, std::move(done_cb));
+  command_buffer_helper->WaitForSyncTokens(std::move(sync_tokens),
+                                           std::move(done_cb));
 }
 
 constexpr std::string_view kEncoderStatusHistogramPrefix =
@@ -1041,8 +1038,10 @@ bool NdkVideoEncodeAccelerator::SetInputBufferLayout(
   // unfortunately, see https://crbug.com/1084702 for details. It seems they
   // only work when stride/y_plane_height information is provided.
   const auto aligned_size = gfx::Size(
-      base::bits::AlignDownDeprecatedDoNotUse(configured_size.width(), 16),
-      base::bits::AlignDownDeprecatedDoNotUse(configured_size.height(), 16));
+      base::bits::AlignDown(
+          base::checked_cast<uint32_t>(configured_size.width()), 16u),
+      base::bits::AlignDown(
+          base::checked_cast<uint32_t>(configured_size.height()), 16u));
 
   bool require_aligned_resolution = false;
   if (!AMediaFormat_getInt32(input_format.get(), AMEDIAFORMAT_KEY_STRIDE,
@@ -1151,8 +1150,9 @@ void NdkVideoEncodeAccelerator::FeedInput() {
                          weak_ptr_factory_.GetWeakPtr(), frame->unique_id()));
       gpu_task_runner_->PostTask(
           FROM_HERE,
-          base::BindOnce(&WaitForSyncTokenOnGpuThread, command_buffer_helper_,
-                         frame->acquire_sync_token(),
+          base::BindOnce(&WaitForSyncTokensOnGpuThread, command_buffer_helper_,
+                         frame->shared_image()->GetSyncTokensForVideoFrame(
+                             frame->acquire_sync_token()),
                          std::move(sync_done_callback)));
       return;
     }
@@ -1653,10 +1653,8 @@ void NdkVideoEncodeAccelerator::DrainOutput() {
   if (!timestamp_info.has_value()) {
     MEDIA_LOG(ERROR, log_) << "Failed to find timestamp for encoded frame. ts:"
                            << mc_buffer_info.presentationTimeUs;
-    NOTREACHED(base::NotFatalUntil::M150)
-        << "Failed to find timestamp for encoded frame. ts:"
-        << mc_buffer_info.presentationTimeUs;
-    timestamp_info = FrameTimestampInfo();
+    NOTREACHED() << "Failed to find timestamp for encoded frame. ts:"
+                 << mc_buffer_info.presentationTimeUs;
   }
   auto metadata = BitstreamBufferMetadata(
       mc_buffer_size + config_size, key_frame, timestamp_info->real_timestamp);

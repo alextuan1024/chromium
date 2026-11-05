@@ -53,7 +53,13 @@ class KURL;
 class ListAttributeTargetObserver;
 class RadioButtonGroupScope;
 class ScriptObject;
+class UIEvent;
 struct DateTimeChooserParameters;
+
+enum class PasswordVisibilityAnnouncement {
+  kSilent,
+  kAnnounce,
+};
 
 class CORE_EXPORT HTMLInputElement
     : public TextControlElement,
@@ -280,8 +286,6 @@ class CORE_EXPORT HTMLInputElement
 
   void OnSearch();
 
-  void UpdateClearButtonVisibility();
-
   bool WillRespondToMouseClickEvents() override;
 
   // Returns the DataList element associated via the list attribute, if any.
@@ -354,12 +358,14 @@ class CORE_EXPORT HTMLInputElement
   HTMLImageLoader& EnsureImageLoader();
 
   bool SetupDateTimeChooserParameters(DateTimeChooserParameters&);
+  void ClosePopupView();
 
   bool SupportsInputModeAttribute() const;
 
   void CapsLockStateMayHaveChanged();
   bool ShouldDrawCapsLockIndicator() const;
-  void SetShouldRevealPassword(bool value);
+  void SetShouldRevealPassword(bool value,
+                               PasswordVisibilityAnnouncement announcement);
   bool ShouldRevealPassword() const { return should_reveal_password_; }
 
   void DispatchSimulatedEnter();
@@ -372,8 +378,6 @@ class CORE_EXPORT HTMLInputElement
 
   bool IsPlaceholderVisible() const override { return is_placeholder_visible_; }
   void SetPlaceholderVisibility(bool) override;
-
-  unsigned SizeOfRadioGroup() const;
 
   bool SupportsPlaceholder() const final;
   String GetPlaceholderValue() const final;
@@ -426,7 +430,8 @@ class CORE_EXPORT HTMLInputElement
   bool IsValidBuiltinCommand(HTMLElement& invoker,
                              CommandEventType command) override;
   bool HandleCommandInternal(HTMLElement& invoker,
-                             CommandEventType command) override;
+                             CommandEventType command,
+                             UIEvent* activate_event) override;
 
   void SetFocused(bool is_focused,
                   mojom::blink::FocusType,
@@ -500,6 +505,9 @@ class CORE_EXPORT HTMLInputElement
   void ResetImpl() final;
 
   EventDispatchHandlingState* LegacyPreActivationBehavior(Event&) final;
+  void RunActivationBehaviorBeforeDOMActivate(
+      Event&,
+      EventDispatchHandlingState*) final;
   void RunActivationBehavior(Event&, EventDispatchHandlingState*) final;
 
   bool IsURLAttribute(const Attribute&) const final;
@@ -529,6 +537,8 @@ class CORE_EXPORT HTMLInputElement
 
   void UpdateHasBeenPasswordField(const AtomicString& new_type_name);
 
+  void AnnouncePasswordVisibility();
+
   void SubtreeHasChanged() final;
 
   void SetListAttributeTargetObserver(ListAttributeTargetObserver*);
@@ -538,9 +548,7 @@ class CORE_EXPORT HTMLInputElement
   void RemoveFromRadioButtonGroup();
   void AdjustStyle(ComputedStyleBuilder&) override;
 
-  void MaybeReportPiiMetrics();
-
-  void DidChangeIsInCanvasSubtree() final;
+  void DidChangeIsInCanvasSubtree(CanvasSubtreePropagation) final;
 
   AtomicString name_;
   // The value string in |value| value mode.

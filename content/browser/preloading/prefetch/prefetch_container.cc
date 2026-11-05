@@ -5,6 +5,7 @@
 #include "content/browser/preloading/prefetch/prefetch_container.h"
 
 #include "base/byte_size.h"
+#include "base/check_deref.h"
 #include "base/check_is_test.h"
 #include "base/debug/crash_logging.h"
 #include "base/debug/dump_without_crashing.h"
@@ -49,6 +50,7 @@
 #include "content/public/common/content_features.h"
 #include "net/base/load_flags.h"
 #include "net/base/load_timing_info.h"
+#include "net/base/url_util.h"
 #include "net/http/http_request_headers.h"
 #include "net/http/http_request_info.h"
 #include "net/url_request/redirect_util.h"
@@ -219,6 +221,27 @@ void RecordPrefetchProxyPrefetchMainframeNetError(int net_error) {
 void RecordPrefetchProxyPrefetchMainframeBodyLength(int64_t body_length) {
   UMA_HISTOGRAM_COUNTS_10M("PrefetchProxy.Prefetch.Mainframe.BodyLength",
                            body_length);
+}
+
+bool CalculateMatchesBurstQueryParam(const GURL& url) {
+  if (!base::FeatureList::IsEnabled(
+          features::kPrefetchSchedulerBurstQueryParam)) {
+    return false;
+  }
+
+  const std::string& key = features::kPrefetchSchedulerBurstQueryParamKey.Get();
+  if (key.empty()) {
+    return false;
+  }
+
+  std::string param_value;
+  if (!net::GetValueForKeyInQuery(url, key, &param_value)) {
+    return false;
+  }
+
+  const std::string& expected_value =
+      features::kPrefetchSchedulerBurstQueryParamValue.Get();
+  return expected_value.empty() || param_value == expected_value;
 }
 
 bool CalculateIsLikelyAheadOfPrerender(
@@ -566,7 +589,9 @@ PrefetchContainer::PrefetchContainer(
     std::unique_ptr<PrePrefetchContainer> pre_prefetch_container)
     : request_(std::move(prefetch_request)),
       is_constructed_from_pre_prefetch_(pre_prefetch_container != nullptr),
-      container_id_for_testing_(base::UnguessableToken::Create().ToString()) {
+      container_id_for_testing_(base::UnguessableToken::Create().ToString()),
+      matches_burst_query_param_(CalculateMatchesBurstQueryParam(
+          CHECK_DEREF(request_.get()).key().url())) {
   CHECK(request_);
   TRACE_EVENT_BEGIN("loading", "PrefetchContainer::LoadState::kNotStarted",
                     request().preload_pipeline_info().GetTrack());
@@ -633,6 +658,12 @@ PrefetchContainer::~PrefetchContainer() {
   RecordPrefetchDurationHistogram();
   RecordPrefetchMatchMissedToPrefetchStartedHistogram();
   RecordPrefetchContainerServedCountHistogram();
+
+  if (matches_burst_query_param_) {
+    base::UmaHistogramBoolean(
+        "Prefetch.PrefetchContainer.IsServed.BurstQueryParam",
+        served_count_ > 0);
+  }
 
   ukm::SourceId ukm_source_id = ukm::kInvalidSourceId;
   if (auto* renderer_initiator_info = request().GetRendererInitiatorInfo()) {
@@ -1166,6 +1197,33 @@ void PrefetchContainer::UpdateResourceRequest(
   UpdateVariationsHeaderForPrefetch(*resource_request_, request());
 }
 
+bool PrefetchContainer::ShouldRemoveEmbedderAdditionalHeaders(
+    const GURL& next_url) {
+  if (!base::FeatureList::IsEnabled(
+          features::kPrefetchRedirectRemoveEmbedderAdditionalHeaders)) {
+    return false;
+  }
+
+  // Redirect chains: To mirror `NavigationRequest::OnRedirectChecksComplete()`,
+  // the current redirect target is compared against the immediately preceding
+  // URL, and the headers are removed at most once. For example, in an
+  // A -> B -> A redirect chain, the headers are added to `removed_headers`
+  // during the A -> B hop, permanently stripping them from the resource
+  // request. `NavigationRequest::OnRedirectChecksComplete()` then clears
+  // `initial_extra_headers_` and resets
+  // `remove_extra_headers_on_cross_origin_redirect_`, so it is a no-op during
+  // the B -> A hop. `is_embedder_additional_headers_removed_` mirrors that.
+  if (is_embedder_additional_headers_removed_) {
+    return false;
+  }
+  if (url::Origin::Create(next_url).IsSameOriginWith(GetPreviousURL())) {
+    return false;
+  }
+  is_embedder_additional_headers_removed_ = true;
+
+  return true;
+}
+
 void PrefetchContainer::AddRedirectHop(const GURL& url) {
   redirect_chain_.push_back(std::make_unique<PrefetchSingleRedirectHop>(
       *this, url, request().preload_pipeline_info().GetFlow()));
@@ -1605,8 +1663,11 @@ void PrefetchContainer::SimulatePrefetchRedirectedForTest(  // IN-TEST
 
   OnEligibilityCheckComplete(eligibility);
 
-  auto headers_update_params =
-      PrepareRedirectHeadersForPrefetch(redirect_info.new_url, request());
+  bool should_remove_embedder_additional_headers =
+      ShouldRemoveEmbedderAdditionalHeaders(redirect_info.new_url);
+  auto headers_update_params = PrepareRedirectHeadersForPrefetch(
+      redirect_info.new_url, request(),
+      should_remove_embedder_additional_headers);
   UpdateResourceRequest(redirect_info, std::move(headers_update_params));
 }
 
@@ -1803,12 +1864,41 @@ bool PrefetchContainer::ShouldWaitForNoVarySearchHeader(const GURL& url) const {
 
     case LoadState::kNotStarted:
     case LoadState::kEligible:
-    case LoadState::kStarted:
-      if (const std::optional<net::HttpNoVarySearchData>& no_vary_search_hint =
-              request().no_vary_search_hint()) {
+    case LoadState::kStarted: {
+      const std::optional<net::HttpNoVarySearchData>& no_vary_search_hint =
+          request().no_vary_search_hint();
+
+      // For a prefetch ahead of an imminent navigation, waiting for the
+      // No-Vary-Search header is preferable to falling back to the network,
+      // even if no hint is available. Note that the caller has already
+      // narrowed down candidates to the ones whose URLs are equivalent modulo
+      // query and ref, so this doesn't make it wait for unrelated prefetches.
+      if (request().is_ahead_of_imminent_navigation() &&
+          base::FeatureList::IsEnabled(
+              features::kPrefetchAheadOfImminentNavigation)) {
+        using Policy =
+            features::PrefetchAheadOfImminentNavigationForceWaitNVSHeaderPolicy;
+        switch (
+            features::kPrefetchAheadOfImminentNavigationForceWaitNVSHeaderPolicy
+                .Get()) {
+          case Policy::kNotUse:
+            break;
+          case Policy::kUseIfNoHint:
+            if (!no_vary_search_hint) {
+              return true;
+            }
+            break;
+          case Policy::kAlwaysUse:
+            return true;
+        }
+      }
+
+      if (no_vary_search_hint) {
         return no_vary_search_hint->AreEquivalent(url, GetURL());
       }
+
       return false;
+    }
 
     case LoadState::kFailedDeterminedHead:
     case LoadState::kFailed:

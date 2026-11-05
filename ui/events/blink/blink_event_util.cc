@@ -12,6 +12,7 @@
 #include <memory>
 #include <utility>
 
+#include "base/feature_list.h"
 #include "base/numerics/angle_conversions.h"
 #include "base/time/time.h"
 #include "base/trace_event/typed_macros.h"
@@ -19,7 +20,9 @@
 #include "third_party/blink/public/common/input/web_input_event.h"
 #include "third_party/blink/public/common/input/web_mouse_wheel_event.h"
 #include "third_party/blink/public/common/input/web_pointer_event.h"
+#include "ui/base/ui_base_features.h"
 #include "ui/events/base_event_utils.h"
+#include "ui/events/blink/blink_features.h"
 #include "ui/events/event_constants.h"
 #include "ui/events/gesture_detection/gesture_event_data.h"
 #include "ui/events/gesture_event_details.h"
@@ -270,36 +273,55 @@ blink::WebTouchEvent CreateWebTouchEventFromMotionEvent(
 int EventFlagsToWebEventModifiers(int flags) {
   int modifiers = 0;
 
-  if (flags & EF_SHIFT_DOWN)
+  if (flags & EF_SHIFT_DOWN) {
     modifiers |= blink::WebInputEvent::kShiftKey;
-  if (flags & EF_CONTROL_DOWN)
+  }
+  if (flags & EF_CONTROL_DOWN) {
     modifiers |= blink::WebInputEvent::kControlKey;
-  if (flags & EF_ALT_DOWN)
+  }
+  if (flags & EF_ALT_DOWN) {
     modifiers |= blink::WebInputEvent::kAltKey;
-  if (flags & EF_COMMAND_DOWN)
+  }
+  if (flags & EF_COMMAND_DOWN) {
     modifiers |= blink::WebInputEvent::kMetaKey;
-  if (flags & EF_ALTGR_DOWN)
+  }
+  if (flags & EF_ALTGR_DOWN) {
     modifiers |= blink::WebInputEvent::kAltGrKey;
-  if (flags & EF_NUM_LOCK_ON)
+  }
+  if (flags & EF_NUM_LOCK_ON) {
     modifiers |= blink::WebInputEvent::kNumLockOn;
-  if (flags & EF_CAPS_LOCK_ON)
+  }
+  if (flags & EF_CAPS_LOCK_ON) {
     modifiers |= blink::WebInputEvent::kCapsLockOn;
-  if (flags & EF_SCROLL_LOCK_ON)
+  }
+  if (flags & EF_SCROLL_LOCK_ON) {
     modifiers |= blink::WebInputEvent::kScrollLockOn;
-  if (flags & EF_LEFT_MOUSE_BUTTON)
+  }
+  if (flags & EF_LEFT_MOUSE_BUTTON) {
     modifiers |= blink::WebInputEvent::kLeftButtonDown;
-  if (flags & EF_MIDDLE_MOUSE_BUTTON)
+  }
+  if (flags & EF_MIDDLE_MOUSE_BUTTON) {
     modifiers |= blink::WebInputEvent::kMiddleButtonDown;
-  if (flags & EF_RIGHT_MOUSE_BUTTON)
+  }
+  if (flags & EF_RIGHT_MOUSE_BUTTON) {
     modifiers |= blink::WebInputEvent::kRightButtonDown;
-  if (flags & EF_BACK_MOUSE_BUTTON)
+  }
+  if (flags & EF_BACK_MOUSE_BUTTON) {
     modifiers |= blink::WebInputEvent::kBackButtonDown;
-  if (flags & EF_FORWARD_MOUSE_BUTTON)
+  }
+  if (flags & EF_FORWARD_MOUSE_BUTTON) {
     modifiers |= blink::WebInputEvent::kForwardButtonDown;
-  if (flags & EF_IS_REPEAT)
+  }
+  if (flags & EF_IS_REPEAT) {
     modifiers |= blink::WebInputEvent::kIsAutoRepeat;
-  if (flags & EF_TOUCH_ACCESSIBILITY)
+  }
+  if ((flags & EF_FROM_DEBUGGER) &&
+      base::FeatureList::IsEnabled(features::kPreserveDebuggerInputOrigin)) {
+    modifiers |= blink::WebInputEvent::kFromDebugger;
+  }
+  if (flags & EF_TOUCH_ACCESSIBILITY) {
     modifiers |= blink::WebInputEvent::kIsTouchAccessibility;
+  }
 
   return modifiers;
 }
@@ -337,6 +359,9 @@ WebGestureEvent CreateWebGestureEvent(const GestureEventDetails& details,
   gesture.unique_touch_event_id = unique_touch_event_id;
   gesture.GetModifiableEventLatencyMetadata() =
       details.GetEventLatencyMetadata();
+
+  const bool apply_railing_in_renderer =
+      base::FeatureList::IsEnabled(features::kApplyScrollRailingInRenderer);
 
   switch (details.type()) {
     case EventType::kGestureShowPress:
@@ -405,10 +430,12 @@ WebGestureEvent CreateWebGestureEvent(const GestureEventDetails& details,
     case EventType::kGestureScrollBegin:
       gesture.SetType(WebInputEvent::Type::kGestureScrollBegin);
       gesture.data.scroll_begin.pointer_count = details.touch_points();
-      gesture.data.scroll_begin.delta_x_hint =
-          IfNanUseMaxFloat(details.scroll_x_hint());
-      gesture.data.scroll_begin.delta_y_hint =
-          IfNanUseMaxFloat(details.scroll_y_hint());
+      gesture.data.scroll_begin.delta_x_hint = IfNanUseMaxFloat(
+          apply_railing_in_renderer ? details.scroll_x_hint_unconstrained()
+                                    : details.scroll_x_hint());
+      gesture.data.scroll_begin.delta_y_hint = IfNanUseMaxFloat(
+          apply_railing_in_renderer ? details.scroll_y_hint_unconstrained()
+                                    : details.scroll_y_hint());
       gesture.data.scroll_begin.delta_hint_units = details.scroll_begin_units();
       gesture.data.scroll_begin.inertial_phase =
           WebGestureEvent::InertialPhaseState::kNonMomentum;
@@ -416,8 +443,12 @@ WebGestureEvent CreateWebGestureEvent(const GestureEventDetails& details,
       break;
     case EventType::kGestureScrollUpdate:
       gesture.SetType(WebInputEvent::Type::kGestureScrollUpdate);
-      gesture.data.scroll_update.delta_x = IfNanUseMaxFloat(details.scroll_x());
-      gesture.data.scroll_update.delta_y = IfNanUseMaxFloat(details.scroll_y());
+      gesture.data.scroll_update.delta_x = IfNanUseMaxFloat(
+          apply_railing_in_renderer ? details.scroll_x_unconstrained()
+                                    : details.scroll_x());
+      gesture.data.scroll_update.delta_y = IfNanUseMaxFloat(
+          apply_railing_in_renderer ? details.scroll_y_unconstrained()
+                                    : details.scroll_y());
       gesture.data.scroll_update.delta_x_unconstrained =
           IfNanUseMaxFloat(details.scroll_x_unconstrained());
       gesture.data.scroll_update.delta_y_unconstrained =
@@ -440,10 +471,12 @@ WebGestureEvent CreateWebGestureEvent(const GestureEventDetails& details,
       break;
     case EventType::kScrollFlingStart:
       gesture.SetType(WebInputEvent::Type::kGestureFlingStart);
-      gesture.data.fling_start.velocity_x =
-          IfNanUseMaxFloat(details.velocity_x());
-      gesture.data.fling_start.velocity_y =
-          IfNanUseMaxFloat(details.velocity_y());
+      gesture.data.fling_start.velocity_x = IfNanUseMaxFloat(
+          apply_railing_in_renderer ? details.velocity_x_unconstrained()
+                                    : details.velocity_x());
+      gesture.data.fling_start.velocity_y = IfNanUseMaxFloat(
+          apply_railing_in_renderer ? details.velocity_y_unconstrained()
+                                    : details.velocity_y());
       gesture.data.fling_start.rails_mode = details.fling_rails_mode();
       break;
     case EventType::kScrollFlingCancel:
@@ -716,34 +749,52 @@ void SetWebPointerPropertiesFromMotionEventData(
 int WebEventModifiersToEventFlags(int modifiers) {
   int flags = 0;
 
-  if (modifiers & blink::WebInputEvent::kShiftKey)
+  if (modifiers & blink::WebInputEvent::kShiftKey) {
     flags |= EF_SHIFT_DOWN;
-  if (modifiers & blink::WebInputEvent::kControlKey)
+  }
+  if (modifiers & blink::WebInputEvent::kControlKey) {
     flags |= EF_CONTROL_DOWN;
-  if (modifiers & blink::WebInputEvent::kAltKey)
+  }
+  if (modifiers & blink::WebInputEvent::kAltKey) {
     flags |= EF_ALT_DOWN;
-  if (modifiers & blink::WebInputEvent::kAltGrKey)
+  }
+  if (modifiers & blink::WebInputEvent::kAltGrKey) {
     flags |= EF_ALTGR_DOWN;
-  if (modifiers & blink::WebInputEvent::kMetaKey)
+  }
+  if (modifiers & blink::WebInputEvent::kMetaKey) {
     flags |= EF_COMMAND_DOWN;
-  if (modifiers & blink::WebInputEvent::kCapsLockOn)
+  }
+  if (modifiers & blink::WebInputEvent::kCapsLockOn) {
     flags |= EF_CAPS_LOCK_ON;
-  if (modifiers & blink::WebInputEvent::kNumLockOn)
+  }
+  if (modifiers & blink::WebInputEvent::kNumLockOn) {
     flags |= EF_NUM_LOCK_ON;
-  if (modifiers & blink::WebInputEvent::kScrollLockOn)
+  }
+  if (modifiers & blink::WebInputEvent::kScrollLockOn) {
     flags |= EF_SCROLL_LOCK_ON;
-  if (modifiers & blink::WebInputEvent::kLeftButtonDown)
+  }
+  if (modifiers & blink::WebInputEvent::kLeftButtonDown) {
     flags |= EF_LEFT_MOUSE_BUTTON;
-  if (modifiers & blink::WebInputEvent::kMiddleButtonDown)
+  }
+  if (modifiers & blink::WebInputEvent::kMiddleButtonDown) {
     flags |= EF_MIDDLE_MOUSE_BUTTON;
-  if (modifiers & blink::WebInputEvent::kRightButtonDown)
+  }
+  if (modifiers & blink::WebInputEvent::kRightButtonDown) {
     flags |= EF_RIGHT_MOUSE_BUTTON;
-  if (modifiers & blink::WebInputEvent::kBackButtonDown)
+  }
+  if (modifiers & blink::WebInputEvent::kBackButtonDown) {
     flags |= EF_BACK_MOUSE_BUTTON;
-  if (modifiers & blink::WebInputEvent::kForwardButtonDown)
+  }
+  if (modifiers & blink::WebInputEvent::kForwardButtonDown) {
     flags |= EF_FORWARD_MOUSE_BUTTON;
-  if (modifiers & blink::WebInputEvent::kIsAutoRepeat)
+  }
+  if (modifiers & blink::WebInputEvent::kIsAutoRepeat) {
     flags |= EF_IS_REPEAT;
+  }
+  if ((modifiers & blink::WebInputEvent::kFromDebugger) &&
+      base::FeatureList::IsEnabled(features::kPreserveDebuggerInputOrigin)) {
+    flags |= EF_FROM_DEBUGGER;
+  }
 
   return flags;
 }

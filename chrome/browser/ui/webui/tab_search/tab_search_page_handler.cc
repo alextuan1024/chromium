@@ -77,7 +77,7 @@
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/l10n/time_format.h"
 #include "ui/base/models/image_model.h"
-#include "ui/base/window_open_disposition.h"
+#include "ui/base/mojom/window_open_disposition.mojom-shared.h"
 #include "ui/color/color_provider.h"
 #include "ui/gfx/image/image_skia.h"
 
@@ -228,8 +228,6 @@ void TabSearchPageHandler::CloseTab(int32_t tab_id) {
 
   ++num_tabs_closed_;
 
-  profile_->GetPrefs()->SetBoolean(tab_search_prefs::kTabSearchUsed, true);
-
   // CloseTab() can target the WebContents hosting Tab Search if the Tab Search
   // WebUI is open in a chrome browser tab rather than its bubble. In this case
   // CloseWebContentsAt() closes the WebContents hosting this
@@ -241,7 +239,7 @@ void TabSearchPageHandler::CloseTab(int32_t tab_id) {
   CHECK(service);
   auto node_id = tabs_api::NodeId::FromTabHandle(tab->GetHandle());
   const auto result = service->CloseNodes({node_id});
-  DCHECK(result.has_value());
+  CHECK(result.has_value(), base::NotFatalUntil::M162);
   // Do not add code past this point.
 }
 
@@ -276,7 +274,6 @@ void TabSearchPageHandler::CloseTabs(const std::vector<int32_t>& tab_ids) {
   }
 
   num_tabs_closed_ += nodes.size();
-  profile_->GetPrefs()->SetBoolean(tab_search_prefs::kTabSearchUsed, true);
 
   if (split_id.has_value()) {
     BrowserWindowInterface* browser = valid_tab->GetBrowserWindowInterface();
@@ -291,7 +288,7 @@ void TabSearchPageHandler::CloseTabs(const std::vector<int32_t>& tab_ids) {
       GetTabStripService(valid_tab->GetBrowserWindowInterface());
   CHECK(service);
   const auto result = service->CloseNodes(nodes);
-  DCHECK(result.has_value());
+  CHECK(result.has_value(), base::NotFatalUntil::M162);
 }
 
 void TabSearchPageHandler::CloseWebUiTab() {
@@ -370,13 +367,11 @@ void TabSearchPageHandler::SwitchToTab(
                 ? TabSearchCloseAction::kSwitchTabAndCloseTab
                 : TabSearchCloseAction::kSwitchTab;
 
-  profile_->GetPrefs()->SetBoolean(tab_search_prefs::kTabSearchUsed, true);
-
   tabs_api::TabStripService* const service =
       GetTabStripService(tab->GetBrowserWindowInterface());
   const auto result =
       service->ActivateTab(tabs_api::NodeId::FromTabHandle(tab->GetHandle()));
-  DCHECK(result.has_value());
+  CHECK(result.has_value(), base::NotFatalUntil::M162);
 
   // Tab search shows tabs from other windows in the profile. So if a user
   // selects a tab in another window, we need to manually activate it so
@@ -404,13 +399,11 @@ void TabSearchPageHandler::OpenRecentlyClosedEntry(int32_t session_id) {
                 ? TabSearchCloseAction::kOpenRecentTabAndCloseTab
                 : TabSearchCloseAction::kOpenRecentTab;
 
-  profile_->GetPrefs()->SetBoolean(tab_search_prefs::kTabSearchUsed, true);
-
   tab_restore_service->RestoreEntryById(
       BrowserLiveTabContext::FindContextForWebContents(
           browser_->GetActiveTabInterface()->GetContents()),
       SessionID::FromSerializedValue(session_id),
-      WindowOpenDisposition::NEW_FOREGROUND_TAB);
+      ui::mojom::WindowOpenDisposition::kNewForegroundTab);
 }
 
 void TabSearchPageHandler::ReplaceActiveSplitTab(int32_t replacement_tab_id) {
@@ -419,7 +412,7 @@ void TabSearchPageHandler::ReplaceActiveSplitTab(int32_t replacement_tab_id) {
     const auto result = GetTabStripService(browser_)->ReplaceTabInSplit(
         tabs_api::NodeId::FromTabHandle(active_tab->GetHandle()),
         tabs_api::NodeId::FromTabHandle(tabs::TabHandle(replacement_tab_id)));
-    DCHECK(result.has_value());
+    CHECK(result.has_value(), base::NotFatalUntil::M162);
   }
 }
 
@@ -532,20 +525,22 @@ void TabSearchPageHandler::WalkContainer(
     }
   } else if (container->data->is_tab_group()) {
     const auto& group_data = container->data->get_tab_group();
-    auto tab_group = tab_search::mojom::TabGroup::New();
-    tab_group->title = base::UTF16ToUTF8(group_data->data.title());
-    tab_group->color = group_data->data.color();
+    if (!group_data->is_ephemeral) {
+      auto tab_group = tab_search::mojom::TabGroup::New();
+      tab_group->title = base::UTF16ToUTF8(group_data->data.title());
+      tab_group->color = group_data->data.color();
 
-    std::optional<tabs::TabCollectionHandle> collection_handle =
-        group_data->id.ToTabCollectionHandle();
-    if (collection_handle.has_value()) {
-      const tab_groups::TabGroupId& group_id =
-          static_cast<tabs::TabGroupTabCollection*>(
-              collection_handle.value().Get())
-              ->GetTabGroupId();
-      tab_group->id = group_id.token();
-      tab_group_ids.insert(group_id);
-      profile_data->tab_groups.push_back(std::move(tab_group));
+      std::optional<tabs::TabCollectionHandle> collection_handle =
+          group_data->id.ToTabCollectionHandle();
+      if (collection_handle.has_value()) {
+        const tab_groups::TabGroupId& group_id =
+            static_cast<tabs::TabGroupTabCollection*>(
+                collection_handle.value().Get())
+                ->GetTabGroupId();
+        tab_group->id = group_id.token();
+        tab_group_ids.insert(group_id);
+        profile_data->tab_groups.push_back(std::move(tab_group));
+      }
     }
   }
 
@@ -679,8 +674,11 @@ void TabSearchPageHandler::AddRecentlyClosedEntries(
             int nav_index = tab->normalized_navigation_index();
             if (nav_index >= 0 &&
                 nav_index < static_cast<int>(tab->navigations.size())) {
-              recently_closed_split_view->tab_urls.push_back(
-                  tab->navigations[nav_index].virtual_url());
+              const GURL& url = tab->navigations[nav_index].virtual_url();
+              recently_closed_split_view->tab_urls.push_back(url);
+              const std::u16string& title = tab->navigations[nav_index].title();
+              recently_closed_split_view->tab_titles.push_back(
+                  title.empty() ? url.spec() : base::UTF16ToUTF8(title));
             }
           }
 
@@ -748,8 +746,13 @@ tab_search::mojom::TabPtr TabSearchPageHandler::GetTab(
   tab_mojom_data->active = tab->IsActivated();
   tab_mojom_data->visible = tab->IsVisible();
   tab_mojom_data->tab_id = tab->GetHandle().raw_value();
+  BrowserWindowInterface* browser = tab->GetBrowserWindowInterface();
+  TabStripModel* tab_strip_model =
+      browser ? browser->GetTabStripModel() : nullptr;
   const std::optional<tab_groups::TabGroupId> group_id = tab->GetGroup();
-  if (group_id.has_value()) {
+  if (group_id.has_value() &&
+      (!tab_strip_model ||
+       !tab_strip_model->IsEphemeralTabGroup(group_id.value()))) {
     tab_mojom_data->group_id = group_id.value().token();
   }
   tab_mojom_data->pinned = tab->IsPinned();
@@ -757,9 +760,6 @@ tab_search::mojom::TabPtr TabSearchPageHandler::GetTab(
   const std::optional<split_tabs::SplitTabId> split_id = tab->GetSplit();
   if (split_id.has_value()) {
     tab_mojom_data->split_id = split_id.value().token();
-    BrowserWindowInterface* browser = tab->GetBrowserWindowInterface();
-    TabStripModel* tab_strip_model =
-        browser ? browser->GetTabStripModel() : nullptr;
     if (tab_strip_model) {
       auto* split_data = tab_strip_model->GetSplitData(split_id.value());
       if (split_data && split_data->visual_data()) {
@@ -792,10 +792,14 @@ tab_search::mojom::TabPtr TabSearchPageHandler::GetTab(
     // because chrome://favicon2 is not available. In regular profiles, we used
     // to do the same but kTabSearchPerformanceImprovements makes it so we
     // instead don't pass a favicon and let the tab search webui use
-    // chrome://favicon2 lazily.
+    // chrome://favicon2 lazily. Favicons that require theming (such as the New
+    // Tab Page and internal chrome:// pages) or tabs whose URL is hidden (such
+    // as uncommitted NTPs) must still be rasterized and themed here because
+    // chrome://favicon2 serves raw unthemed resource bytes.
     if (!base::FeatureList::IsEnabled(
             tabs::kTabSearchPerformanceImprovements) ||
-        profile_->IsOffTheRecord()) {
+        profile_->IsOffTheRecord() || tab_ui_helper->ShouldThemifyFavicon() ||
+        !tab_ui_helper->ShouldDisplayURL()) {
       const ui::ColorProvider& provider =
           web_ui_->GetWebContents()->GetColorProvider();
       const gfx::ImageSkia default_favicon =
@@ -852,7 +856,7 @@ tab_search::mojom::RecentlyClosedTabPtr
 TabSearchPageHandler::GetRecentlyClosedTab(sessions::tab_restore::Tab* tab,
                                            const base::Time& close_time) {
   auto recently_closed_tab = tab_search::mojom::RecentlyClosedTab::New();
-  DCHECK(tab->navigations.size() > 0);
+  CHECK(tab->navigations.size() > 0, base::NotFatalUntil::M162);
   sessions::SerializedNavigationEntry& entry =
       tab->navigations[tab->current_navigation_index];
   // N.B. Recently closed tabs use session ids, not TabHandle ids.

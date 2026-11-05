@@ -2420,6 +2420,8 @@ message WebViewStartup {
     WEBVIEW_INSTANCE_ADD_JAVASCRIPT_ON_EVENT = 146;
     WEBVIEW_INSTANCE_GET_JAVASCRIPT_WORLD = 147;
     WEBVIEW_INSTANCE_GET_PROFILE = 148;
+    PROFILE_CONFIGURE_ISOLATED_SITES = 149;
+    PROFILE_CAN_CONFIGURE_ISOLATED_SITES = 150;
     // Remember to update WebViewStartupCallSite in enums.xml when adding new
     // values here.
   }
@@ -3050,6 +3052,7 @@ message FrameIntervalDecider {
     MATCHER_TYPE_ONLY_SCROLL_BAR_FADE_OUT = 6;
     MATCHER_TYPE_USER_INPUT_BOOST = 7;
     MATCHER_TYPE_SLOW_SCROLL_THROTTLE = 8;
+    MATCHER_TYPE_MIXED_FIXED_INTERVAL = 9;
   }
   // LINT.ThenChange(//components/viz/service/display/frame_interval_matchers.h:FrameIntervalMatcherType)
 

@@ -182,7 +182,10 @@ void PasswordInputType::UpdatePasswordRevealButton() {
     button->SetInlineStyleProperty(CSSPropertyID::kDisplay, CSSValueID::kNone);
     // Always obscure password when the reveal button is hidden.
     // (ex. out of focus)
-    GetElement().SetShouldRevealPassword(false);
+    // Keep this automatic reset silent because it is not an explicit user
+    // request to hide the password.
+    GetElement().SetShouldRevealPassword(
+        false, PasswordVisibilityAnnouncement::kSilent);
   }
 }
 
@@ -215,7 +218,7 @@ String PasswordInputType::FilterBeforeTextInserted(const String& text) {
   if (RuntimeEnabledFeatures::PasswordRevealEnabled()) {
     // This is the only scenario we go from no reveal button to showing the
     // reveal button: the password is empty and we have some user input.
-    if (GetElement().Value().empty()) {
+    if (GetElement().Value().empty() && !text.empty()) {
       should_show_reveal_button_ = true;
     }
   }
@@ -229,7 +232,8 @@ void PasswordInputType::HandleKeydownEvent(KeyboardEvent& event) {
       // Alt-F8 to reveal/obscure password
       if (event.altKey() && event.key() == "F8") {
         GetElement().SetShouldRevealPassword(
-            !GetElement().ShouldRevealPassword());
+            !GetElement().ShouldRevealPassword(),
+            PasswordVisibilityAnnouncement::kAnnounce);
         UpdatePasswordRevealButton();
         event.SetDefaultHandled();
       }

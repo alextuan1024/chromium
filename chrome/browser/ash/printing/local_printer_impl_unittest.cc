@@ -5,6 +5,7 @@
 #include "chrome/browser/ash/printing/local_printer_impl.h"
 
 #include "ash/constants/ash_features.h"
+#include "base/memory/scoped_refptr.h"
 #include "base/test/bind.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/test/test_future.h"
@@ -35,6 +36,8 @@
 #include "printing/backend/print_backend.h"
 #include "printing/backend/test_print_backend.h"
 #include "printing/mojom/print.mojom.h"
+#include "services/network/public/cpp/weak_wrapper_shared_url_loader_factory.h"
+#include "services/network/test/test_url_loader_factory.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 #if BUILDFLAG(ENABLE_OOP_PRINTING)
@@ -61,6 +64,7 @@ constexpr auto kAccountId =
 class FakePpdProvider : public chromeos::PpdProvider {
  public:
   FakePpdProvider() = default;
+  ~FakePpdProvider() override = default;
 
   void ResolvePpdLicense(std::string_view effective_make_and_model,
                          ResolvePpdLicenseCallback cb) override {
@@ -82,22 +86,21 @@ class FakePpdProvider : public chromeos::PpdProvider {
                        ResolvePrintersCallback cb) override {}
   void ReverseLookup(const std::string& effective_make_and_model,
                      ReverseLookupCallback cb) override {}
-
- private:
-  ~FakePpdProvider() override = default;
 };
 
 class TestLocalPrinterImpl : public LocalPrinterImpl {
  public:
   TestLocalPrinterImpl()
-      : LocalPrinterImpl(TestingBrowserProcess::GetGlobal()
-                             ->GetFeatures()
-                             ->application_locale_storage()) {}
+      : LocalPrinterImpl(
+            TestingBrowserProcess::GetGlobal()
+                ->GetFeatures()
+                ->application_locale_storage(),
+            TestingBrowserProcess::GetGlobal()->shared_url_loader_factory()) {}
   ~TestLocalPrinterImpl() override = default;
 
-  scoped_refptr<chromeos::PpdProvider> CreatePpdProvider(
+  std::unique_ptr<chromeos::PpdProvider> CreatePpdProvider(
       Profile* profile) override {
-    return base::MakeRefCounted<FakePpdProvider>();
+    return std::make_unique<FakePpdProvider>();
   }
 };
 
@@ -155,6 +158,8 @@ class LocalPrinterImplTestBase : public testing::Test {
   ~LocalPrinterImplTestBase() override = default;
 
   void SetUp() override {
+    TestingBrowserProcess::GetGlobal()->SetSharedURLLoaderFactory(
+        test_url_loader_factory_.GetSafeWeakWrapper());
     user_session_test_environment_ =
         std::make_unique<ash::test::UserSessionTestEnvironment>(
             TestingBrowserProcess::GetGlobal()->GetTestingLocalState());
@@ -264,6 +269,7 @@ class LocalPrinterImplTestBase : public testing::Test {
     profile_manager_.reset();
     profile_user_manager_controller_.reset();
     user_session_test_environment_.reset();
+    TestingBrowserProcess::GetGlobal()->SetSharedURLLoaderFactory(nullptr);
   }
 
  protected:
@@ -338,6 +344,7 @@ class LocalPrinterImplTestBase : public testing::Test {
   const bool enable_oauth_;
   base::test::ScopedFeatureList feature_list_;
   content::BrowserTaskEnvironment task_environment_;
+  network::TestURLLoaderFactory test_url_loader_factory_;
   std::unique_ptr<ash::test::UserSessionTestEnvironment>
       user_session_test_environment_;
   std::unique_ptr<ash::ProfileUserManagerController>

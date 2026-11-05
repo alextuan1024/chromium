@@ -133,6 +133,18 @@ bool HasWritePermission(const base::FilePath& path) {
 // already exists. Must be called on a sequence which allows blocking.
 base::File::Error CreateCowSwapFile(const storage::FileSystemURL& source_url,
                                     const storage::FileSystemURL& swap_url) {
+  // `clonefile()` operates directly on raw paths and follows symlinks when
+  // `flags` is 0, whereas `LocalFileUtil` hides symlinks by mapping them to
+  // `FILE_ERROR_NOT_FOUND`. Reject symlinks on `source_url` as not found, and
+  // treat a symlink (including a dangling symlink) at `swap_url` as an
+  // existing file so swap creation advances to the next candidate swap name
+  // instead of creating the clone at the symlink's target.
+  if (base::IsLink(source_url.path())) {
+    return base::File::Error::FILE_ERROR_NOT_FOUND;
+  }
+  if (base::IsLink(swap_url.path())) {
+    return base::File::Error::FILE_ERROR_EXISTS;
+  }
   return clonefile(source_url.path().value().c_str(),
                    swap_url.path().value().c_str(),
                    /*flags=*/0) == 0
@@ -182,6 +194,28 @@ void FileSystemAccessFileHandleImpl::AsBlob(AsBlobCallback callback) {
                             nullptr);
     return;
   }
+
+  if (base::FeatureList::IsEnabled(
+          features::kFileSystemAccessDirectoryIterationBlocklistCheck)) {
+    RunWithSensitiveEntryAccess(
+        url(), display_name(), HandleType::kFile,
+        AccessTrigger::kProgrammaticRead,
+        base::BindOnce(&FileSystemAccessFileHandleImpl::DoAsBlob,
+                       weak_factory_.GetWeakPtr()),
+        base::BindOnce([](AsBlobCallback callback) {
+          std::move(callback).Run(file_system_access_error::FromStatus(
+                                      FileSystemAccessStatus::kSecurityError),
+                                  base::File::Info(), nullptr);
+        }),
+        std::move(callback));
+    return;
+  }
+
+  DoAsBlob(std::move(callback));
+}
+
+void FileSystemAccessFileHandleImpl::DoAsBlob(AsBlobCallback callback) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
   // TODO(mek): Check backend::SupportsStreaming and create snapshot file if
   // streaming is not supported.
@@ -481,6 +515,11 @@ void FileSystemAccessFileHandleImpl::IsSameEntryImpl(
     return;
   }
 
+  if (other->cross_origin_storage_data().has_value()) {
+    std::move(callback).Run(file_system_access_error::Ok(), false);
+    return;
+  }
+
   // The two handles are the same if they serialize to the same value.
   auto serialization = manager()->SerializeURL(
       url(), FileSystemAccessPermissionContext::HandleType::kFile);
@@ -509,19 +548,44 @@ void FileSystemAccessFileHandleImpl::DidGetMetaDataForBlob(
     return;
   }
 
-  std::string uuid = base::Uuid::GenerateRandomV4().AsLowercaseString();
-  std::string content_type;
-
-  // TODO(crbug.com/41458368): Using GetMimeTypeFromExtension and including
-  // platform defined mime type mappings might be nice/make sense, however that
-  // method can potentially block and thus can't be called from the IO thread.
-  std::string mime_type;
-  if (net::GetWellKnownMimeTypeFromFile(
-          base::FilePath::FromUTF8Unsafe(display_name_), &mime_type)) {
-    content_type = std::move(mime_type);
+  base::FilePath display_name = base::FilePath::FromUTF8Unsafe(display_name_);
+  if (url().type() == storage::kFileSystemTypeTemporary) {
+    // Skip platform MIME type lookup for OPFS. OPFS names are chosen by the
+    // site, and platform MIME associations could expose which applications
+    // the user has installed.
+    std::string content_type;
+    std::string mime_type;
+    if (net::GetWellKnownMimeTypeFromFile(display_name, &mime_type)) {
+      content_type = std::move(mime_type);
+    }
+    DidResolveMimeTypeForBlob(std::move(callback), info,
+                              std::move(content_type));
+    return;
   }
-  // TODO(crbug.com/41458368): Consider some kind of fallback type when
-  // the above mime type detection fails.
+
+  // Platform MIME lookup can block while consulting the OS MIME database.
+  base::ThreadPool::PostTaskAndReplyWithResult(
+      FROM_HERE, {base::MayBlock(), base::TaskPriority::USER_VISIBLE},
+      base::BindOnce(
+          [](const base::FilePath& name) {
+            std::string content_type;
+            if (!net::GetMimeTypeFromFile(name, &content_type)) {
+              return std::string();
+            }
+            return content_type;
+          },
+          std::move(display_name)),
+      base::BindOnce(&FileSystemAccessFileHandleImpl::DidResolveMimeTypeForBlob,
+                     weak_factory_.GetWeakPtr(), std::move(callback), info));
+}
+
+void FileSystemAccessFileHandleImpl::DidResolveMimeTypeForBlob(
+    AsBlobCallback callback,
+    const base::File::Info& info,
+    std::string content_type) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+
+  std::string uuid = base::Uuid::GenerateRandomV4().AsLowercaseString();
 
   mojo::PendingRemote<blink::mojom::Blob> blob_remote;
   mojo::PendingReceiver<blink::mojom::Blob> blob_receiver =
@@ -551,6 +615,34 @@ void FileSystemAccessFileHandleImpl::CreateFileWriterImpl(
   CHECK_EQ(keep_existing_data ? GetReadWritePermissionStatus()
                               : GetEffectiveWritePermissionStatus(),
            blink::mojom::PermissionStatus::GRANTED, base::NotFatalUntil::M159);
+
+  if (base::FeatureList::IsEnabled(
+          features::kFileSystemAccessWriteBlocklistCheck)) {
+    RunWithSensitiveEntryAccess(
+        url(), display_name(), HandleType::kFile,
+        AccessTrigger::kProgrammaticWrite,
+        base::BindOnce(
+            &FileSystemAccessFileHandleImpl::DidVerifySensitiveEntryAccess,
+            weak_factory_.GetWeakPtr(), keep_existing_data, auto_close, mode),
+        base::BindOnce([](CreateFileWriterCallback callback) {
+          std::move(callback).Run(file_system_access_error::FromStatus(
+                                      FileSystemAccessStatus::kSecurityError),
+                                  mojo::NullRemote());
+        }),
+        std::move(callback));
+    return;
+  }
+
+  DidVerifySensitiveEntryAccess(keep_existing_data, auto_close, mode,
+                                std::move(callback));
+}
+
+void FileSystemAccessFileHandleImpl::DidVerifySensitiveEntryAccess(
+    bool keep_existing_data,
+    bool auto_close,
+    blink::mojom::FileSystemAccessWritableFileStreamLockMode mode,
+    CreateFileWriterCallback callback) {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
   // TODO(crbug.com/40194651): Expand this check to all backends.
   if (url().type() == storage::kFileSystemTypeLocal) {

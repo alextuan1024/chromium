@@ -5,12 +5,15 @@
 #ifndef CHROME_BROWSER_UI_TABS_ORGANIZER_ORGANIZER_PANEL_CONTROLLER_H_
 #define CHROME_BROWSER_UI_TABS_ORGANIZER_ORGANIZER_PANEL_CONTROLLER_H_
 
+#include <memory>
 #include <optional>
 
 #include "base/callback_list.h"
 #include "base/functional/callback_forward.h"
 #include "base/memory/raw_ptr.h"
-#include "base/time/time.h"
+#include "chrome/browser/ui/animation/browser_animation_types.h"
+#include "chrome/browser/ui/views/tabs/organizer/organizer_panel_host.h"
+#include "components/site_engagement/content/site_engagement_service.h"
 #include "extensions/buildflags/buildflags.h"
 #include "ui/base/unowned_user_data/scoped_unowned_user_data.h"
 
@@ -20,6 +23,11 @@
 
 class BrowserView;
 class BrowserWindowInterface;
+class OrganizerPanelView;
+
+namespace content {
+class WebContents;
+}
 
 namespace actions {
 class ActionItem;
@@ -45,7 +53,13 @@ class OrganizerPanelController {
 
   bool IsOrganizerPanelVisible() const;
 
-  void SetOrganizerVisible(bool visible);
+  // Returns whether the organizer panel is currently visible and embedded
+  // within the vertical tab strip.
+  bool IsOrganizerPanelEmbeddedInVerticalTabStrip() const;
+
+  void SetOrganizerVisible(bool visible, bool immediate = false);
+
+  OrganizerPanelLocation GetCurrentOrganizerPanelLocation() const;
 
 #if BUILDFLAG(ENABLE_EXTENSIONS)
   void OpenForExtension(const extensions::ExtensionId& extension_id);
@@ -62,6 +76,13 @@ class OrganizerPanelController {
   base::CallbackListSubscription RegisterOnStateChanged(
       StateChangedCallback callback);
 
+  // Returns the current WebContents for the organizer panel, if created.
+  content::WebContents* web_contents() const { return web_contents_.get(); }
+  site_engagement::SiteEngagementService::Helper* site_engagement_helper()
+      const {
+    return site_engagement_helper_.get();
+  }
+
   // Sets the panel view and returns the old one, if any.
   std::unique_ptr<views::View> SetPanelView(
       base::PassKey<BrowserView>,
@@ -69,17 +90,27 @@ class OrganizerPanelController {
   std::unique_ptr<views::View> SetPanelViewForTesting(
       std::unique_ptr<views::View> panel_view);
 
+  // Registers / unregisters the active panel view with the controller.
+  void RegisterPanelView(OrganizerPanelView* panel_view);
+  void UnregisterPanelView(OrganizerPanelView* panel_view);
+
  private:
-  // Notifies subscribers when the is_visible_ state of the Organizer Panel
-  // changes.
+  // Notifies subscribers when the is_visible_ or location state of the
+  // Organizer Panel changes.
   void NotifyStateChanged();
 
   // Update the Organizer Button's Action Item (kActionToggleOrganizerPanel)
   // based on the Organizer Panel's is_visible_ state.
   void UpdateOrganizerActionItem();
 
+  // Returns the motion required to get into the current target state.
+  BrowserAnimationMotion GetTargetMotion() const;
+
   // Controls whether the Organizer Panel is visible.
   bool is_visible_ = false;
+
+  content::WebContents* EnsureWebContentsCreated();
+  void UpdatePanelWebContents();
 
 #if BUILDFLAG(ENABLE_EXTENSIONS)
   std::optional<extensions::ExtensionId> active_extension_id_;
@@ -90,16 +121,17 @@ class OrganizerPanelController {
 
   class PanelViewManager;
   const std::unique_ptr<PanelViewManager> panel_view_manager_;
+  raw_ptr<OrganizerPanelView> panel_view_ = nullptr;
   base::CallbackListSubscription vertical_tab_strip_animation_subscription_;
 
-  // Records the last time the panel was opened. Used for recording how long the
-  // panel was open.
-  base::TimeTicks last_opened_time_;
-
-  // Callback list for state changes to the visibility.
+  // Callback list for state changes to visibility or location.
   base::RepeatingCallbackList<void(OrganizerPanelController*)>
       on_state_changed_callback_list_;
   ui::ScopedUnownedUserData<OrganizerPanelController> scoped_unowned_user_data_;
+
+  std::unique_ptr<content::WebContents> web_contents_;
+  std::unique_ptr<site_engagement::SiteEngagementService::Helper>
+      site_engagement_helper_;
 
   base::WeakPtrFactory<OrganizerPanelController> weak_ptr_factory_{this};
 };

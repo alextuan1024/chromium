@@ -21,13 +21,18 @@
 #include "third_party/blink/public/mojom/choosers/file_chooser.mojom-forward.h"
 #include "third_party/blink/public/mojom/mediastream/media_stream.mojom-shared.h"
 #include "third_party/blink/public/mojom/page/draggable_region.mojom-forward.h"
+#include "third_party/blink/public/mojom/window_features/window_features.mojom-forward.h"
+#include "ui/base/mojom/window_open_disposition.mojom-forward.h"
 #include "ui/base/unowned_user_data/unowned_user_data_host.h"
+
+class GURL;
 
 namespace content {
 class BrowserContext;
 struct DropData;
 class FileSelectListener;
 class NavigationHandle;
+struct OpenURLParams;
 class RenderFrameHost;
 class WebContents;
 }  // namespace content
@@ -43,6 +48,15 @@ class Origin;
 namespace pwc {
 
 class PwcApiBinder;
+
+// Optional settings for the WebContents owned by a PrivilegedWebContents.
+// Only settings that cannot weaken PWC's structural guarantees (storage
+// partition, privileged params, no opener, etc.) belong here.
+struct PwcCreateOptions {
+  // If true, the WebContents is created hidden (see
+  // content::WebContents::CreateParams::initially_hidden).
+  bool initially_hidden = false;
+};
 
 // Owns a WebContents that hosts remote content for a blessed component with
 // elevated browser capabilities.
@@ -62,13 +76,12 @@ class PrivilegedWebContents : public content::WebContentsDelegate,
   // Creates a PrivilegedWebContents for `component` in `browser_context`.
   // `policy_delegate` supplies the component's origin allowlists and is
   // implemented by the component owner (see PwcPolicyDelegate); it is
-  // consulted through the structural guardrails of PwcComponentPolicy. Must
-  // only be called when pwc::mojom::features::kPrivilegedWebContents is
-  // enabled.
+  // consulted through the structural guardrails of PwcComponentPolicy.
   static std::unique_ptr<PrivilegedWebContents> Create(
       PrivilegedComponent component,
       content::BrowserContext* browser_context,
-      std::unique_ptr<PwcPolicyDelegate> policy_delegate);
+      std::unique_ptr<PwcPolicyDelegate> policy_delegate,
+      const PwcCreateOptions& options = {});
 
   // Returns the owning PrivilegedWebContents if `web_contents` is owned by
   // one, otherwise nullptr.
@@ -133,12 +146,28 @@ class PrivilegedWebContents : public content::WebContentsDelegate,
     virtual void DraggableRegionsChanged(
         const std::vector<blink::mojom::DraggableRegionPtr>& regions,
         content::WebContents* contents);
+    // Gives the embedder the opportunity to handle an off-PWC window creation
+    // request (such as window.open() or target=_blank link navigation) before
+    // related window creation is denied. Returns true if handled.
+    virtual bool HandleWindowCreation(
+        content::RenderFrameHost* opener,
+        const GURL& target_url,
+        ui::mojom::WindowOpenDisposition disposition,
+        const blink::mojom::WindowFeatures& features);
   };
 
   void SetEmbedderDelegate(EmbedderDelegate* delegate) {
     embedder_delegate_ = delegate;
   }
   EmbedderDelegate* embedder_delegate() const { return embedder_delegate_; }
+
+  // Gives the embedder the opportunity to handle an off-PWC window creation
+  // request (such as window.open() or target=_blank link navigation) before
+  // related window creation is denied. Returns true if handled.
+  bool HandleWindowCreation(content::RenderFrameHost* opener,
+                            const GURL& target_url,
+                            ui::mojom::WindowOpenDisposition disposition,
+                            const blink::mojom::WindowFeatures& features);
 
   // Optional permission delegate for handling and overriding component-specific
   // permission requests (e.g. microphone, geolocation).
@@ -170,6 +199,11 @@ class PrivilegedWebContents : public content::WebContentsDelegate,
   content::PreloadingEligibility IsPrerender2Supported(
       content::WebContents& web_contents,
       content::PreloadingTriggerType trigger_type) override;
+  content::WebContents* OpenURLFromTab(
+      content::WebContents* source,
+      const content::OpenURLParams& params,
+      base::OnceCallback<void(content::NavigationHandle&)>
+          navigation_handle_callback) override;
   // A privileged WebContents never creates related windows
   // (ChromeContentBrowserClient::CanCreateWindow denies them), so this must be
   // unreachable.
@@ -177,7 +211,7 @@ class PrivilegedWebContents : public content::WebContentsDelegate,
       content::WebContents* source,
       std::unique_ptr<content::WebContents> new_contents,
       const GURL& target_url,
-      WindowOpenDisposition disposition,
+      ui::mojom::WindowOpenDisposition disposition,
       const blink::mojom::WindowFeatures& window_features,
       bool user_gesture,
       bool* was_blocked) override;
@@ -214,7 +248,8 @@ class PrivilegedWebContents : public content::WebContentsDelegate,
  private:
   PrivilegedWebContents(PrivilegedComponent component,
                         content::BrowserContext* browser_context,
-                        std::unique_ptr<PwcPolicyDelegate> policy_delegate);
+                        std::unique_ptr<PwcPolicyDelegate> policy_delegate,
+                        const PwcCreateOptions& options);
 
   bool IsPrimaryMainFrame(content::RenderFrameHost* render_frame_host) const;
   bool IsPrimaryMainFrame(int render_process_id, int render_frame_id) const;

@@ -293,6 +293,7 @@ static const char* const kSwitchNames[] = {
     switches::kDoubleBufferCompositing,
     switches::kHeadless,
     switches::kEnableLowEndDeviceMode,
+    switches::kDisableDumpWithoutCrashingOnAnglePortabilityMessages,
     switches::kDisableSkiaGraphite,
     switches::kDisableSkiaGraphitePrecompilation,
     switches::kDisableLowEndDeviceMode,
@@ -584,18 +585,16 @@ void InitGpuPersistentCacheFileFactoryOnce() {
   }
 }
 
-// True while the OS is ending the user session (Windows logoff, shutdown,
-// restart): it is killing this browser's child processes and refuses to start
-// new ones, which says nothing about the GPU.
-bool IsSessionEnding() {
+}  // anonymous namespace
+
+// static
+bool GpuProcessHost::IsSessionEnding() {
 #if BUILDFLAG(IS_WIN)
   return ::GetSystemMetrics(SM_SHUTTINGDOWN) != 0;
 #else
   return false;
 #endif
 }
-
-}  // anonymous namespace
 
 // static
 bool GpuProcessHost::ValidateHost(GpuProcessHost* host) {
@@ -1412,8 +1411,9 @@ bool GpuProcessHost::LaunchGpuProcess() {
   // Because AppendExtraCommandLineSwitches is called here, we should call
   // LaunchWithoutExtraCommandLineSwitches() instead of Launch for gpu process
   // launch below.
+  // TODO(crbug.com/379869738): Remove GetUnsafeValue.
   GetContentClient()->browser()->AppendExtraCommandLineSwitches(
-      cmd_line.get(), process_->GetData().id);
+      cmd_line.get(), process_->GetData().GetChildProcessId().GetUnsafeValue());
 
   // TODO(kylechar): The command line flags added here should be based on
   // |mode_|.
@@ -1538,9 +1538,5 @@ GpuProcessHost::info_collection_gpu_service() {
   return gpu_host_->info_collection_gpu_service();
 }
 #endif
-
-int GpuProcessHost::GetIDForTesting() const {
-  return process_->GetData().id;
-}
 
 }  // namespace content

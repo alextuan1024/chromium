@@ -73,6 +73,7 @@
 #include "components/saved_tab_groups/public/saved_tab_group.h"
 #include "components/saved_tab_groups/public/tab_group_sync_service.h"
 #include "components/saved_tab_groups/public/types.h"
+#include "components/strings/grit/components_strings.h"
 #include "components/tab_groups/tab_group_color.h"
 #include "components/tab_groups/tab_group_id.h"
 #include "components/tab_groups/tab_group_visual_data.h"
@@ -91,7 +92,6 @@
 #include "ui/base/page_transition_types.h"
 #include "ui/base/pointer/touch_ui_controller.h"
 #include "ui/base/ui_base_features.h"
-#include "ui/base/window_open_disposition.h"
 #include "ui/events/types/event_type.h"
 #include "ui/gfx/geometry/insets.h"
 #include "ui/gfx/geometry/size.h"
@@ -102,13 +102,17 @@
 #include "ui/views/accessibility/view_accessibility.h"
 #include "ui/views/animation/ink_drop.h"
 #include "ui/views/border.h"
+#include "ui/views/bubble/bubble_dialog_delegate_view.h"
+#include "ui/views/bubble/bubble_frame_view.h"
 #include "ui/views/controls/button/button.h"
 #include "ui/views/controls/button/label_button.h"
+#include "ui/views/controls/button/md_text_button.h"
 #include "ui/views/controls/image_view.h"
 #include "ui/views/controls/label.h"
 #include "ui/views/controls/separator.h"
 #include "ui/views/controls/styled_label.h"
 #include "ui/views/interaction/element_tracker_views.h"
+#include "ui/views/layout/box_layout.h"
 #include "ui/views/layout/flex_layout.h"
 #include "ui/views/layout/flex_layout_types.h"
 #include "ui/views/layout/layout_types.h"
@@ -177,7 +181,7 @@ std::unique_ptr<views::LabelButton> CreateMenuItem(
   auto button = CreateBubbleMenuItem(button_id, name, std::move(callback), icon,
                                      accelerator_text);
   button->SetBorder(views::CreateEmptyBorder(menu_item_insets));
-  button->SetLabelStyle(views::style::STYLE_BODY_3_EMPHASIS);
+  button->SetLabelStyle(views::style::STYLE_BODY_3);
   button->SetMinSize(gfx::Size(0, 32));
 
   return button;
@@ -319,7 +323,7 @@ void TabGroupEditorBubbleView::AddedToWidget() {
   }
 
   if (save_group_icon_) {
-    DCHECK(save_group_label_);
+    CHECK(save_group_label_, base::NotFatalUntil::M162);
 
     const bool enabled = save_group_icon_->GetEnabled();
     const SkColor text_color = save_group_label_->GetEnabledColor();
@@ -358,11 +362,12 @@ TabGroupEditorBubbleView::TabGroupEditorBubbleView(
                           base::Unretained(this)));
 
   // This dialog should only show up if the browser supports tab groups.
-  DCHECK(browser_->GetTabStripModel()->SupportsTabGroups());
+  CHECK(browser_->GetTabStripModel()->SupportsTabGroups(),
+        base::NotFatalUntil::M162);
 
   // `anchor_view` should always be defined as it will be used to source the
   // `anchor_widget_`.
-  DCHECK(anchor_view);
+  CHECK(anchor_view, base::NotFatalUntil::M162);
 
   // Initialize the bubble.
   if (anchor_rect) {
@@ -453,6 +458,13 @@ void TabGroupEditorBubbleView::OnDisplayTabletStateChanged(
 }
 
 void TabGroupEditorBubbleView::UpdateGroup() {
+  if (IsEphemeralTabGroup()) {
+    return;
+  }
+  UpdateGroupVisuals();
+}
+
+void TabGroupEditorBubbleView::UpdateGroupVisuals() {
   const std::optional<int> selected_element =
       color_selector_->GetSelectedElement();
   TabGroup* const tab_group =
@@ -467,6 +479,8 @@ void TabGroupEditorBubbleView::UpdateGroup() {
   if (current_visual_data->color() != updated_color) {
     base::RecordAction(
         base::UserMetricsAction("TabGroups_TabGroupBubble_ColorChanged"));
+    shared_tab_group_metrics::RecordTabGroupEditorBubbleAction(
+        shared_tab_group_metrics::TabGroupEditorBubbleAction::kColorChanged);
   }
 
   // If the old close button is being displayed, then update it's text.
@@ -552,7 +566,15 @@ bool TabGroupEditorBubbleView::IsGroupShared() const {
   return maybe_saved_group.value().is_shared_tab_group();
 }
 
+bool TabGroupEditorBubbleView::IsEphemeralTabGroup() const {
+  return browser_ && browser_->GetTabStripModel() &&
+         browser_->GetTabStripModel()->IsEphemeralTabGroup(group_);
+}
+
 bool TabGroupEditorBubbleView::ShouldShowSavedFooter() const {
+  if (IsEphemeralTabGroup()) {
+    return false;
+  }
   PrefService* pref_service = browser_->GetProfile()->GetPrefs();
   return (CanSaveGroups() && pref_service &&
           saved_tab_group_prefs::GetLearnMoreFooterShownCount(pref_service) <
@@ -577,6 +599,23 @@ bool TabGroupEditorBubbleView::OwnsGroup() const {
       browser_->GetProfile(), maybe_saved_group->saved_guid());
 }
 
+void TabGroupEditorBubbleView::OnEphemeralGroupPromoted() {
+  UpdateGroupVisuals();
+  browser_->GetTabStripModel()->PromoteEphemeralTabGroup(group_);
+  OnBubbleClose();
+  if (GetWidget()) {
+    GetWidget()->CloseWithReason(
+        views::Widget::ClosedReason::kAcceptButtonClicked);
+  }
+}
+
+void TabGroupEditorBubbleView::CancelEphemeralGroup() {
+  if (GetWidget()) {
+    GetWidget()->CloseWithReason(
+        views::Widget::ClosedReason::kCancelButtonClicked);
+  }
+}
+
 void TabGroupEditorBubbleView::RebuildMenuContents() {
   simple_menu_items_.clear();
   std::unique_ptr<TitleField> title_field;
@@ -596,9 +635,17 @@ void TabGroupEditorBubbleView::RebuildMenuContents() {
 
   RemoveAllChildViews();
 
+  if (IsEphemeralTabGroup()) {
+    AddChildView(BuildEphemeralGroupTitle());
+  }
+
   title_field_ = AddChildView(title_field ? std::move(title_field)
                                           : BuildTitleField(title_at_opening_));
   color_selector_ = AddChildView(BuildColorPicker());
+  if (IsEphemeralTabGroup()) {
+    AddChildView(BuildEphemeralGroupButtons());
+    return;
+  }
   AddChildView(BuildSeparator());
 
   if (!CanSaveGroups()) {
@@ -728,6 +775,57 @@ std::unique_ptr<ColorPickerView> TabGroupEditorBubbleView::BuildColorPicker() {
                               gfx::Insets::VH(0, horizontal_spacing));
 
   return color_selector;
+}
+
+std::unique_ptr<views::Label>
+TabGroupEditorBubbleView::BuildEphemeralGroupTitle() {
+  auto title_label = std::make_unique<views::Label>(
+      l10n_util::GetStringUTF16(IDS_TAB_GROUP_HEADER_CXMENU_CONVERT_TO_GROUP),
+      views::style::CONTEXT_LABEL, views::style::STYLE_HEADLINE_5);
+  title_label->SetHorizontalAlignment(gfx::ALIGN_LEFT);
+
+  const gfx::Insets control_insets = GetControlInsets();
+  title_label->SetProperty(
+      views::kMarginsKey,
+      gfx::Insets::TLBR(control_insets.top(), control_insets.left(), 0,
+                        control_insets.right()));
+
+  return title_label;
+}
+
+std::unique_ptr<views::View>
+TabGroupEditorBubbleView::BuildEphemeralGroupButtons() {
+  auto button_row = std::make_unique<views::View>();
+  const int button_spacing = ChromeLayoutProvider::Get()->GetDistanceMetric(
+      views::DISTANCE_RELATED_BUTTON_HORIZONTAL);
+  button_row->SetLayoutManager(std::make_unique<views::FlexLayout>())
+      ->SetOrientation(views::LayoutOrientation::kHorizontal)
+      .SetDefault(
+          views::kFlexBehaviorKey,
+          views::FlexSpecification(views::MinimumFlexSizeRule::kScaleToZero,
+                                   views::MaximumFlexSizeRule::kUnbounded)
+              .WithWeight(1));
+
+  button_row->SetProperty(views::kMarginsKey, GetControlInsets());
+
+  auto cancel_button = std::make_unique<views::MdTextButton>(
+      base::BindRepeating(&TabGroupEditorBubbleView::CancelEphemeralGroup,
+                          base::Unretained(this)),
+      l10n_util::GetStringUTF16(IDS_CANCEL));
+  cancel_button->SetProperty(views::kMarginsKey,
+                             gfx::Insets::TLBR(0, 0, 0, button_spacing / 2));
+
+  auto create_button = std::make_unique<views::MdTextButton>(
+      base::BindRepeating(&TabGroupEditorBubbleView::OnEphemeralGroupPromoted,
+                          base::Unretained(this)),
+      l10n_util::GetStringUTF16(IDS_TAB_GROUP_HEADER_CXMENU_CREATE_GROUP));
+  create_button->SetStyle(ui::ButtonStyle::kProminent);
+  create_button->SetProperty(views::kMarginsKey,
+                             gfx::Insets::TLBR(0, button_spacing / 2, 0, 0));
+
+  button_row->AddChildView(std::move(cancel_button));
+  button_row->AddChildView(std::move(create_button));
+  return button_row;
 }
 
 std::unique_ptr<views::LabelButton>
@@ -861,10 +959,8 @@ TabGroupEditorBubbleView::BuildFocusGroupButton() {
       l10n_util::GetStringUTF16(IDS_TAB_GROUP_HEADER_CXMENU_FOCUS_GROUP),
       base::BindRepeating(&TabGroupEditorBubbleView::FocusGroupPressed,
                           base::Unretained(this)),
-      ui::ImageModel::FromVectorIcon(features::IsRoundedIconsEnabled()
-                                         ? kZoomInMapIcon
-                                         : kZoomInMapOldIcon,
-                                     ui::kColorMenuIcon, kDefaultIconSize));
+      ui::ImageModel::FromVectorIcon(kFilterTiltShiftIcon, ui::kColorMenuIcon,
+                                     kDefaultIconSize));
 
   menu_item->SetProperty(views::kElementIdentifierKey,
                          kTabGroupEditorBubbleFocusGroupButtonId);
@@ -878,7 +974,7 @@ TabGroupEditorBubbleView::BuildUnfocusGroupButton() {
       l10n_util::GetStringUTF16(IDS_TAB_GROUP_HEADER_CXMENU_UNFOCUS_GROUP),
       base::BindRepeating(&TabGroupEditorBubbleView::UnfocusGroupPressed,
                           base::Unretained(this)),
-      ui::ImageModel::FromVectorIcon(kZoomOutMapOldIcon, ui::kColorMenuIcon,
+      ui::ImageModel::FromVectorIcon(kFilterTiltShiftIcon, ui::kColorMenuIcon,
                                      kDefaultIconSize));
 
   menu_item->SetProperty(views::kElementIdentifierKey,
@@ -946,6 +1042,8 @@ TabGroupEditorBubbleView::BuildAskGeminiButton() {
 }
 
 void TabGroupEditorBubbleView::AskGeminiPressed() {
+  shared_tab_group_metrics::RecordTabGroupEditorBubbleAction(
+      shared_tab_group_metrics::TabGroupEditorBubbleAction::kAskGemini);
   glic::GlicKeyedService* service =
       glic::GlicKeyedServiceFactory::GetGlicKeyedService(browser_->GetProfile(),
                                                          /*create=*/true);
@@ -958,6 +1056,8 @@ void TabGroupEditorBubbleView::AskGeminiPressed() {
 void TabGroupEditorBubbleView::NewTabInGroupPressed() {
   base::RecordAction(
       base::UserMetricsAction("TabGroups_TabGroupBubble_NewTabInGroup"));
+  shared_tab_group_metrics::RecordTabGroupEditorBubbleAction(
+      shared_tab_group_metrics::TabGroupEditorBubbleAction::kNewTabInGroup);
   TabStripModel* const model = browser_->GetTabStripModel();
   const auto tabs = model->group_model()->GetTabGroup(group_)->ListTabs();
   model->delegate()->AddTabAt(GURL(), tabs.end(), true, group_);
@@ -967,6 +1067,8 @@ void TabGroupEditorBubbleView::NewTabInGroupPressed() {
 }
 
 void TabGroupEditorBubbleView::HomePressed() {
+  shared_tab_group_metrics::RecordTabGroupEditorBubbleAction(
+      shared_tab_group_metrics::TabGroupEditorBubbleAction::kHome);
   chrome::AddSelectedTabWithURL(browser_, GURL("chrome://tab-group-home/"),
                                 ui::PAGE_TRANSITION_TYPED);
   GetWidget()->Close();
@@ -975,6 +1077,8 @@ void TabGroupEditorBubbleView::HomePressed() {
 void TabGroupEditorBubbleView::UngroupPressed() {
   base::RecordAction(
       base::UserMetricsAction("TabGroups_TabGroupBubble_Ungroup"));
+  shared_tab_group_metrics::RecordTabGroupEditorBubbleAction(
+      shared_tab_group_metrics::TabGroupEditorBubbleAction::kUngroup);
 
   base::WeakPtr<views::Widget> widget = GetWidget()->GetWeakPtr();
 
@@ -1001,6 +1105,9 @@ void TabGroupEditorBubbleView::UngroupPressed() {
 }
 
 void TabGroupEditorBubbleView::ShareOrManagePressed() {
+  shared_tab_group_metrics::RecordTabGroupEditorBubbleAction(
+      shared_tab_group_metrics::TabGroupEditorBubbleAction::
+          kShareOrManageGroup);
   collaboration::CollaborationService* service =
       collaboration::CollaborationServiceFactory::GetForProfile(
           browser_->GetProfile());
@@ -1025,6 +1132,8 @@ void TabGroupEditorBubbleView::ShareOrManagePressed() {
 void TabGroupEditorBubbleView::CloseGroupPressed() {
   base::RecordAction(
       base::UserMetricsAction("TabGroups_TabGroupBubble_CloseGroup"));
+  shared_tab_group_metrics::RecordTabGroupEditorBubbleAction(
+      shared_tab_group_metrics::TabGroupEditorBubbleAction::kCloseGroup);
 
   bool is_group_shared = IsGroupShared();
   base::WeakPtr<views::Widget> widget = GetWidget()->GetWeakPtr();
@@ -1058,6 +1167,9 @@ void TabGroupEditorBubbleView::DeleteGroupPressed() {
     return CloseGroupPressed();
   }
 
+  shared_tab_group_metrics::RecordTabGroupEditorBubbleAction(
+      shared_tab_group_metrics::TabGroupEditorBubbleAction::kDeleteGroup);
+
   base::WeakPtr<views::Widget> widget = GetWidget()->GetWeakPtr();
 
   bool is_group_shared = saved_group->is_shared_tab_group();
@@ -1075,6 +1187,8 @@ void TabGroupEditorBubbleView::DeleteGroupPressed() {
 }
 
 void TabGroupEditorBubbleView::LeaveGroupPressed() {
+  shared_tab_group_metrics::RecordTabGroupEditorBubbleAction(
+      shared_tab_group_metrics::TabGroupEditorBubbleAction::kLeaveGroup);
   tab_groups::TabGroupSyncService* tab_group_service =
       tab_groups::TabGroupSyncServiceFactory::GetForProfile(
           browser_->GetProfile());
@@ -1099,6 +1213,9 @@ void TabGroupEditorBubbleView::LeaveGroupPressed() {
 }
 
 void TabGroupEditorBubbleView::MoveGroupToNewWindowPressed() {
+  shared_tab_group_metrics::RecordTabGroupEditorBubbleAction(
+      shared_tab_group_metrics::TabGroupEditorBubbleAction::
+          kMoveGroupToNewWindow);
   base::WeakPtr<views::Widget> widget = GetWidget()->GetWeakPtr();
 
   browser_->GetTabStripModel()->delegate()->MoveGroupToNewWindow(group_);
@@ -1109,22 +1226,28 @@ void TabGroupEditorBubbleView::MoveGroupToNewWindowPressed() {
 }
 
 void TabGroupEditorBubbleView::FocusGroupPressed() {
+  shared_tab_group_metrics::RecordTabGroupEditorBubbleAction(
+      shared_tab_group_metrics::TabGroupEditorBubbleAction::
+          kFocusOrUnfocusGroup);
   base::UmaHistogramEnumeration("TabGroups.Focus.EntryPoint",
                                 TabGroupFocusEntryPoint::kEditorBubble);
   TabStripModel* const model = browser_->GetTabStripModel();
-  model->SetFocusedGroup(group_);
+  model->EnterFocusMode(group_);
   GetWidget()->Close();
 }
 
 void TabGroupEditorBubbleView::UnfocusGroupPressed() {
-  base::UmaHistogramEnumeration("TabGroups.Focus.ExitReason",
-                                TabGroupFocusExitReason::kEditorBubble);
+  shared_tab_group_metrics::RecordTabGroupEditorBubbleAction(
+      shared_tab_group_metrics::TabGroupEditorBubbleAction::
+          kFocusOrUnfocusGroup);
   TabStripModel* const model = browser_->GetTabStripModel();
-  model->SetFocusedGroup(std::nullopt);
+  model->ExitFocusMode(TabGroupFocusExitReason::kEditorBubble);
   GetWidget()->Close();
 }
 
 void TabGroupEditorBubbleView::RecentActivityPressed() {
+  shared_tab_group_metrics::RecordTabGroupEditorBubbleAction(
+      shared_tab_group_metrics::TabGroupEditorBubbleAction::kRecentActivity);
   views::View* tab_group_header =
       BrowserView::GetBrowserViewForBrowser(browser_)
           ->tab_strip_view()
@@ -1148,9 +1271,14 @@ bool TabGroupEditorBubbleView::CanMoveGroupToNewWindow() {
 }
 
 void TabGroupEditorBubbleView::OnBubbleClose() {
+  if (IsEphemeralTabGroup()) {
+    return;
+  }
   if (title_at_opening_ != title_field_->GetText()) {
     base::RecordAction(
         base::UserMetricsAction("TabGroups_TabGroupBubble_NameChanged"));
+    shared_tab_group_metrics::RecordTabGroupEditorBubbleAction(
+        shared_tab_group_metrics::TabGroupEditorBubbleAction::kNameChanged);
   }
 
   if (browser_ &&
@@ -1247,14 +1375,14 @@ END_METADATA
 void TabGroupEditorBubbleView::TitleFieldController::ContentsChanged(
     views::Textfield* sender,
     const std::u16string& new_contents) {
-  DCHECK_EQ(sender, parent_->title_field_);
+  CHECK_EQ(sender, parent_->title_field_, base::NotFatalUntil::M162);
   parent_->UpdateGroup();
 }
 
 bool TabGroupEditorBubbleView::TitleFieldController::HandleKeyEvent(
     views::Textfield* sender,
     const ui::KeyEvent& key_event) {
-  DCHECK_EQ(sender, parent_->title_field_);
+  CHECK_EQ(sender, parent_->title_field_, base::NotFatalUntil::M162);
 
   // For special actions, only respond to key pressed events, to be consistent
   // with other views like buttons and dialogs.
@@ -1266,8 +1394,12 @@ bool TabGroupEditorBubbleView::TitleFieldController::HandleKeyEvent(
       return true;
     }
     if (key_code == ui::VKEY_RETURN) {
-      parent_->GetWidget()->CloseWithReason(
-          views::Widget::ClosedReason::kUnspecified);
+      if (parent_->IsEphemeralTabGroup()) {
+        parent_->OnEphemeralGroupPromoted();
+      } else {
+        parent_->GetWidget()->CloseWithReason(
+            views::Widget::ClosedReason::kUnspecified);
+      }
       return true;
     }
   }

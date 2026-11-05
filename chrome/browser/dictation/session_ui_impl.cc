@@ -45,6 +45,9 @@ UiState ToUiState(SessionState state) {
       return UiState::kTranscribing;
     case SessionState::kFinalizing:
       return UiState::kFinalizing;
+    case SessionState::kEnded:
+      // The UI is destroyed with the session instead.
+      NOTREACHED();
   }
 }
 
@@ -60,7 +63,7 @@ ToastId GetToastId(StreamErrorReason reason) {
 
 }  // namespace
 
-void SessionUiImpl::CreateBubbleUi() {
+void SessionUiImpl::CreateBubbleUi(bool show_reviewing_page_status) {
   BrowserWindowInterface* window = tab_->GetBrowserWindowInterface();
   if (!window) {
     return;
@@ -80,7 +83,8 @@ void SessionUiImpl::CreateBubbleUi() {
       base::BindRepeating(&SessionUiImpl::OnDictationBubbleCloseClicked,
                           base::Unretained(this)),
       base::BindRepeating(&SessionUiImpl::OnToggleActiveStreamClicked,
-                          base::Unretained(this)));
+                          base::Unretained(this)),
+      show_reviewing_page_status);
   bubble_ui_->SetState(ToUiState(controller_->GetState()));
 
   // TODO(b/510778034): Determine what we need to make this accessibility
@@ -101,9 +105,10 @@ void SessionUiImpl::CreateBubbleUi() {
 }
 
 SessionUiImpl::SessionUiImpl(tabs::TabInterface& tab,
-                             SessionUiDelegate& delegate)
+                             SessionUiDelegate& delegate,
+                             bool show_reviewing_page_status)
     : tab_(tab), controller_(delegate) {
-  CreateBubbleUi();
+  CreateBubbleUi(show_reviewing_page_status);
 
   session_state_changed_subscription_ =
       delegate.AddSessionStateChangedCallback(base::BindRepeating(
@@ -134,7 +139,7 @@ void SessionUiImpl::OnError(StreamType stream_type, StreamErrorReason reason) {
   if (stream_type == StreamType::kAttached) {
     // If the attached stream failed, we still want to let any finalizing
     // streams finish before ending the session.
-    controller_->FinalizeAndShutdown();
+    controller_->FinalizeAndShutdown(DictationStreamEndTrigger::kShutdown);
   }
 }
 
@@ -178,6 +183,10 @@ void SessionUiImpl::OnStartedStream(content::GlobalDOMNodeId target_id) {
 }
 
 void SessionUiImpl::OnSessionStateChanged(SessionState state) {
+  if (state == SessionState::kEnded) {
+    // The UI is about to be destroyed with the session.
+    return;
+  }
   UiState ui_state = ToUiState(state);
   bubble_ui_->SetState(ui_state);
   if (overlay_view_) {
@@ -193,7 +202,7 @@ void SessionUiImpl::OnToggleActiveStreamClicked() {
   if (kSessionEndsOnStreamEnd.Get()) {
     // This configuration does not start new streams within a session. We just
     // end the session.
-    controller_->FinalizeAndShutdown();
+    controller_->FinalizeAndShutdown(DictationStreamEndTrigger::kDoneButton);
     return;
   }
 
@@ -207,6 +216,9 @@ void SessionUiImpl::OnToggleActiveStreamClicked() {
       break;
     case SessionState::kFinalizing:
       // The toggle button should be disabled while finalizing.
+      NOTREACHED();
+    case SessionState::kEnded:
+      // The UI is destroyed with the session.
       NOTREACHED();
   }
 }
@@ -227,7 +239,7 @@ void SessionUiImpl::OnTabWillDetach(tabs::TabInterface* tab,
 
 void SessionUiImpl::OnTabInserted(tabs::TabInterface* tab) {
   // Recreate the UI elements for the ongoing session in the new window.
-  CreateBubbleUi();
+  CreateBubbleUi(/*show_reviewing_page_status=*/false);
 }
 
 void SessionUiImpl::OnTabWillDeactivate(tabs::TabInterface* tab) {
@@ -248,7 +260,8 @@ void SessionUiImpl::OnTabWillDeactivate(tabs::TabInterface* tab) {
                   state == SessionState::kStreamInitializing;
               tab_weak->GetTabFeatures()->tab_dialog_manager()->CloseDialog();
               self->overlay_view_.reset();
-              self->controller_->FinalizeAndShutdown();
+              self->controller_->FinalizeAndShutdown(
+                  DictationStreamEndTrigger::kShutdown);
               if (was_actively_listening) {
                 BrowserWindowInterface* const window =
                     tab_weak->GetBrowserWindowInterface();

@@ -19,7 +19,6 @@
 #include "chrome/browser/ash/arc/arc_util.h"
 #include "chrome/browser/ash/arc/fileapi/arc_content_file_system_url_util.h"
 #include "chrome/browser/ash/arc/fileapi/arc_file_system_operation_runner.h"
-#include "chrome/browser/ash/arc/nearby_share/arc_nearby_share_uma.h"
 #include "chrome/browser/ash/file_manager/fileapi_util.h"
 #include "chrome/browser/ash/fileapi/external_file_url_util.h"
 #include "chromeos/ash/experiences/arc/arc_util.h"
@@ -27,7 +26,8 @@
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/storage_partition.h"
 #include "storage/browser/file_system/file_system_context.h"
-#include "storage/browser/file_system/isolated_context.h"
+#include "storage/browser/file_system/file_system_url.h"
+#include "third_party/blink/public/common/storage_key/storage_key.h"
 #include "url/gurl.h"
 
 // Enable VLOG level 1.
@@ -68,16 +68,18 @@ scoped_refptr<storage::FileSystemContext> GetScopedFileSystemContext(
   return storage->GetFileSystemContext();
 }
 
-// Converts the given url to a FileSystemURL.
-file_manager::util::FileSystemURLAndHandle GetFileSystemURLAndHandle(
+// Converts the given url to a FileSystemURL. The URL is read by the browser
+// process on its own behalf, so the external mount point form of the URL is
+// returned, the same form as ash::FileSystemBackend::CreateInternalURL().
+storage::FileSystemURL GetFileSystemURL(
     const storage::FileSystemContext& context,
     const GURL& url) {
   // Obtain the absolute path in the file system.
   const base::FilePath virtual_path = ash::ExternalFileURLToVirtualPath(url);
   CHECK(!virtual_path.empty(), base::NotFatalUntil::M160);
   // Obtain the file system URL.
-  return file_manager::util::CreateIsolatedURLFromVirtualPath(
-      context, url::Origin(), virtual_path);
+  return context.CreateCrackedFileSystemURL(
+      blink::StorageKey(), storage::kFileSystemTypeExternal, virtual_path);
 }
 
 std::string StripPathComponents(const std::string& file_name) {
@@ -88,8 +90,6 @@ std::string StripPathComponents(const std::string& file_name) {
 base::FilePath DoCreateShareDirectory(const base::FilePath& base_directory) {
   if (!base::PathExists(base_directory)) {
     LOG(ERROR) << "Base directory does not exist: " << base_directory;
-    UpdateNearbyShareDataHandlingFail(
-        DataHandlingResult::kDirectoryDoesNotExist);
     return base::FilePath();
   }
 
@@ -101,8 +101,6 @@ base::FilePath DoCreateShareDirectory(const base::FilePath& base_directory) {
       !base::PathExists(temp_dir)) {
     LOG(ERROR) << "Failed to create unique temp share directory under: "
                << base_directory;
-    UpdateNearbyShareDataHandlingFail(
-        DataHandlingResult::kFailedToCreateDirectory);
     return base::FilePath();
   }
   return temp_dir;
@@ -116,8 +114,6 @@ base::ScopedFD DoCreateFileForWrite(const base::FilePath& file_path) {
                        base::File::FLAG_CREATE | base::File::FLAG_WRITE);
   if (!dest_file.IsValid() || !base::PathExists(file_path)) {
     LOG(ERROR) << "Invalid destination file at path: " << file_path;
-    UpdateNearbyShareDataHandlingFail(
-        DataHandlingResult::kInvalidDestinationFilePath);
     return base::ScopedFD();
   }
 
@@ -199,7 +195,6 @@ void ShareInfoFileHandler::StartPreparingFiles(
 
   if (file_config_.directory.empty()) {
     LOG(ERROR) << "Base directory is empty.";
-    UpdateNearbyShareDataHandlingFail(DataHandlingResult::kEmptyDirectory);
     NotifyFileSharingCompleted(base::File::FILE_ERROR_NOT_A_DIRECTORY);
     return;
   }
@@ -221,8 +216,6 @@ void ShareInfoFileHandler::OnShareDirectoryPathCreated(
 
   if (share_dir.empty()) {
     LOG(ERROR) << "Failed to prepare temp share directory.";
-    UpdateNearbyShareDataHandlingFail(
-        DataHandlingResult::kFailedPrepTempDirectory);
     NotifyFileSharingCompleted(base::File::FILE_ERROR_FAILED);
     return;
   }
@@ -230,7 +223,6 @@ void ShareInfoFileHandler::OnShareDirectoryPathCreated(
   auto urls_size = file_config_.external_urls.size();
   if (!urls_size) {
     LOG(ERROR) << "External urls are empty.";
-    UpdateNearbyShareDataHandlingFail(DataHandlingResult::kEmptyExternalURL);
     NotifyFileSharingCompleted(base::File::FILE_ERROR_INVALID_URL);
     return;
   }
@@ -242,8 +234,6 @@ void ShareInfoFileHandler::OnShareDirectoryPathCreated(
 
     if (file_size < 0) {
       LOG(ERROR) << "Invalid size provided for file name: " << file_name;
-      UpdateNearbyShareDataHandlingFail(
-          DataHandlingResult::kInvalidFileNameSize);
       NotifyFileSharingCompleted(base::File::FILE_ERROR_NOT_A_FILE);
       return;
     }
@@ -272,8 +262,6 @@ void ShareInfoFileHandler::OnFileDescriptorCreated(
 
   if (!dest_fd.is_valid()) {
     LOG(ERROR) << "Invalid destination file descriptor.";
-    UpdateNearbyShareDataHandlingFail(
-        DataHandlingResult::kInvalidDestinationFileDescriptor);
     NotifyFileSharingCompleted(base::File::FILE_ERROR_FAILED);
     return;
   }
@@ -283,21 +271,18 @@ void ShareInfoFileHandler::OnFileDescriptorCreated(
   *it_context = GetScopedFileSystemContext(browser_context_, url);
   CHECK(it_context->get(), base::NotFatalUntil::M160);
 
-  const file_manager::util::FileSystemURLAndHandle isolated_file_system =
-      GetFileSystemURLAndHandle(**it_context, url);
+  const storage::FileSystemURL file_system_url =
+      GetFileSystemURL(**it_context, url);
 
-  if (!isolated_file_system.url.is_valid()) {
+  if (!file_system_url.is_valid()) {
     LOG(ERROR) << "Invalid FileSystemURL from handle.";
-    UpdateNearbyShareDataHandlingFail(
-        DataHandlingResult::kInvalidFileSystemURL);
     NotifyFileSharingCompleted(base::File::FILE_ERROR_INVALID_URL);
     return;
   }
 
   // Check if the obtained path providing external file URL or not.
-  if (!ash::IsExternalFileURLType(isolated_file_system.url.type())) {
+  if (!ash::IsExternalFileURLType(file_system_url.type())) {
     LOG(ERROR) << "FileSystemURL is not of external file type.";
-    UpdateNearbyShareDataHandlingFail(DataHandlingResult::kNotExternalFileType);
     NotifyFileSharingCompleted(base::File::FILE_ERROR_INVALID_URL);
     return;
   }
@@ -305,21 +290,15 @@ void ShareInfoFileHandler::OnFileDescriptorCreated(
   file_stream_adapters_.emplace_front();
   auto it_stream_adapter = file_stream_adapters_.begin();
   *it_stream_adapter = base::MakeRefCounted<ShareInfoFileStreamAdapter>(
-      *it_context, isolated_file_system.url, /*offset=*/0, file_size,
+      *it_context, file_system_url, /*offset=*/0, file_size,
       kStreamReaderBufSizeInBytes, std::move(dest_fd),
       base::BindOnce(&ShareInfoFileHandler::OnFileStreamReadCompleted,
                      weak_ptr_factory_.GetWeakPtr(),
-                     isolated_file_system.url.DebugString(), it_stream_adapter,
-                     isolated_file_system.handle.id(), file_size));
-  storage::IsolatedContext::GetInstance()->AddReference(
-      isolated_file_system.handle.id());
+                     file_system_url.DebugString(), it_stream_adapter,
+                     file_size));
 
   (*it_stream_adapter)->StartRunner();
   file_config_.paths.push_back(dest_file_path);
-
-  // Used to measure time duration of file stream transfers. For reference,
-  // local testing on caroline for 1.2GB takes around 1 minute.
-  file_streaming_started_ = base::TimeTicks::Now();
 
   const int64_t timeout_seconds =
       GetTimeoutInSecondsFromBytes(GetTotalSizeOfFiles());
@@ -337,21 +316,16 @@ void ShareInfoFileHandler::OnFileDescriptorCreated(
 void ShareInfoFileHandler::OnFileStreamReadCompleted(
     const std::string& url_str,
     std::list<scoped_refptr<ShareInfoFileStreamAdapter>>::iterator it_adapter,
-    const std::string& file_system_id,
     const int64_t bytes_read,
     bool result) {
   CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M160);
   CHECK(!url_str.empty(), base::NotFatalUntil::M160);
-  CHECK(!file_system_id.empty(), base::NotFatalUntil::M160);
   CHECK_GT(bytes_read, 0, base::NotFatalUntil::M160);
 
-  storage::IsolatedContext::GetInstance()->RemoveReference(file_system_id);
   file_stream_adapters_.erase(it_adapter);
 
   if (!result) {
     LOG(ERROR) << "Failed to stream file IO data using url: " << url_str;
-    UpdateNearbyShareDataHandlingFail(
-        DataHandlingResult::kFailedStreamFileIOData);
     NotifyFileSharingCompleted(base::File::FILE_ERROR_IO);
     return;
   }
@@ -374,16 +348,9 @@ void ShareInfoFileHandler::OnFileStreamReadCompleted(
     if (num_bytes_read_ > expected_total_bytes) {
       LOG(ERROR) << "Invalid number of bytes read: " << num_bytes_read_ << " > "
                  << expected_total_bytes;
-      UpdateNearbyShareDataHandlingFail(
-          DataHandlingResult::kInvalidNumberBytesRead);
       NotifyFileSharingCompleted(base::File::FILE_ERROR_INVALID_OPERATION);
       return;
     }
-
-    // Update file streaming duration UMA metric if transfer was successful.
-    const base::TimeDelta file_streaming_duration =
-        base::TimeTicks::Now() - file_streaming_started_;
-    UpdateNearbyShareFileStreamCompleteTime(file_streaming_duration);
 
     DVLOG(1) << "OnFileStreamReadCompleted: Completed streaming all files.";
     NotifyFileSharingCompleted(base::File::FILE_OK);
@@ -395,7 +362,6 @@ void ShareInfoFileHandler::OnFileStreamingTimeout(
   CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M160);
 
   LOG(ERROR) << timeout_message;
-  UpdateNearbyShareDataHandlingFail(DataHandlingResult::kTimeout);
   NotifyFileSharingCompleted(base::File::FILE_ERROR_ABORT);
 }
 

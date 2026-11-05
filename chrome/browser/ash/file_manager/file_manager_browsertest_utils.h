@@ -79,11 +79,7 @@ struct TestCase {
 
   TestCase& EnableFilesPolicyNewUX();
 
-  TestCase& EnableDriveTrash();
-
   TestCase& EnableArcVm();
-
-  TestCase& EnableMirrorSync();
 
   TestCase& EnableFileTransferConnector();
 

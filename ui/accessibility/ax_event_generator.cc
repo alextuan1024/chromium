@@ -299,9 +299,9 @@ void AXEventGenerator::UnregisterEventOnNode(Event event_type,
   if (it == registered_event_to_node_ids_.end()) {
     return;
   }
-  registered_event_to_node_ids_[event_type].erase(node_id);
-  if (registered_event_to_node_ids_[event_type].empty()) {
-    registered_event_to_node_ids_.erase(event_type);
+  it->second.erase(node_id);
+  if (it->second.empty()) {
+    registered_event_to_node_ids_.erase(it);
   }
 }
 
@@ -388,8 +388,7 @@ void AXEventGenerator::OnRoleChanged(AXTree* tree,
                                      ax::mojom::Role old_role,
                                      ax::mojom::Role new_role) {
   DCHECK_EQ(tree_, tree);
-  CHECK(new_role != ax::mojom::Role::kInlineTextBox &&
-        old_role != ax::mojom::Role::kInlineTextBox);
+  CHECK(!IsRoleFinal(new_role) && !IsRoleFinal(old_role));
 
   AddEvent(node, ui::IsAlert(new_role) ? Event::ALERT : Event::ROLE_CHANGED);
 }

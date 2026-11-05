@@ -621,6 +621,7 @@ bool IsExpandableSuggestionType(SuggestionType type) {
     case SuggestionType::kAtMemoryNoConnection:
     case SuggestionType::kAtMemoryOpenGemini:
     case SuggestionType::kAtMemorySearchAffordance:
+    case SuggestionType::kAtMemoryShortcutSettingsPromo:
     case SuggestionType::kAtMemorySourceAttribution:
     case SuggestionType::kAutocompleteAtMemoryButton:
     case SuggestionType::kAutocompleteEntry:
@@ -665,10 +666,10 @@ bool IsExpandableSuggestionType(SuggestionType type) {
     case SuggestionType::kOpenGmailForOtps:
     case SuggestionType::kPasswordFieldByFieldFilling:
     case SuggestionType::kPendingStateSignin:
+    case SuggestionType::kPendingStateTrustedVaultError:
     case SuggestionType::kPersonalContextNotice:
     case SuggestionType::kSaveAndFillCreditCardEntry:
     case SuggestionType::kScanCreditCard:
-    case SuggestionType::kSeePromoCodeDetails:
     case SuggestionType::kSeparator:
     case SuggestionType::kTitle:
     case SuggestionType::kTroubleSigningInEntry:
@@ -729,6 +730,10 @@ ui::ElementIdentifier GetAutofillPopupCellElementIdentifier(
   }
   if (feature == &feature_engagement::kIPHAutofillAiValuablesFeature) {
     return PopupViewViews::kAutofillAiValuablesElementId;
+  }
+  if (feature ==
+      &feature_engagement::kIPH_AutofillAmbientAutofillSpiiDisclaimer) {
+    return PopupViewViews::kAutofillAmbientAutofillSpiiDisclaimerElementId;
   }
   return ui::ElementIdentifier();
 }

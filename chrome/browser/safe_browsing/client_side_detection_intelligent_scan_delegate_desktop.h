@@ -9,7 +9,7 @@
 #include "base/memory/weak_ptr.h"
 #include "base/time/time.h"
 #include "base/unguessable_token.h"
-#include "components/optimization_guide/core/model_execution/feature_keys.h"
+#include "components/optimization_guide/core/feature_registry/feature_keys.h"
 #include "components/optimization_guide/core/model_execution/on_device_capability.h"
 #include "components/optimization_guide/core/model_execution/remote_model_executor.h"
 #include "components/optimization_guide/public/mojom/model_broker.mojom-forward.h"
@@ -52,6 +52,8 @@ class ClientSideDetectionIntelligentScanDelegateDesktop
       bool log_failed_eligibility_reason) override;
   std::optional<base::UnguessableToken> StartIntelligentScan(
       std::string rendered_texts,
+      std::string url,
+      std::optional<std::string> tab_screenshot,
       IntelligentScanDoneCallback callback) override;
   bool CancelIntelligentScan(const base::UnguessableToken& scan_id) override;
   bool ShouldShowScamWarning(

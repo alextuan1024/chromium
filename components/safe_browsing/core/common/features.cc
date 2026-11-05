@@ -117,6 +117,9 @@ const base::FeatureParam<bool> kCSDClipboardCopyApiSuspiciousTokenFilter{
     &kClientSideDetectionClipboardCopyApi, "SuspiciousTokenFilter",
     /*default_value=*/true};
 
+BASE_FEATURE(kClientSideDetectionCopyFromSurface,
+             base::FEATURE_DISABLED_BY_DEFAULT);
+
 BASE_FEATURE(kClientSideDetectionCreditCardForm,
              base::FEATURE_DISABLED_BY_DEFAULT);
 const base::FeatureParam<double> kCsdCreditCardFormHCAcceptanceRate{
@@ -175,11 +178,6 @@ BASE_FEATURE(kClientSideDetectionNewObservers,
 constexpr base::FeatureParam<double> kCsdClassificationDelay{
     &kClientSideDetectionNewObservers, "ClassificationDelay", 0.0};
 
-#if BUILDFLAG(IS_ANDROID)
-BASE_FEATURE(kClientSideDetectionOnDeviceModelLazyDownloadAndroid,
-             base::FEATURE_ENABLED_BY_DEFAULT);
-#endif
-
 BASE_FEATURE(kClientSideDetectionOnlyESBClassification,
              base::FEATURE_DISABLED_BY_DEFAULT);
 
@@ -191,17 +189,17 @@ constexpr base::FeatureParam<int> kClientSideDetectionRetryLimitTime{
     &kClientSideDetectionRetryLimit, /*name=*/"RetryTimeMax",
     /*default_value=*/15};
 
-BASE_FEATURE(kClientSideDetectionScamScore, base::FEATURE_DISABLED_BY_DEFAULT);
-#if BUILDFLAG(IS_ANDROID)
-BASE_FEATURE(kClientSideDetectionServerModelForScamDetectionAndroid,
-             base::FEATURE_ENABLED_BY_DEFAULT);
-constexpr base::FeatureParam<int> kClientSideDetectionServerModelMaxScansPerDay{
-    &kClientSideDetectionServerModelForScamDetectionAndroid,
-    "MaxIntelligentScansPerDay",
-    /*default_value=*/5};
-#endif
+BASE_FEATURE(kClientSideDetectionScamDetectionRequestWithUrl,
+             base::FEATURE_DISABLED_BY_DEFAULT);
 
-#if !BUILDFLAG(IS_ANDROID)
+BASE_FEATURE(kClientSideDetectionScamScore, base::FEATURE_ENABLED_BY_DEFAULT);
+
+BASE_FEATURE(kClientSideDetectionSecondForceRequestWithDelay,
+             base::FEATURE_DISABLED_BY_DEFAULT);
+constexpr base::FeatureParam<int> kCsdForceRequestDelayMs{
+    &kClientSideDetectionSecondForceRequestWithDelay, "RequestDelayMs", 2000};
+
+#if !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_IOS)
 BASE_FEATURE(kClientSideDetectionServerModelForScamDetectionDesktop,
              base::FEATURE_DISABLED_BY_DEFAULT);
 constexpr base::FeatureParam<int>
@@ -210,6 +208,23 @@ constexpr base::FeatureParam<int>
         "MaxIntelligentScansPerDayDesktop",
         /*default_value=*/5};
 #endif
+
+#if BUILDFLAG(IS_IOS)
+BASE_FEATURE(kClientSideDetectionServerModelForScamDetectionIos,
+             base::FEATURE_DISABLED_BY_DEFAULT);
+constexpr base::FeatureParam<int>
+    kClientSideDetectionServerModelMaxScansPerDayIos{
+        &kClientSideDetectionServerModelForScamDetectionIos,
+        "MaxIntelligentScansPerDayIos",
+        /*default_value=*/5};
+#endif
+
+BASE_FEATURE(kClientSideDetectionServerModelMultimodal,
+             base::FEATURE_DISABLED_BY_DEFAULT);
+constexpr base::FeatureParam<bool>
+    kClientSideDetectionServerModelMultimodalExcludeLowEndDevices{
+        &kClientSideDetectionServerModelMultimodal, "ExcludeLowEndDevices",
+        /*default_value=*/true};
 
 #if BUILDFLAG(IS_ANDROID)
 BASE_FEATURE(kClientSideDetectionServerModelRolloutAndroid,
@@ -220,7 +235,7 @@ constexpr base::FeatureParam<int>
         /*default_value=*/1000};
 #endif
 
-#if !BUILDFLAG(IS_ANDROID)
+#if !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_IOS)
 BASE_FEATURE(kClientSideDetectionServerModelRolloutDesktop,
              base::FEATURE_DISABLED_BY_DEFAULT);
 constexpr base::FeatureParam<int>
@@ -229,10 +244,22 @@ constexpr base::FeatureParam<int>
         /*default_value=*/1000};
 #endif
 
+#if BUILDFLAG(IS_IOS)
+BASE_FEATURE(kClientSideDetectionServerModelRolloutIos,
+             base::FEATURE_DISABLED_BY_DEFAULT);
+constexpr base::FeatureParam<int>
+    kClientSideDetectionServerModelRolloutVersionIos{
+        &kClientSideDetectionServerModelRolloutIos, "ModelVersion",
+        /*default_value=*/1000};
+#endif
+
 BASE_FEATURE(kClientSideDetectionSkipErrorPage,
              base::FEATURE_ENABLED_BY_DEFAULT);
 
 BASE_FEATURE(kClientSideDetectionTierSystem, base::FEATURE_ENABLED_BY_DEFAULT);
+
+BASE_FEATURE(kClientSideDetectionTrickToBill,
+             base::FEATURE_DISABLED_BY_DEFAULT);
 
 BASE_FEATURE(kConditionalImageResize, base::FEATURE_DISABLED_BY_DEFAULT);
 
@@ -299,6 +326,9 @@ BASE_FEATURE(kEnterprisePasswordReuseUiRefresh,
 
 BASE_FEATURE(kEnterpriseRealTimeUrlCheckNewUrl,
              base::FEATURE_ENABLED_BY_DEFAULT);
+
+BASE_FEATURE(kEnterpriseRealTimeUrlCheckUrlSkiplist,
+             base::FEATURE_DISABLED_BY_DEFAULT);
 
 BASE_FEATURE(kEsbAsASyncedSetting, base::FEATURE_ENABLED_BY_DEFAULT);
 
@@ -402,9 +432,6 @@ constexpr base::FeatureParam<std::string>
                                                  /*default_value=*/""};
 #endif
 
-BASE_FEATURE(kMigrateEnhancedSbUserToEnhancedBundle,
-             base::FEATURE_DISABLED_BY_DEFAULT);
-
 BASE_FEATURE(kMigrateToBlockV8OptimizerOnUnfamiliarSites,
              base::FEATURE_DISABLED_BY_DEFAULT);
 
@@ -423,12 +450,12 @@ BASE_FEATURE_PARAM(bool,
                    &kMigrateToBlockV8OptimizerOnUnfamiliarSites,
                    false);
 
-BASE_FEATURE(kMovePasswordLeakDetectionToggleIos,
-             base::FEATURE_ENABLED_BY_DEFAULT);
-
 BASE_FEATURE(kNoticeQueueForEsb, base::FEATURE_ENABLED_BY_DEFAULT);
 
 BASE_FEATURE(kNotificationTelemetry, base::FEATURE_ENABLED_BY_DEFAULT);
+
+BASE_FEATURE(kPrioritizeSafeBrowsingNavigationCallbacks,
+             base::FEATURE_DISABLED_BY_DEFAULT);
 
 BASE_FEATURE(kProactivePasswordProtection, base::FEATURE_DISABLED_BY_DEFAULT);
 const base::FeatureParam<double> kCsdProactivePasswordProtectionSampleRate{
@@ -468,6 +495,8 @@ constexpr base::FeatureParam<int> kReportNotificationContentDetectionDataRate{
     "ReportNotificationContentDetectionDataRate",
     /*default_value=*/100};
 
+BASE_FEATURE(kRustPhishingModelSetter, base::FEATURE_DISABLED_BY_DEFAULT);
+
 BASE_FEATURE(kSafeBrowsingDailyPhishingReportsLimit,
              base::FEATURE_ENABLED_BY_DEFAULT);
 constexpr base::FeatureParam<int> kSafeBrowsingDailyPhishingReportsLimitESB{
@@ -476,10 +505,20 @@ constexpr base::FeatureParam<int> kSafeBrowsingDailyPhishingReportsLimitESB{
 
 BASE_FEATURE(kSafeBrowsingDeleteUnusedStores, base::FEATURE_ENABLED_BY_DEFAULT);
 
-#if BUILDFLAG(IS_ANDROID)
-BASE_FEATURE(kSafeBrowsingSyncCheckerCheckAllowlist,
+BASE_FEATURE(kSafeBrowsingNoProtectionSuppressWarnings,
              base::FEATURE_DISABLED_BY_DEFAULT);
-#endif
+
+BASE_FEATURE(kSafeBrowsingNoProtectionTemporary,
+             base::FEATURE_DISABLED_BY_DEFAULT);
+constexpr base::FeatureParam<int>
+    kSafeBrowsingNoProtectionTemporaryDurationInSeconds{
+        &kSafeBrowsingNoProtectionTemporary, "duration_seconds",
+        /*default_value=*/0};
+
+BASE_FEATURE(kSafeBrowsingRustDmgParser, base::FEATURE_DISABLED_BY_DEFAULT);
+
+BASE_FEATURE(kSafeBrowsingSkipRealTimeLookupIfOffline,
+             base::FEATURE_DISABLED_BY_DEFAULT);
 
 BASE_FEATURE(kSafeBrowsingWaitForDnsForRealTimeLookup,
              base::FEATURE_DISABLED_BY_DEFAULT);
@@ -489,6 +528,9 @@ BASE_FEATURE(kSavePasswordHashFromProfilePicker,
 
 BASE_FEATURE(kShowManualNotificationRevocationsSafetyHub,
              base::FEATURE_ENABLED_BY_DEFAULT);
+
+BASE_FEATURE(kShowUrlsInV5GetHashLookupsWebUI,
+             base::FEATURE_DISABLED_BY_DEFAULT);
 
 BASE_FEATURE(kShowWarningsForSuspiciousNotifications,
 #if BUILDFLAG(IS_ANDROID)
@@ -523,12 +565,22 @@ constexpr base::FeatureParam<std::string>
     kSuspiciousSiteWarningSurveyProceedTriggerId{
         &kSuspiciousSiteWarningSurvey,
         "SuspiciousSiteWarningSurveyProceedTriggerId",
-        /*default_value=*/"HguD8vrc50tK1KeaPYj0R37AzmWa"};
+#if BUILDFLAG(IS_ANDROID)
+        /*default_value=*/"HguD8vrc50tK1KeaPYj0R37AzmWa"
+#else
+        /*default_value=*/"qKoRRzn180ugnJ3q1cK0WX7PXscX"
+#endif
+    };
 constexpr base::FeatureParam<std::string>
     kSuspiciousSiteWarningSurveyHeedTriggerId{
         &kSuspiciousSiteWarningSurvey,
         "SuspiciousSiteWarningSurveyHeedTriggerId",
-        /*default_value=*/"LZD24fmuf0tK1KeaPYj0Z79hw2qC"};
+#if BUILDFLAG(IS_ANDROID)
+        /*default_value=*/"LZD24fmuf0tK1KeaPYj0Z79hw2qC"
+#else
+        /*default_value=*/"BjcqKTVFY0ugnJ3q1cK0VD1dNzUU"
+#endif
+    };
 
 BASE_FEATURE(kSuspiciousSiteWarnings, base::FEATURE_DISABLED_BY_DEFAULT);
 
@@ -553,28 +605,36 @@ base::ListValue GetFeatureStatusList() {
       &kBundledSecuritySettings,
       &kBundledSecuritySettingsAskBeforeHttp,
       &kClientSideDetectionClipboardCopyApi,
+      &kClientSideDetectionCopyFromSurface,
       &kClientSideDetectionEnabledIos,
       &kClientSideDetectionForcedLlamaRedirectChainKillswitch,
       &kClientSideDetectionImageEmbeddingMatch,
       &kClientSideDetectionKillswitch,
       &kClientSideDetectionLocalResourceCheckFix,
       &kClientSideDetectionRedirectChainKillswitch,
+      &kClientSideDetectionSecondForceRequestWithDelay,
       &kCreateNotificationsAcceptedClientSafeBrowsingReports,
       &kDelayedWarnings,
       &kDlpRegionalizedEndpoints,
       &kEnhancedFieldsForSecOps,
       &kEnhancedSafeBrowsingPromo,
       &kEnterprisePasswordReuseUiRefresh,
+      &kEnterpriseRealTimeUrlCheckUrlSkiplist,
       &kEsbAsASyncedSetting,
       &kExtensionBlocklistSkipNetworkQuery,
       &kHashPrefixRealTimeLookups,
       &kLocalListsUseSBv5,
-      &kMigrateEnhancedSbUserToEnhancedBundle,
       &kProactivePasswordProtection,
       &kReportNotificationContentDetectionData,
+      &kRustPhishingModelSetter,
       &kSafeBrowsingDeleteUnusedStores,
+      &kSafeBrowsingNoProtectionSuppressWarnings,
+      &kSafeBrowsingNoProtectionTemporary,
+      &kSafeBrowsingRustDmgParser,
+      &kSafeBrowsingSkipRealTimeLookupIfOffline,
       &kSafeBrowsingWaitForDnsForRealTimeLookup,
       &kShowManualNotificationRevocationsSafetyHub,
+      &kShowUrlsInV5GetHashLookupsWebUI,
       &kShowWarningsForSuspiciousNotifications,
       &kSuspiciousSiteTriggerQuotaFeature,
       &kTailoredSecurityIntegration,

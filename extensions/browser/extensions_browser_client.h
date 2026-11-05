@@ -13,6 +13,7 @@
 #include "base/functional/callback_forward.h"
 #include "base/memory/ref_counted.h"
 #include "base/memory/ref_counted_memory.h"
+#include "base/memory/scoped_refptr.h"
 #include "base/types/expected.h"
 #include "base/values.h"
 #include "build/build_config.h"
@@ -25,6 +26,7 @@
 #include "extensions/browser/extension_prefs_observer.h"
 #include "extensions/browser/extensions_browser_api_provider.h"
 #include "extensions/browser/screenshot_access.h"
+#include "extensions/common/event_args.h"
 #include "extensions/common/extension_id.h"
 #include "extensions/common/mojom/view_type.mojom.h"
 #include "extensions/common/url_pattern_set.h"
@@ -106,6 +108,7 @@ class SafeBrowsingDatabaseManager;
 namespace extensions {
 
 class Blocklist;
+class BrowserContextLifetimeTracker;
 class CrxInstaller;
 class ComponentExtensionResourceManager;
 class Extension;
@@ -257,6 +260,10 @@ class ExtensionsBrowserClient {
   // Returns true if `context` corresponds to a guest session.
   virtual bool IsGuestSession(content::BrowserContext* context) const = 0;
 
+  // Returns true if Enterprise Isolated Mode replaces Incognito mode.
+  virtual bool IsolatedModeReplacesIncognito(
+      content::BrowserContext* context) const;
+
   // Returns true if `extension_id` can run in an incognito window.
   virtual bool IsExtensionIncognitoEnabled(
       const ExtensionId& extension_id,
@@ -270,6 +277,10 @@ class ExtensionsBrowserClient {
   virtual bool CanExtensionCrossIncognito(
       const extensions::Extension* extension,
       content::BrowserContext* context) const = 0;
+
+  // Returns a tracker for watching a BrowserContext's off-the-record
+  // sibling's lifecycle, or null if this embedder does not support it.
+  virtual BrowserContextLifetimeTracker* GetBrowserContextLifetimeTracker() = 0;
 
   // Return the resource relative path and id for the given request.
   virtual base::FilePath GetBundleResourcePath(
@@ -378,7 +389,7 @@ class ExtensionsBrowserClient {
   virtual void BroadcastEventToRenderers(
       events::HistogramValue histogram_value,
       const std::string& event_name,
-      base::ListValue args,
+      scoped_refptr<const EventArgs> args,
       bool dispatch_to_off_the_record_profiles) = 0;
 
   // Gets the single ExtensionCache instance shared across the browser process.
@@ -727,6 +738,11 @@ class ExtensionsBrowserClient {
   // Returns true if lazy keyed service instantiation is enabled for extension
   // services.
   virtual bool IsLazyKeyedServiceInstantiationEnabled() const;
+  virtual bool IsLazySocketAndUsbKeyedServiceInstantiationEnabled() const;
+
+  // Returns true if lazy keyed service instantiation is enabled for ChromeOS
+  // extension API resource manager and dispatcher services.
+  virtual bool IsLazyChromeOSResourceKeyedServiceInstantiationEnabled() const;
 
  protected:
   std::unique_ptr<ExtensionAssetsManager> assets_manager_;

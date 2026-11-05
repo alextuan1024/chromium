@@ -23,7 +23,6 @@ import org.chromium.chrome.browser.omnibox.MatchClassificationStyle;
 import org.chromium.components.omnibox.AutocompleteProto.AutocompleteMatchProto;
 import org.chromium.components.omnibox.AutocompleteProto.MatchClassificationProto;
 import org.chromium.components.omnibox.GroupsProto.GroupId;
-import org.chromium.components.omnibox.RichAnswerTemplateProto.RichAnswerTemplate;
 import org.chromium.components.omnibox.SuggestTemplateInfoProto.SuggestTemplateInfo;
 import org.chromium.components.omnibox.TypesProto.SuggestSubtype;
 import org.chromium.components.omnibox.action.OmniboxAction;
@@ -82,7 +81,6 @@ public class AutocompleteMatch {
     private final List<MatchClassification> mDisplayTextClassifications;
     private String mDescription;
     private final List<MatchClassification> mDescriptionClassifications;
-    private @Nullable RichAnswerTemplate mAnswerTemplate;
     private final String mFillIntoEdit;
     private GURL mUrl;
     private final GURL mImageUrl;
@@ -121,7 +119,6 @@ public class AutocompleteMatch {
             List<MatchClassification> displayTextClassifications,
             String description,
             List<MatchClassification> descriptionClassifications,
-            byte @Nullable [] serializedAnswerTemplate,
             String fillIntoEdit,
             GURL url,
             GURL imageUrl,
@@ -158,14 +155,7 @@ public class AutocompleteMatch {
         mDisplayTextClassifications = displayTextClassifications;
         mDescription = description;
         mDescriptionClassifications = descriptionClassifications;
-        if (serializedAnswerTemplate != null) {
-            try {
-                mAnswerTemplate = RichAnswerTemplate.parseFrom(serializedAnswerTemplate);
-            } catch (InvalidProtocolBufferException e) {
-                // When parsing error occurs, leave template as null.
-            }
-        }
-        mFillIntoEdit = TextUtils.isEmpty(fillIntoEdit) ? displayText : fillIntoEdit;
+        mFillIntoEdit = fillIntoEdit;
         assert url != null;
         mUrl = url;
         assert imageUrl != null;
@@ -232,7 +222,6 @@ public class AutocompleteMatch {
             @JniType("std::u16string") String description,
             @JniType("std::vector<int32_t>") int[] descriptionClassificationOffsets,
             @JniType("std::vector<int32_t>") int[] descriptionClassificationStyles,
-            byte[] serializedAnswerTemplate,
             @JniType("std::u16string") String fillIntoEdit,
             @JniType("GURL") GURL url,
             @JniType("GURL") GURL imageUrl,
@@ -281,7 +270,6 @@ public class AutocompleteMatch {
                         contentClassifications,
                         description,
                         new ArrayList<>(),
-                        serializedAnswerTemplate,
                         fillIntoEdit,
                         url,
                         imageUrl,
@@ -371,17 +359,6 @@ public class AutocompleteMatch {
     }
 
     @CalledByNative
-    private void setAnswerTemplate(byte[] serializedAnswerTemplate) {
-        if (serializedAnswerTemplate != null) {
-            try {
-                mAnswerTemplate = RichAnswerTemplate.parseFrom(serializedAnswerTemplate);
-            } catch (InvalidProtocolBufferException e) {
-                mAnswerTemplate = null;
-            }
-        }
-    }
-
-    @CalledByNative
     private void setDescription(
             @JniType("std::u16string") String description,
             @JniType("std::vector<int32_t>") int[] descriptionClassificationOffsets,
@@ -419,10 +396,6 @@ public class AutocompleteMatch {
 
     public List<MatchClassification> getDescriptionClassifications() {
         return mDescriptionClassifications;
-    }
-
-    public @Nullable RichAnswerTemplate getAnswerTemplate() {
-        return mAnswerTemplate;
     }
 
     public String getFillIntoEdit() {
@@ -527,6 +500,23 @@ public class AutocompleteMatch {
         return mIconType;
     }
 
+    public @Nullable SuggestTemplateInfo getSuggestTemplate() {
+        return mSuggestTemplate;
+    }
+
+    public boolean shouldWrapSecondaryText() {
+        return mSuggestTemplate != null
+                && mSuggestTemplate.hasWrapSecondaryText()
+                && mSuggestTemplate.getWrapSecondaryText();
+    }
+
+    public boolean shouldWrapPrimaryText() {
+        if (mSuggestTemplate != null && mSuggestTemplate.hasWrapPrimaryText()) {
+            return mSuggestTemplate.getWrapPrimaryText();
+        }
+        return isSearchSuggestion();
+    }
+
     /**
      * @return The image data for the image clipbaord suggestion. This data has already been
      *     validated in C++ and is safe to use in the browser process.
@@ -563,10 +553,6 @@ public class AutocompleteMatch {
         }
 
         AutocompleteMatch suggestion = (AutocompleteMatch) obj;
-        boolean answerTemplateIsEqual =
-                (mAnswerTemplate != null && suggestion.mAnswerTemplate != null)
-                        ? mAnswerTemplate.equals(suggestion.mAnswerTemplate)
-                        : mAnswerTemplate == null && suggestion.mAnswerTemplate == null;
         boolean suggestTemplateIsEqual =
                 (mSuggestTemplate != null && suggestion.mSuggestTemplate != null)
                         ? mSuggestTemplate.equals(suggestion.mSuggestTemplate)
@@ -587,7 +573,6 @@ public class AutocompleteMatch {
                 && mGroupId == suggestion.mGroupId
                 && mSwapContentsAndDescription == suggestion.mSwapContentsAndDescription
                 && mAndroidTabId == suggestion.mAndroidTabId
-                && answerTemplateIsEqual
                 && suggestTemplateIsEqual
                 && ObjectsCompat.equals(mTabGroupUuid, suggestion.mTabGroupUuid)
                 && ObjectsCompat.equals(mAssociatedKeyword, suggestion.mAssociatedKeyword)
@@ -731,7 +716,6 @@ public class AutocompleteMatch {
                 displayTextClassifications,
                 input.getDescription(),
                 descriptionClassifications,
-                /* serializedAnswerTemplate= */ null,
                 input.getFillIntoEdit(),
                 new GURL(input.getUrl()),
                 new GURL(input.getImageUrl()),
@@ -780,7 +764,6 @@ public class AutocompleteMatch {
                         "mAndroidTabId=" + mAndroidTabId,
                         "mDisplayTextClassifications=" + mDisplayTextClassifications,
                         "mDescriptionClassifications=" + mDescriptionClassifications,
-                        "mAnswerTemplate=" + mAnswerTemplate,
                         "mSuggestTemplate=" + mSuggestTemplate,
                         "mIsExtensionMatch=" + mIsExtensionMatch);
         return pieces.toString();

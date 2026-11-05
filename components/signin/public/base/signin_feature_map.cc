@@ -19,15 +19,16 @@ namespace signin {
 namespace {
 // Array of features exposed through the Java SigninFeatures API.
 const base::Feature* const kFeaturesExposedToJava[] = {
+    &switches::kAiSubscriptionAvatarRingFollowup,
     &switches::kCctSignInPrompt,
     &switches::kCrossDeviceSignin,
     &switches::kEnableAccountPreviewUseAppAccount,
     &switches::kEnableActivitylessSigninAllEntryPoint,
     &switches::kEnableAccountPreviewPreferredAccount,
     &switches::kEnableAccountPreviewPreferredAccountFollowup,
+    &switches::kEnableAccountPreviewSwitchingAccount,
     &switches::kEnableAddSessionRedirect,
     &switches::kEnableAiSubscriptionAvatarRing,
-    &switches::kEnableSeamlessSignin,
     &switches::kForceStartupSigninPromo,
     &switches::kForceHistoryOptInScreen,
     &switches::kOpenSystemAccountSettingsDirectly,
@@ -36,6 +37,7 @@ const base::Feature* const kFeaturesExposedToJava[] = {
     &switches::kMakeIdentityManagerSourceOfAccounts,
     &switches::kMakeIdentityManagerSourceOfAccountsPart2,
     &switches::kMigrateAccountManagerDelegate,
+    &switches::kFullscreenSigninMediatorStateMachine,
     &switches::kFullscreenSignInPromoUseDate,
     &switches::kHandleMdmErrorsForDasherAccountsOnAndroid,
     &switches::kSmartEmailLineBreaking,
@@ -53,6 +55,7 @@ const base::Feature* const kFeaturesExposedToJava[] = {
     &switches::kForceShowWebSigninLoadingDialog,
     &switches::kSigninButtonProfileMenu,
     &switches::kSigninButtonProfileMenuErrorCard,
+    &switches::kSigninButtonProfileMenuRefinements,
     &switches::kSigninLevelUpButton,
     &switches::kSupportForcedSigninPolicy,
     &switches::kProfileDiscOnAllPages,

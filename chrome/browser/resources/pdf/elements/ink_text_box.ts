@@ -12,12 +12,12 @@ import {CrLitElement} from 'chrome://resources/lit/v3_0/lit.rollup.js';
 import type {PropertyValues} from 'chrome://resources/lit/v3_0/lit.rollup.js';
 
 import type {TextAnnotation, TextAttributes, TextBoxRect} from '../constants.js';
-import {TextStyle, TextTypeface} from '../constants.js';
+import {TextTypeface} from '../constants.js';
 import {Ink2Manager, MIN_TEXTBOX_SIZE_PX, stylesEqual} from '../ink2_manager.js';
 import {convertRotatedCoordinates, screenToPageCoordinates} from '../ink_text_annotation_utils.js';
 import {record, UserAction} from '../metrics.js';
 import {PdfViewerPrivateProxyImpl} from '../pdf_viewer_private_proxy.js';
-import {colorsEqual, colorToHex, hasCtrlModifier, hasCtrlModifierOnly, isStrikethroughShortcut} from '../pdf_viewer_utils.js';
+import {colorsEqual, colorToHex, getTextStyleForShortcut, hasCtrlModifier, hasCtrlModifierOnly} from '../pdf_viewer_utils.js';
 import type {Viewport, ViewportRect} from '../viewport.js';
 
 import {getCss} from './ink_text_box.css.js';
@@ -386,6 +386,14 @@ export class InkTextBoxElement extends InkTextBoxElementBase {
       return promise;
     }
 
+    if (!hasTextValue) {
+      // Text deleted.
+      Ink2Manager.getInstance().deleteTextAnnotation(this.id_, this.pageIndex_);
+      this.finishCommit_();
+      record(UserAction.DELETE_INK2_TEXT_ANNOTATION);
+      return promise;
+    }
+
     // Save the existing state with dummy mojoTextInfo.
     assert(this.attributes_);
     const isEdited = this.state_ === TextBoxState.EDITED;
@@ -415,7 +423,7 @@ export class InkTextBoxElement extends InkTextBoxElementBase {
       return promise;
     }
 
-    // Has edits.
+    // Addition or edit.
     (async () => {
       try {
         const result =
@@ -429,15 +437,9 @@ export class InkTextBoxElement extends InkTextBoxElementBase {
         annotation.mojoTextInfo = result.mojoTextInfo;
         Ink2Manager.getInstance().commitTextAnnotation(
             annotation, isEdited, result.typefaces);
-        let action;
-        if (this.existing_) {
-          action = hasTextValue ?
-              UserAction.EDIT_INK2_TEXT_ANNOTATION :
-              action = UserAction.DELETE_INK2_TEXT_ANNOTATION;
-        } else {
-          action = UserAction.ADD_INK2_TEXT_ANNOTATION;
-        }
-        record(action);
+        record(
+            this.existing_ ? UserAction.EDIT_INK2_TEXT_ANNOTATION :
+                             UserAction.ADD_INK2_TEXT_ANNOTATION);
       } catch (e) {
         console.error('Error committing text annotation:', e);
       } finally {
@@ -566,21 +568,11 @@ export class InkTextBoxElement extends InkTextBoxElementBase {
     }
 
     // Handle text styling shortcuts.
-    if (hasCtrlModifierOnly(e)) {
-      const key = e.key.toLowerCase();
-      if (key === 'b' || key === 'i') {
-        e.preventDefault();
-        e.stopPropagation();
-        const style = key === 'b' ? TextStyle.BOLD : TextStyle.ITALIC;
-        Ink2Manager.getInstance().toggleTextStyle(style);
-        return;
-      }
-    }
-
-    if (isStrikethroughShortcut(e)) {
+    const textStyle = getTextStyleForShortcut(e);
+    if (textStyle !== null) {
       e.preventDefault();
       e.stopPropagation();
-      Ink2Manager.getInstance().toggleTextStyle(TextStyle.STRIKETHROUGH);
+      Ink2Manager.getInstance().toggleTextStyle(textStyle);
       return;
     }
 

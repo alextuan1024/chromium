@@ -13,7 +13,7 @@
 #include "components/download/public/common/download_item.h"
 #include "components/download/public/common/simple_download_manager_coordinator.h"
 #include "components/safe_browsing/android/safe_browsing_api_handler_util.h"
-#include "components/safe_browsing/content/browser/safe_browsing_navigation_observer_manager.h"
+#include "components/safe_browsing/content/browser/navigation_observer/safe_browsing_navigation_observer_manager.h"
 #include "components/safe_browsing/core/common/proto/csd.pb.h"
 #include "content/public/browser/browser_context.h"
 #include "content/public/browser/download_manager.h"
@@ -150,7 +150,7 @@ class AndroidTelemetryService
   std::map<download::DownloadItem*, ReferrerChainResult> referrer_chain_result_;
 
   // The collection of `DownloadItem`s we're currently collecting reports for.
-  std::set<download::DownloadItem*> reports_in_progress_;
+  std::set<raw_ptr<download::DownloadItem>> reports_in_progress_;
 
   base::WeakPtrFactory<AndroidTelemetryService> weak_ptr_factory_{this};
 };

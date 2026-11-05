@@ -30,8 +30,10 @@ import org.chromium.chrome.browser.browser_controls.BrowserControlsUtils;
 import org.chromium.chrome.browser.enterprise.util.DataProtectionBridge;
 import org.chromium.chrome.browser.firstrun.FirstRunStatus;
 import org.chromium.chrome.browser.locale.LocaleManager;
+import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.readaloud.ReadAloudController;
 import org.chromium.chrome.browser.selection.ChromeSelectionDropdownMenuDelegate;
+import org.chromium.chrome.browser.selection.GlicSelectionMenuTracker;
 import org.chromium.chrome.browser.share.ChromeShareExtras;
 import org.chromium.chrome.browser.share.ShareDelegate;
 import org.chromium.chrome.browser.share.ShareDelegate.ShareOrigin;
@@ -81,18 +83,24 @@ public class ChromeActionModeHandler {
             Supplier<@Nullable ReadAloudController> readAloudControllerSupplier) {
         mInitWebContentsObserver =
                 (webContents) -> {
+                    Tab tab = assertNonNull(mActiveTab);
+                    Supplier<@Nullable Profile> profileSupplier =
+                            () -> !tab.isDestroyed() ? tab.getProfile() : null;
                     SelectionPopupController spc =
                             SelectionPopupController.fromWebContents(webContents);
                     spc.setActionModeCallback(
                             new ChromeActionModeCallback(
-                                    assertNonNull(mActiveTab),
+                                    tab,
                                     webContents,
                                     searchCallback,
                                     showWebSearch,
                                     shareDelegateSupplier,
                                     controlsState,
-                                    readAloudControllerSupplier));
-                    spc.setDropdownMenuDelegate(new ChromeSelectionDropdownMenuDelegate());
+                                    readAloudControllerSupplier,
+                                    new GlicSelectionMenuTracker(profileSupplier)));
+                    spc.setDropdownMenuDelegate(
+                            new ChromeSelectionDropdownMenuDelegate(
+                                    new GlicSelectionMenuTracker(profileSupplier)));
                 };
 
         new ActivityTabProvider.ActivityTabTabObserver(activityTabProvider) {
@@ -140,6 +148,7 @@ public class ChromeActionModeHandler {
         private final Supplier<@Nullable ShareDelegate> mShareDelegateSupplier;
         private final Supplier<@Nullable ReadAloudController> mReadAloudControllerSupplier;
         private final BrowserControlsStateProvider mControlsState;
+        private final GlicSelectionMenuTracker mGlicSelectionMenuTracker;
 
         // Used for recording UMA histograms.
         private long mContextMenuStartTime;
@@ -151,7 +160,8 @@ public class ChromeActionModeHandler {
                 boolean showWebSearch,
                 Supplier<@Nullable ShareDelegate> shareDelegateSupplier,
                 BrowserControlsStateProvider controlsState,
-                Supplier<@Nullable ReadAloudController> readAloudControllerSupplier) {
+                Supplier<@Nullable ReadAloudController> readAloudControllerSupplier,
+                GlicSelectionMenuTracker glicSelectionMenuTracker) {
             mTab = tab;
             mHelper = getActionModeCallbackHelper(webContents);
             mShowWebSearch = showWebSearch;
@@ -159,6 +169,7 @@ public class ChromeActionModeHandler {
             mShareDelegateSupplier = shareDelegateSupplier;
             mControlsState = controlsState;
             mReadAloudControllerSupplier = readAloudControllerSupplier;
+            mGlicSelectionMenuTracker = glicSelectionMenuTracker;
         }
 
         @VisibleForTesting
@@ -191,6 +202,7 @@ public class ChromeActionModeHandler {
         public boolean onPrepareActionMode(ActionMode mode, Menu menu) {
             recordUserAction();
             boolean res = mHelper.onPrepareActionMode(mode, menu);
+            mGlicSelectionMenuTracker.onFloatingMenuPrepared(menu);
             Set<String> browsers = getPackageNames(PackageManagerUtils.queryAllWebBrowsersInfo());
             Set<String> launchers = getPackageNames(PackageManagerUtils.queryAllLaunchersInfo());
             for (int i = 0; i < menu.size(); i++) {
@@ -240,6 +252,8 @@ public class ChromeActionModeHandler {
         @Override
         public boolean onActionItemClicked(ActionMode mode, MenuItem item) {
             if (!mHelper.isActionModeValid()) return true;
+
+            mGlicSelectionMenuTracker.onFloatingItemClicked(item.getItemId());
 
             ReadAloudController readAloud = mReadAloudControllerSupplier.get();
             if (readAloud != null) {
@@ -301,6 +315,7 @@ public class ChromeActionModeHandler {
         @Override
         public void onDestroyActionMode(ActionMode mode) {
             mHelper.onDestroyActionMode();
+            mGlicSelectionMenuTracker.onFloatingMenuDestroyed(mHelper::isActionModeValid);
         }
 
         @Override

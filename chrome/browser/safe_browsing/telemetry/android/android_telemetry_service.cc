@@ -19,16 +19,16 @@
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/profiles/profile_key.h"
 #include "chrome/browser/safe_browsing/android/safe_browsing_referring_app_bridge_android.h"
-#include "chrome/browser/safe_browsing/chrome_ping_manager_factory.h"
 #include "chrome/browser/safe_browsing/download_protection/download_protection_util.h"
-#include "chrome/browser/safe_browsing/safe_browsing_navigation_observer_manager_factory.h"
+#include "chrome/browser/safe_browsing/navigation_observer/safe_browsing_navigation_observer_manager_factory.h"
+#include "chrome/browser/safe_browsing/ping_manager/chrome_ping_manager_factory.h"
 #include "components/keyed_service/core/service_access_type.h"
 #include "components/prefs/pref_service.h"
 #include "components/safe_browsing/android/safe_browsing_api_handler_bridge.h"
 #include "components/safe_browsing/android/safe_browsing_api_handler_util.h"
 #include "components/safe_browsing/content/browser/web_ui/safe_browsing_ui.h"
 #include "components/safe_browsing/core/browser/db/database_manager.h"
-#include "components/safe_browsing/core/browser/ping_manager.h"
+#include "components/safe_browsing/core/browser/ping_manager/ping_manager.h"
 #include "components/safe_browsing/core/common/features.h"
 #include "components/safe_browsing/core/common/safe_browsing_prefs.h"
 #include "content/public/browser/browser_task_traits.h"
@@ -60,8 +60,8 @@ void RecordApkDownloadTelemetryOutcome(ApkDownloadTelemetryOutcome outcome) {
 
 AndroidTelemetryService::AndroidTelemetryService(Profile* profile)
     : TelemetryService(), profile_(profile) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
-  DCHECK(profile_);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M162);
+  CHECK(profile_, base::NotFatalUntil::M162);
 
   download::SimpleDownloadManagerCoordinator* coordinator =
       SimpleDownloadManagerCoordinatorFactory::GetForKey(
@@ -70,7 +70,7 @@ AndroidTelemetryService::AndroidTelemetryService(Profile* profile)
 }
 
 AndroidTelemetryService::~AndroidTelemetryService() {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M162);
   download::SimpleDownloadManagerCoordinator* coordinator =
       SimpleDownloadManagerCoordinatorFactory::GetForKey(
           profile_->GetProfileKey());
@@ -78,7 +78,7 @@ AndroidTelemetryService::~AndroidTelemetryService() {
 }
 
 void AndroidTelemetryService::OnDownloadCreated(download::DownloadItem* item) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M162);
 
   download::SimpleDownloadManagerCoordinator* coordinator =
       SimpleDownloadManagerCoordinatorFactory::GetForKey(
@@ -92,7 +92,7 @@ void AndroidTelemetryService::OnDownloadCreated(download::DownloadItem* item) {
 }
 
 void AndroidTelemetryService::OnDownloadUpdated(download::DownloadItem* item) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M162);
 
   if (!CanSendPing(item)) {
     return;
@@ -223,8 +223,8 @@ void AndroidTelemetryService::GetReport(
     download::DownloadItem* item,
     base::OnceCallback<void(std::unique_ptr<ClientSafeBrowsingReportRequest>)>
         callback) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
-  DCHECK(item->IsDone());
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M162);
+  CHECK(item->IsDone(), base::NotFatalUntil::M162);
 
   reports_in_progress_.insert(item);
 

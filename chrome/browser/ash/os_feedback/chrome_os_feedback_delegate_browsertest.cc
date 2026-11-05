@@ -34,7 +34,6 @@
 #include "chrome/browser/ash/os_feedback/os_feedback_screenshot_manager.h"
 #include "chrome/browser/ash/system_web_apps/system_web_app_manager.h"
 #include "chrome/browser/signin/identity_manager_factory.h"
-#include "chrome/browser/signin/identity_test_environment_profile_adaptor.h"
 #include "chrome/browser/ui/ash/system_web_apps/system_web_app_ui_utils.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
@@ -90,7 +89,7 @@ constexpr char kFeedbackUserConsentKey[] = "feedbackUserCtlConsent";
 constexpr char kFeedbackUserConsentGrantedValue[] = "true";
 constexpr char kFeedbackUserConsentDeniedValue[] = "false";
 constexpr char kFeedbackBluetoothCategoryTag[] = "BluetoothReportWithLogs";
-const std::u16string kDescription = u"This is a fake description";
+constexpr char16_t kDescription[] = u"This is a fake description";
 constexpr int kPerformanceTraceId = 1;
 
 constexpr char kFakeKey[] = "fake key";

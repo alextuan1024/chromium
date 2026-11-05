@@ -20,13 +20,12 @@ import org.chromium.base.test.params.ParameterAnnotations.UseMethodParameter;
 import org.chromium.base.test.params.ParameterAnnotations.UseMethodParameterBefore;
 import org.chromium.base.test.params.ParameterAnnotations.UseRunnerDelegate;
 import org.chromium.base.test.params.ParameterizedRunner;
+import org.chromium.base.test.util.Batch;
 import org.chromium.base.test.util.CommandLineFlags;
-import org.chromium.base.test.util.DoNotBatch;
 import org.chromium.base.test.util.Feature;
 import org.chromium.base.test.util.Features.DisableFeatures;
 import org.chromium.base.test.util.Features.EnableFeatures;
 import org.chromium.chrome.R;
-import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.browser.night_mode.ChromeNightModeTestUtils;
 import org.chromium.chrome.browser.preferences.Pref;
@@ -36,15 +35,13 @@ import org.chromium.chrome.browser.sync.SyncServiceFactory;
 import org.chromium.chrome.test.ChromeJUnit4RunnerDelegate;
 import org.chromium.chrome.test.transit.ChromeTransitTestRules;
 import org.chromium.chrome.test.transit.FreshCtaTransitTestRule;
-import org.chromium.chrome.test.transit.ntp.RegularNewTabPageStation;
 import org.chromium.chrome.test.util.ChromeRenderTestRule;
-import org.chromium.chrome.test.util.NewTabPageTestUtils;
 import org.chromium.chrome.test.util.browser.signin.SigninTestRule;
 import org.chromium.components.signin.SigninFeatures;
 import org.chromium.components.signin.test.util.TestAccounts;
 import org.chromium.components.user_prefs.UserPrefs;
 import org.chromium.content_public.browser.test.NativeLibraryTestUtils;
-import org.chromium.ui.test.util.NightModeTestUtils;
+import org.chromium.ui.test.util.NightModeTestUtils.NightModeParams;
 import org.chromium.ui.test.util.ViewUtils;
 
 import java.io.IOException;
@@ -52,21 +49,19 @@ import java.io.IOException;
 /** Render tests for {@link SigninButtonCoordinator}. */
 @RunWith(ParameterizedRunner.class)
 @UseRunnerDelegate(ChromeJUnit4RunnerDelegate.class)
-@DoNotBatch(reason = "This test relies on native initialization")
+@Batch(Batch.PER_CLASS)
 @CommandLineFlags.Add({ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE})
 @EnableFeatures(SigninFeatures.SIGNIN_LEVEL_UP_BUTTON)
-// TODO(b/555414915): Update Android tests with WebUI NTP enabled on AL.
-@DisableFeatures(ChromeFeatureList.USE_WEB_UI_NTP_ANDROID)
 public class SigninButtonRenderTest {
-
-    @Rule(order = 1)
-    public final FreshCtaTransitTestRule mActivityTestRule =
-            ChromeTransitTestRules.freshChromeTabbedActivityRule();
 
     // Mock sign-in environment needs to be destroyed after ChromeTabbedActivity in case there are
     // observers registered in the AccountManagerFacade mock.
     @Rule(order = 0)
-    public final SigninTestRule mSigninTestRule = new SigninTestRule();
+    public final SigninTestRule mSigninTestRule = SigninTestRule.createWithCleanups();
+
+    @Rule(order = 1)
+    public final FreshCtaTransitTestRule mActivityTestRule =
+            ChromeTransitTestRules.freshChromeTabbedActivityRule();
 
     @Rule
     public final ChromeRenderTestRule mRenderTestRule =
@@ -82,7 +77,7 @@ public class SigninButtonRenderTest {
         ChromeNightModeTestUtils.setUpNightModeBeforeChromeActivityLaunched();
     }
 
-    @UseMethodParameterBefore(NightModeTestUtils.NightModeParams.class)
+    @UseMethodParameterBefore(NightModeParams.class)
     public void setupNightMode(boolean nightModeEnabled) {
         ChromeNightModeTestUtils.setUpNightModeForChromeActivity(nightModeEnabled);
         mRenderTestRule.setNightModeEnabled(nightModeEnabled);
@@ -95,18 +90,22 @@ public class SigninButtonRenderTest {
 
     @After
     public void tearDown() {
-        if (mFakeSyncServiceImpl != null) {
-            mFakeSyncServiceImpl = null;
-            SyncServiceFactory.setInstanceForTesting(null);
+        mFakeSyncServiceImpl = null;
+        if (ProfileManager.isInitialized()) {
+            ThreadUtils.runOnUiThreadBlocking(
+                    () -> {
+                        UserPrefs.get(ProfileManager.getLastUsedRegularProfile())
+                                .clearPref("sync.ai_subscription_tier");
+                    });
+            setSigninAllowed(true);
         }
-        setSigninAllowed(true);
     }
 
     @Test
     @MediumTest
     @Feature("RenderTest")
     @DisableFeatures(SigninFeatures.ENABLE_AI_SUBSCRIPTION_AVATAR_RING)
-    @UseMethodParameter(NightModeTestUtils.NightModeParams.class)
+    @UseMethodParameter(NightModeParams.class)
     public void testSigninButton_SignedOut(boolean nightModeEnabled) throws IOException {
         startActivityOnNtp();
 
@@ -121,7 +120,7 @@ public class SigninButtonRenderTest {
     @MediumTest
     @Feature("RenderTest")
     @EnableFeatures(SigninFeatures.ENABLE_AI_SUBSCRIPTION_AVATAR_RING)
-    @UseMethodParameter(NightModeTestUtils.NightModeParams.class)
+    @UseMethodParameter(NightModeParams.class)
     public void testSigninButton_SignedOut_aiTierRingEnabled(boolean nightModeEnabled)
             throws IOException {
         startActivityOnNtp();
@@ -137,7 +136,7 @@ public class SigninButtonRenderTest {
     @MediumTest
     @Feature("RenderTest")
     @DisableFeatures(SigninFeatures.ENABLE_AI_SUBSCRIPTION_AVATAR_RING)
-    @UseMethodParameter(NightModeTestUtils.NightModeParams.class)
+    @UseMethodParameter(NightModeParams.class)
     public void testSigninButton_SignedOut_SigninDisabled(boolean nightModeEnabled)
             throws IOException {
         startActivityOnNtp();
@@ -155,7 +154,7 @@ public class SigninButtonRenderTest {
     @MediumTest
     @Feature("RenderTest")
     @DisableFeatures(SigninFeatures.ENABLE_AI_SUBSCRIPTION_AVATAR_RING)
-    @UseMethodParameter(NightModeTestUtils.NightModeParams.class)
+    @UseMethodParameter(NightModeParams.class)
     public void testSigninButton_SignedIn_Avatar(boolean nightModeEnabled) throws IOException {
         startActivityOnNtp();
 
@@ -172,7 +171,7 @@ public class SigninButtonRenderTest {
     @MediumTest
     @Feature("RenderTest")
     @DisableFeatures(SigninFeatures.ENABLE_AI_SUBSCRIPTION_AVATAR_RING)
-    @UseMethodParameter(NightModeTestUtils.NightModeParams.class)
+    @UseMethodParameter(NightModeParams.class)
     public void testSigninButtonWithErrorBadge(boolean nightModeEnabled) throws IOException {
         NativeLibraryTestUtils.loadNativeLibraryAndInitBrowserProcess();
         ThreadUtils.runOnUiThreadBlocking(
@@ -199,7 +198,7 @@ public class SigninButtonRenderTest {
     @MediumTest
     @Feature("RenderTest")
     @EnableFeatures(SigninFeatures.ENABLE_AI_SUBSCRIPTION_AVATAR_RING)
-    @UseMethodParameter(NightModeTestUtils.NightModeParams.class)
+    @UseMethodParameter(NightModeParams.class)
     public void testSigninButton_SignedIn_withAiTierRingEnabled_identityErrorExist(
             boolean nightModeEnabled) throws IOException {
         NativeLibraryTestUtils.loadNativeLibraryAndInitBrowserProcess();
@@ -234,7 +233,7 @@ public class SigninButtonRenderTest {
     @MediumTest
     @Feature("RenderTest")
     @EnableFeatures(SigninFeatures.ENABLE_AI_SUBSCRIPTION_AVATAR_RING)
-    @UseMethodParameter(NightModeTestUtils.NightModeParams.class)
+    @UseMethodParameter(NightModeParams.class)
     public void testSigninButton_SignedIn_withAiTierRingEnabled(boolean nightModeEnabled)
             throws IOException {
         startActivityOnNtp();
@@ -256,8 +255,7 @@ public class SigninButtonRenderTest {
     }
 
     private void startActivityOnNtp() {
-        RegularNewTabPageStation page = mActivityTestRule.startOnNtp();
-        NewTabPageTestUtils.waitForNtpLoaded(page.getTab());
+        mActivityTestRule.startOnNtp();
     }
 
     private void setSigninAllowed(boolean allowed) {

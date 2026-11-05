@@ -22,7 +22,6 @@
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
-#include "chrome/app/vector_icons/vector_icons.h"
 #include "chrome/browser/apps/app_service/file_utils.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/sharesheet/sharesheet_metrics.h"
@@ -116,6 +115,11 @@ class SharesheetHeaderView::SharesheetImagePreview : public views::View {
         views::LayoutProvider::Get()->GetCornerRadiusMetric(
             views::Emphasis::kMedium),
         1));
+    SetBorder(views::CreateRoundedRectBorder(
+        /*thickness=*/1,
+        views::LayoutProvider::Get()->GetCornerRadiusMetric(
+            views::Emphasis::kMedium),
+        cros_tokens::kCrosSysOutline));
     SetLayoutManager(std::make_unique<views::BoxLayout>(
         views::BoxLayout::Orientation::kVertical,
         /* inside_border_insets */ gfx::Insets(),
@@ -136,7 +140,7 @@ class SharesheetHeaderView::SharesheetImagePreview : public views::View {
 
     // If we need to have more than 1 icon, add two rows so that we can
     // layout the icons in a grid.
-    DCHECK_GT(grid_icon_count, 1u);
+    CHECK_GT(grid_icon_count, 1u, base::NotFatalUntil::M162);
     AddRowToImageContainerView();
     AddRowToImageContainerView();
 
@@ -188,16 +192,6 @@ class SharesheetHeaderView::SharesheetImagePreview : public views::View {
   }
 
  private:
-  // views::View:
-  void OnThemeChanged() override {
-    View::OnThemeChanged();
-    SetBorder(views::CreateRoundedRectBorder(
-        /*thickness=*/1,
-        views::LayoutProvider::Get()->GetCornerRadiusMetric(
-            views::Emphasis::kMedium),
-        GetColorProvider()->GetColor(cros_tokens::kCrosSysOutline)));
-  }
-
   void AddRowToImageContainerView() {
     auto* row = AddChildView(std::make_unique<views::View>());
     row->SetLayoutManager(std::make_unique<views::BoxLayout>(
@@ -285,7 +279,8 @@ SharesheetHeaderView::SharesheetHeaderView(apps::IntentPtr intent,
   if (has_files) {
     ResolveImages();
   } else {
-    DCHECK_GT(image_preview_->GetImageViewCount(), 0u);
+    CHECK_GT(image_preview_->GetImageViewCount(), 0u,
+             base::NotFatalUntil::M162);
     const auto icon_color =
         StyleUtil::GetColorProviderForNativeTheme()->GetColor(
             cros_tokens::kIconColorProminent);
@@ -318,7 +313,7 @@ void SharesheetHeaderView::ShowTextPreview() {
       // If there is more than 1 file, show an enumeration of the number of
       // files.
       auto size = intent_->files.size();
-      DCHECK_NE(size, 0u);
+      CHECK_NE(size, 0u, base::NotFatalUntil::M162);
       file_text =
           l10n_util::GetPluralStringFUTF16(IDS_SHARESHEET_FILES_LABEL, size);
       filenames_tooltip_text = ConcatenateFileNames(file_names);
@@ -443,7 +438,8 @@ void SharesheetHeaderView::ResolveImage(size_t index) {
                           weak_ptr_factory_.GetWeakPtr()),
       HoldingSpaceImage::CreateDefaultPlaceholderImageSkiaResolver(
           /*use_light_mode_as_default=*/true));
-  DCHECK_GT(image_preview_->GetImageViewCount(), index);
+  CHECK_GT(image_preview_->GetImageViewCount(), index,
+           base::NotFatalUntil::M162);
   const bool is_dark_mode_enabled =
       DarkLightModeControllerImpl::Get()->IsDarkModeEnabled();
   image_preview_->GetImageViewAt(index)->SetImage(
@@ -470,7 +466,8 @@ void SharesheetHeaderView::LoadImage(
 }
 
 void SharesheetHeaderView::OnImageLoaded(const gfx::Size& size, size_t index) {
-  DCHECK_GT(image_preview_->GetImageViewCount(), index);
+  CHECK_GT(image_preview_->GetImageViewCount(), index,
+           base::NotFatalUntil::M162);
   image_preview_->GetImageViewAt(index)->SetImage(images_[index]->GetImageSkia(
       size, DarkLightModeControllerImpl::Get()->IsDarkModeEnabled()));
   // TODO(crbug.com/40213603): Investigate why this SchedulePaint is needed.

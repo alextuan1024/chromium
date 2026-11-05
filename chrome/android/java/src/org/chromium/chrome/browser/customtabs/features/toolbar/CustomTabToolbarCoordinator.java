@@ -38,8 +38,9 @@ import org.chromium.chrome.browser.customtabs.CustomTabCompositorContentInitiali
 import org.chromium.chrome.browser.customtabs.CustomTabsConnection;
 import org.chromium.chrome.browser.customtabs.content.CustomTabActivityNavigationController;
 import org.chromium.chrome.browser.customtabs.content.CustomTabActivityTabProvider;
+import org.chromium.chrome.browser.customtabs.features.desktop_popup_header.DesktopPopupHeaderUtils;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
-import org.chromium.chrome.browser.share.ShareDelegate;
+import org.chromium.chrome.browser.share.ShareDelegate.ShareOrigin;
 import org.chromium.chrome.browser.share.ShareDelegateSupplier;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.tab_ui.TabModelDotInfo;
@@ -49,6 +50,7 @@ import org.chromium.chrome.browser.ui.web_app_header.WebAppHeaderUtils;
 import org.chromium.components.browser_ui.desktop_windowing.DesktopWindowStateManager;
 import org.chromium.components.browser_ui.desktop_windowing.DesktopWindowStateManager.AppHeaderObserver;
 import org.chromium.components.browser_ui.share.ShareHelper;
+import org.chromium.components.browser_ui.share.ShareHelper.ShareSourceAndroid;
 import org.chromium.ui.base.ActivityWindowAndroid;
 import org.chromium.ui.util.TokenHolder;
 import org.chromium.url.GURL;
@@ -118,7 +120,8 @@ public class CustomTabToolbarCoordinator {
     }
 
     private void observeDesktopWindowingState() {
-        if (!WebAppHeaderUtils.isWebAppHeaderEnabled(mIntentDataProvider)) {
+        if (!WebAppHeaderUtils.isWebAppHeaderEnabled(mIntentDataProvider)
+                && !DesktopPopupHeaderUtils.isDesktopPopupHeaderEnabled(mIntentDataProvider)) {
             return;
         }
         // Guaranteed by the check above.
@@ -138,8 +141,7 @@ public class CustomTabToolbarCoordinator {
     private void updateTitleBarVisibility() {
         if (mToolbarManager == null) return;
 
-        int titleVisibilityState =
-                CustomTabsConnection.getInstance().getTitleVisibilityState(mIntentDataProvider);
+        int titleVisibilityState = mIntentDataProvider.getTitleVisibilityState();
         switch (titleVisibilityState) {
             case TitleVisibility.HIDDEN:
                 mToolbarManager.setShowTitle(false);
@@ -159,6 +161,11 @@ public class CustomTabToolbarCoordinator {
     private void updateToolbarControlsVisibilityForDesktopWindowing() {
         if (mToolbarManager == null) return;
 
+        if (DesktopPopupHeaderUtils.isDesktopPopupHeaderEnabled(mIntentDataProvider)) {
+            updatePopupCloseButtonVisibility();
+            return;
+        }
+
         boolean isInDesktopWindow = AppHeaderUtils.isAppInDesktopWindow(mDesktopWindowStateManager);
 
         if (mToolbarButtonsCoordinator != null) {
@@ -172,14 +179,19 @@ public class CustomTabToolbarCoordinator {
         }
     }
 
+    /** In a desktop window the OS caption bar provides the popup's close button. */
+    private void updatePopupCloseButtonVisibility() {
+        mCloseButtonVisibilityManager.setVisibility(
+                !AppHeaderUtils.isAppInDesktopWindow(mDesktopWindowStateManager));
+    }
+
     /**
      * Notifies the navigation controller that the ToolbarManager has been created and is ready for
      * use. ToolbarManager isn't passed directly to the constructor because it's not guaranteed to
      * be initialized yet.
      */
     public void onToolbarInitialized(
-            ToolbarManager manager,
-            CustomTabToolbarButtonsCoordinator toolbarButtonsCoordinator) {
+            ToolbarManager manager, CustomTabToolbarButtonsCoordinator toolbarButtonsCoordinator) {
         assert manager != null : "Toolbar manager not initialized";
         mToolbarManager = manager;
         mToolbarColorController.onToolbarInitialized(manager);
@@ -187,6 +199,10 @@ public class CustomTabToolbarCoordinator {
 
         mToolbarButtonsCoordinator.setCloseButtonClickHandler(v -> onCloseButtonClick());
 
+        // Set before the manager's first update so the popup's close button is bound once.
+        if (DesktopPopupHeaderUtils.isDesktopPopupHeaderEnabled(mIntentDataProvider)) {
+            updatePopupCloseButtonVisibility();
+        }
         mCloseButtonVisibilityManager.onToolbarInitialized(manager, mToolbarButtonsCoordinator);
         updateTitleBarVisibility();
 
@@ -234,10 +250,7 @@ public class CustomTabToolbarCoordinator {
                 && supplier.get() != null) {
             RecordUserAction.record("CustomTabs.ToolbarShareClicked");
             supplier.get()
-                    .share(
-                            tab,
-                            /* shareDirectly= */ false,
-                            ShareDelegate.ShareOrigin.CUSTOM_TAB_SHARE_BUTTON);
+                    .share(tab, /* shareDirectly= */ false, ShareOrigin.CUSTOM_TAB_SHARE_BUTTON);
         } else if (params.getType() == CustomButtonParams.ButtonType.CCT_OPEN_IN_BROWSER_BUTTON) {
             RecordUserAction.record("CustomTabs.ToolbarOpenInBrowserClicked");
             // Need to notify *before* opening in browser, to ensure engagement signal will be fired
@@ -254,7 +267,7 @@ public class CustomTabToolbarCoordinator {
         Resources resources = mActivity.getResources();
         if (mIntentDataProvider.shouldEnableEmbeddedMediaExperience()
                 && TextUtils.equals(params.getDescription(), resources.getString(R.string.share))) {
-            ShareHelper.recordShareSource(ShareHelper.ShareSourceAndroid.ANDROID_SHARE_SHEET);
+            ShareHelper.recordShareSource(ShareSourceAndroid.ANDROID_SHARE_SHEET);
             RecordUserAction.record("CustomTabsCustomActionButtonClick.DownloadsUI.Share");
         }
     }

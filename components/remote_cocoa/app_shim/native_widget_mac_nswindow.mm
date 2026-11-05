@@ -5,6 +5,7 @@
 #import "components/remote_cocoa/app_shim/native_widget_mac_nswindow.h"
 
 #include <memory>
+#include <ranges>
 
 #include "base/apple/foundation_util.h"
 #include "base/auto_reset.h"
@@ -17,6 +18,7 @@
 #include "base/trace_event/trace_event.h"
 #include "components/crash/core/common/crash_key.h"
 #import "components/remote_cocoa/app_shim/features.h"
+#import "components/remote_cocoa/app_shim/immersive_mode_controller_cocoa.h"
 #import "components/remote_cocoa/app_shim/native_widget_ns_window_bridge.h"
 #include "components/remote_cocoa/app_shim/native_widget_ns_window_host_helper.h"
 #import "components/remote_cocoa/app_shim/views_nswindow_delegate.h"
@@ -236,6 +238,7 @@ struct NSEdgeAndCornerThicknesses {
 @synthesize preventKeyWindow = _preventKeyWindow;
 @synthesize childWindowAddedHandler = _childWindowAddedHandler;
 @synthesize childWindowRemovedHandler = _childWindowRemovedHandler;
+@synthesize childWindowKeyChangedHandler = _childWindowKeyChangedHandler;
 @synthesize commandDispatchParentOverride = _commandDispatchParentOverride;
 
 - (instancetype)initWithContentRect:(NSRect)contentRect
@@ -283,6 +286,10 @@ struct NSEdgeAndCornerThicknesses {
   return [self isVisible];
 }
 
+- (BOOL)immersiveRevealLockRequiresKey {
+  return NO;
+}
+
 // This is called by the "Move Window to {Left/Right} Side of Screen"
 // Window menu alternate items (must press Option to see).
 // Without this, selecting these items will move child windows like
@@ -316,6 +323,26 @@ struct NSEdgeAndCornerThicknesses {
   childWin.level = level;
   if (self.childWindowAddedHandler) {
     self.childWindowAddedHandler(childWin);
+  }
+}
+
+- (void)becomeKeyWindow {
+  [super becomeKeyWindow];
+  [self notifyParentOfKeyChange];
+}
+
+- (void)resignKeyWindow {
+  [super resignKeyWindow];
+  [self notifyParentOfKeyChange];
+}
+
+// Lets the parent track key changes of its children, e.g. for immersive
+// fullscreen reveal locks.
+- (void)notifyParentOfKeyChange {
+  NativeWidgetMacNSWindow* parent =
+      base::apple::ObjCCast<NativeWidgetMacNSWindow>(self.parentWindow);
+  if (parent.childWindowKeyChangedHandler) {
+    parent.childWindowKeyChangedHandler(self);
   }
 }
 
@@ -590,7 +617,7 @@ struct NSEdgeAndCornerThicknesses {
   }
 
   for (remote_cocoa::NativeWidgetNSWindowBridge* child_bridge :
-       base::Reversed(_bridge->child_windows())) {
+       std::views::reverse(_bridge->child_windows())) {
     if (child_bridge->modal_type() == ui::mojom::ModalType::kNone) {
       continue;
     }
@@ -905,6 +932,13 @@ struct NSEdgeAndCornerThicknesses {
   // TODO(bokan): Tracing added temporarily to diagnose crbug.com/1039833.
   TRACE_EVENT1("browser", "NSWindow::performKeyEquivalent", "WindowNum",
                [self windowNumber]);
+  if ([self hasViewsMenuActive] && [event type] == NSEventTypeKeyDown) {
+    if (BridgedContentView* contentView =
+            base::apple::ObjCCast<BridgedContentView>([self contentView]);
+        [contentView performMenuKeyEquivalent:event]) {
+      return YES;
+    }
+  }
   return [_commandDispatcher performKeyEquivalent:event];
 }
 
@@ -938,10 +972,21 @@ struct NSEdgeAndCornerThicknesses {
 // responder. When AppKit calls |-encodeRestorableStateWithCoder:|, it
 // accomplishes the same thing by passing a custom coder.
 - (id)archiver:(NSKeyedArchiver*)archiver willEncodeObject:(id)object {
-  if (object == self)
+  if (object == self) {
     return nil;
-  if ([object isKindOfClass:[NSView class]])
+  }
+  if ([object isKindOfClass:[NSView class]]) {
     return nil;
+  }
+  // In fullscreen, NSToolbarFullScreenWindow is a child window that shares
+  // this window's first responder. When a view that is its first responder is
+  // removed, AppKit calls -[NSToolbarFullScreenWindow makeFirstResponder:self],
+  // which is forwarded to this window, leaving the NSToolbarFullScreenWindow
+  // itself as this window's first responder. It does not adopt
+  // NSSecureCoding, so archiving it throws. See https://crbug.com/566904500.
+  if (remote_cocoa::IsNSToolbarFullScreenWindow(object)) {
+    return nil;
+  }
   return object;
 }
 

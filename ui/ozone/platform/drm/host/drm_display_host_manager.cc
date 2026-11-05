@@ -8,7 +8,9 @@
 #include <stddef.h>
 #include <xf86drm.h>
 
+#include <array>
 #include <memory>
+#include <string_view>
 #include <utility>
 
 #include "base/compiler_specific.h"
@@ -53,10 +55,10 @@ const int kAuthFailSleepMs = 100;
 const int kLogAuthFailDelayMs = 1000;
 
 // Maximum number of attempts to authenticate the DRM device before proceeding.
-// With kAuthFailSleepMs = 100, 10 attempts corresponds to ~1 second.
-constexpr int kMaxAuthAttempts = 10;
+// With kAuthFailSleepMs = 100, 50 attempts corresponds to ~5 seconds.
+constexpr int kMaxAuthAttempts = 50;
 
-constexpr const char* kDisplayActionString[] = {
+constexpr std::array<std::string_view, 3> kDisplayActionString = {
     "ADD",
     "REMOVE",
     "CHANGE",
@@ -364,12 +366,12 @@ DrmDisplayHost* DrmDisplayHostManager::GetDisplay(int64_t display_id) {
 }
 
 void DrmDisplayHostManager::AddDelegate(DrmNativeDisplayDelegate* delegate) {
-  DCHECK(!delegate_);
+  CHECK(!delegate_, base::NotFatalUntil::M163);
   delegate_ = delegate;
 }
 
 void DrmDisplayHostManager::RemoveDelegate(DrmNativeDisplayDelegate* delegate) {
-  DCHECK_EQ(delegate_, delegate);
+  CHECK_EQ(delegate_, delegate, base::NotFatalUntil::M163);
   delegate_ = nullptr;
 }
 
@@ -458,9 +460,8 @@ void DrmDisplayHostManager::ProcessEvent() {
     const std::string seqnum = seqnum_it == event.display_event_props.end()
                                    ? ""
                                    : ("(SEQNUM:" + seqnum_it->second + ")");
-    VLOG(1) << "Got display event "
-            << UNSAFE_TODO(kDisplayActionString[event.action_type]) << seqnum
-            << " for " << event.path.value();
+    VLOG(1) << "Got display event " << kDisplayActionString[event.action_type]
+            << seqnum << " for " << event.path.value();
     switch (event.action_type) {
       case DeviceEvent::ADD:
         if (drm_devices_.find(event.path) == drm_devices_.end()) {
@@ -655,8 +656,8 @@ void DrmDisplayHostManager::GpuTookDisplayControl(bool status) {
     return;
   }
 
-  DCHECK(display_externally_controlled_);
-  DCHECK(display_control_change_pending_);
+  CHECK(display_externally_controlled_, base::NotFatalUntil::M163);
+  CHECK(display_control_change_pending_, base::NotFatalUntil::M163);
 
   if (status) {
     scoped_input_devices_disabler_.reset();
@@ -676,8 +677,8 @@ void DrmDisplayHostManager::GpuRelinquishedDisplayControl(bool status) {
     return;
   }
 
-  DCHECK(!display_externally_controlled_);
-  DCHECK(display_control_change_pending_);
+  CHECK(!display_externally_controlled_, base::NotFatalUntil::M163);
+  CHECK(display_control_change_pending_, base::NotFatalUntil::M163);
 
   if (status) {
     scoped_input_devices_disabler_ = input_controller_->DisableInputDevices();

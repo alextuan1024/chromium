@@ -25,12 +25,8 @@
 namespace autofill {
 
 struct AddressToken {
-  // The original value.
-  std::u16string value;
   // The normalized value.
   std::u16string normalized_value;
-  // The token position in the original string.
-  int position;
 };
 
 enum class RegEx;
@@ -58,19 +54,11 @@ enum class SortedTokenComparisonStatus {
   kSuperset
 };
 
-// The result from comparing two sets of sorted tokens containing the status and
-// the additional tokens in the super/sub sets.
+// The result from comparing two sets of sorted tokens.
 struct SortedTokenComparisonResult {
-  explicit SortedTokenComparisonResult(
-      SortedTokenComparisonStatus status,
-      std::vector<AddressToken> additional_tokens = {});
-  SortedTokenComparisonResult(SortedTokenComparisonResult&& other);
-  SortedTokenComparisonResult& operator=(SortedTokenComparisonResult&& other);
-  ~SortedTokenComparisonResult();
+  explicit SortedTokenComparisonResult(SortedTokenComparisonStatus status);
   // The status of the token comparison.
   SortedTokenComparisonStatus status = SortedTokenComparisonStatus::kDistinct;
-  // The additional elements in the super/subsets.
-  std::vector<AddressToken> additional_tokens{};
   // Return true if one is a subset of the other.
   bool OneIsSubset() const;
   // Returns true if one contains the other.

@@ -76,8 +76,11 @@ struct HlsDemuxerStatusTraits {
     // error during initialization.
     kNoDataEverAppended = 18,
 
+    // the file:// data scheme is not allowed in HLS.
+    kInvalidContentScheme = 19,
+
     // Keep this at the end and equal to the highest value ever used.
-    kMaxValue = kNoDataEverAppended,
+    kMaxValue = kInvalidContentScheme,
   };
 
   static constexpr StatusGroupType Group() { return "HlsDemuxerStatus"; }
@@ -122,6 +125,8 @@ struct HlsDemuxerStatusTraits {
         return "Could not append data to ChunkDemuxer";
       case Codes::kNoDataEverAppended:
         return "Segment queue never had any data";
+      case Codes::kInvalidContentScheme:
+        return "The content scheme is disallowed in HLS.";
     }
   }
 };
@@ -129,7 +134,8 @@ struct HlsDemuxerStatusTraits {
 using HlsDemuxerStatus = TypedStatus<HlsDemuxerStatusTraits>;
 
 template <typename T>
-using HlsDemuxerStatusCb = base::OnceCallback<void(HlsDemuxerStatus::Or<T>)>;
+using HlsDemuxerStatusCb =
+    base::OnceCallback<void(base::expected<T, HlsDemuxerStatus>)>;
 
 using HlsDemuxerStatusCallback = base::OnceCallback<void(HlsDemuxerStatus)>;
 

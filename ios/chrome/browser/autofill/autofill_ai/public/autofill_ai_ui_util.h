@@ -11,6 +11,9 @@
 #import "components/autofill/core/browser/data_model/autofill_ai/entity_type_names.h"
 #import "url/gurl.h"
 
+@class AutofillLegalMessageLine;
+@class CrURL;
+
 namespace autofill {
 
 // Returns the default icon for the Autofill AI entity type.
@@ -47,9 +50,23 @@ NSString* GetDialogTitleForEditEntity(EntityTypeName entity_type_name);
 // ios/chrome/common/string_util.h.
 NSString* WrapInLinkTags(NSString* text);
 
+// Returns the text of `legal_message` with each valid link wrapped in link tags
+// by `WrapInLinkTags()`, appending the corresponding URLs to `urls`
+// in the order their tags appear in the returned string. Ranges that are
+// invalid or that overlap a previous one, as well as links with an invalid URL,
+// are emitted as plain text so that the number of tags always matches the
+// number of appended URLs.
+NSString* TextForDisclosureLegalMessageAppendingURLsTo(
+    AutofillLegalMessageLine* legal_message,
+    NSMutableArray<CrURL*>* urls);
+
 // Returns the footer text for saving an entity to Wallet, formatted with the
-// user's email.
-NSString* GetSaveEntityToWalletFooterText(NSString* user_email);
+// user's email, and appends the corresponding link URLs to `urls` (if non-nil)
+// in the order their tags appear in the returned string.
+NSString* GetSaveEntityToWalletFooterTextAppendingURLsTo(
+    NSString* user_email,
+    bool is_private_pass,
+    NSMutableArray<CrURL*>* urls);
 
 // Returns the footer text for updating an entity saved in Wallet, formatted
 // with the user's email.
@@ -57,6 +74,9 @@ NSString* GetUpdateEntitySavedInWalletFooterText(NSString* user_email);
 
 // Returns the URL for "manage your info" link for save to wallet footer.
 GURL GetManageYourInfoURL();
+
+// Returns the URL for the Google Privacy Policy link.
+GURL GetGooglePrivacyPolicyURL();
 
 // Returns the URL for Google Wallet passes.
 GURL GetGoogleWalletPassesURL();
@@ -72,9 +92,7 @@ UIView* CreateBrandedTitleForWalletSave(NSString* title);
 
 // Returns the message ID for the subtitle shown in the save-to-wallet dialog.
 // Exposed so the Consent Auditor records the exact string shown in the UI.
-// Note: The string contains placeholders for the Google Wallet title, a
-// link, the Google Wallet title again, and the user's email.
-int GetSaveToWalletSubtitleStringId();
+int GetSaveToWalletSubtitleStringId(bool is_private_pass);
 
 // Returns the message ID for the accept button in the save entity dialog.
 // Exposed so the Consent Auditor records the exact string shown in the UI.

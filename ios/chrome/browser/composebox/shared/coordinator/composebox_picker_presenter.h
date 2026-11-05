@@ -9,18 +9,21 @@
 
 #import <set>
 
+#import "base/ios/block_types.h"
 #import "ios/chrome/browser/composebox/shared/coordinator/composebox_picker_drive_result.h"
 #import "ios/chrome/browser/composebox/shared/coordinator/composebox_picker_image_result.h"
 #import "ios/chrome/browser/shared/model/browser/browser.h"
 #import "ios/web/public/web_state.h"
 #import "ios/web/public/web_state_id.h"
 
+struct ComposeboxTabSelection;
 @class ComposeboxMetricsRecorder;
 @class ComposeboxPickerPresenter;
 
 /// Delegate for various picker events.
-@protocol ComposeboxPickerPresenterDelegate
+@protocol ComposeboxPickerPresenterDelegate <NSObject>
 
+@optional
 // Called when the camera or gallery picker finishes picking an image.
 - (void)composeboxPickerPresenter:(ComposeboxPickerPresenter*)presenter
                     didPickImages:
@@ -36,10 +39,7 @@
 
 // Called when the tab picker finishes picking tabs.
 - (void)composeboxPickerPresenter:(ComposeboxPickerPresenter*)presenter
-    handleSelectedTabsWithWebStateIDs:
-        (std::set<web::WebStateID>)selectedWebStateIDs
-                    cachedWebStateIDs:
-                        (std::set<web::WebStateID>)cachedWebStateIDs;
+                      didPickTabs:(const ComposeboxTabSelection&)selection;
 
 // Called when the Drive picker finishes picking Drive items.
 - (void)composeboxPickerPresenter:(ComposeboxPickerPresenter*)presenter
@@ -111,6 +111,7 @@
 
 // Dismisses the presented picker.
 - (void)dismissPicker;
+- (void)dismissPickerWithCompletion:(ProceduralBlock)completion;
 
 @end
 

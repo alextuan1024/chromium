@@ -647,6 +647,9 @@ TEST_F(ScrollViewTest, AccessibleProperties) {
 }
 
 TEST_F(ScrollViewTest, ContentOverflowing) {
+  EXPECT_FALSE(scroll_view_->IsHorizontalContentOverflowing());
+  EXPECT_FALSE(scroll_view_->IsVerticalContentOverflowing());
+
   View* contents = InstallContents();
   const gfx::Size viewport_size =
       ScrollViewTestApi(scroll_view_.get()).contents_viewport()->size();
@@ -679,6 +682,39 @@ TEST_F(ScrollViewTest, ContentOverflowing) {
   InvalidateAndRunScheduledLayoutOnScrollView();
   EXPECT_TRUE(scroll_view_->IsHorizontalContentOverflowing());
   EXPECT_TRUE(scroll_view_->IsVerticalContentOverflowing());
+
+  scroll_view_->SetContents(nullptr);
+  EXPECT_FALSE(scroll_view_->IsHorizontalContentOverflowing());
+  EXPECT_FALSE(scroll_view_->IsVerticalContentOverflowing());
+}
+
+TEST_F(ScrollViewTest, GetScrollViewForContentsDuringRemoval) {
+  class RemovalCheckingView : public View {
+   public:
+    explicit RemovalCheckingView(bool* checked) : checked_(checked) {}
+
+    void ViewHierarchyChanged(
+        const ViewHierarchyChangedDetails& details) override {
+      if (!details.is_add && details.child == this) {
+        EXPECT_EQ(nullptr, ScrollView::GetScrollViewForContents(this));
+        *checked_ = true;
+      }
+    }
+
+   private:
+    raw_ptr<bool> checked_;
+  };
+
+  bool checked = false;
+  auto* contents = scroll_view_->SetContents(
+      std::make_unique<RemovalCheckingView>(&checked));
+  EXPECT_EQ(scroll_view_.get(), ScrollView::GetScrollViewForContents(contents));
+
+  auto* header = scroll_view_->SetHeader(std::make_unique<View>());
+  EXPECT_EQ(nullptr, ScrollView::GetScrollViewForContents(header));
+
+  scroll_view_->SetContents(nullptr);
+  EXPECT_TRUE(checked);
 }
 
 // Verifies the scrollbars are added as necessary.
@@ -1486,6 +1522,7 @@ TEST_F(WidgetScrollViewTest, ChildWithLayerTest) {
   ScrollView* scroll_view = AddScrollViewWithContents(std::move(contents_ptr));
   ScrollViewTestApi test_api(scroll_view);
 
+  EXPECT_FALSE(test_api.contents_viewport()->GetBackground());
   if (test_api.contents_viewport()->layer()) {
     return;
   }
@@ -1494,6 +1531,7 @@ TEST_F(WidgetScrollViewTest, ChildWithLayerTest) {
   child->SetPaintToLayer(ui::LAYER_TEXTURED);
 
   ASSERT_TRUE(test_api.contents_viewport()->layer());
+  EXPECT_TRUE(test_api.contents_viewport()->GetBackground());
   // The default ScrollView color is opaque, so that fills bounds opaquely
   // should be true.
   EXPECT_TRUE(test_api.contents_viewport()->layer()->fills_bounds_opaquely());
@@ -1501,6 +1539,7 @@ TEST_F(WidgetScrollViewTest, ChildWithLayerTest) {
   // Setting a std::nullopt color should make fills opaquely false.
   scroll_view->SetBackgroundColor(std::nullopt);
   EXPECT_FALSE(test_api.contents_viewport()->layer()->fills_bounds_opaquely());
+  EXPECT_FALSE(test_api.contents_viewport()->GetBackground());
 
   child->DestroyLayer();
   EXPECT_FALSE(test_api.contents_viewport()->layer());
@@ -1539,18 +1578,22 @@ TEST_F(ScrollViewTest, ContentsViewportLayerUsed_ScrollWithLayersDisabled) {
   View* contents = scroll_view.SetContents(std::make_unique<View>());
 
   ASSERT_FALSE(test_api.contents_viewport()->layer());
+  EXPECT_FALSE(test_api.contents_viewport()->GetBackground());
 
   View* child = contents->AddChildView(std::make_unique<View>());
   child->SetPaintToLayer();
 
   // When contents does not have a layer, contents_viewport is TEXTURED layer.
   EXPECT_TRUE(test_api.contents_viewport()->layer()->AsTextured());
+  EXPECT_TRUE(test_api.contents_viewport()->GetBackground());
   contents->SetPaintToLayer();
   // When contents is a TEXTURED layer.
   EXPECT_TRUE(test_api.contents_viewport()->layer()->AsNotDrawn());
+  EXPECT_FALSE(test_api.contents_viewport()->GetBackground());
   contents->SetPaintToLayer(ui::LAYER_NOT_DRAWN);
   // When contents is a NOT_DRAWN layer.
   EXPECT_TRUE(test_api.contents_viewport()->layer()->AsTextured());
+  EXPECT_TRUE(test_api.contents_viewport()->GetBackground());
 }
 
 // Validates the layer of contents_viewport_, when contents_ does not have a
@@ -1655,17 +1698,20 @@ TEST_F(
   // layer.
   ASSERT_TRUE(test_api.contents_viewport()->layer());
   EXPECT_TRUE(test_api.contents_viewport()->layer()->AsNotDrawn());
+  EXPECT_FALSE(test_api.contents_viewport()->GetBackground());
 
   // changing the layer type that the scrollview enables on contents.
   scroll_view.SetContentsLayerType(ui::LAYER_NOT_DRAWN);
 
   View* contents = scroll_view.SetContents(std::make_unique<View>());
   EXPECT_TRUE(test_api.contents_viewport()->layer()->AsTextured());
+  EXPECT_TRUE(test_api.contents_viewport()->GetBackground());
 
   View* child = contents->AddChildView(std::make_unique<View>());
   child->SetPaintToLayer();
 
   EXPECT_TRUE(test_api.contents_viewport()->layer()->AsTextured());
+  EXPECT_TRUE(test_api.contents_viewport()->GetBackground());
 }
 
 TEST_F(ScrollViewTest,
@@ -2267,77 +2313,6 @@ TEST_F(ScrollViewTest, ScrollDuringVisibilityChangedDoesNotCrash) {
   // tree. When `child` receives `VisibilityChanged(true)`, it scrolls itself
   // into view, updating overflow indicators. This must not crash.
   scroll_view_->SetVisible(true);
-}
-
-// Verifies that the next successful frame post-layout callback is called.
-TEST_F(WidgetScrollViewTest, NextSuccessfulFramePostLayoutCallback) {
-  auto contents = std::make_unique<View>();
-  contents->SetPreferredSize(gfx::Size(100, 100));
-  ScrollView* scroll_view = AddScrollViewWithContents(std::move(contents));
-
-  base::RunLoop run_loop;
-  bool callback_called = false;
-  scroll_view->RegisterNextSuccessfulFramePostLayoutCallback(base::BindOnce(
-      [](bool* callback_called, base::OnceClosure quit_closure) {
-        *callback_called = true;
-        std::move(quit_closure).Run();
-      },
-      &callback_called, run_loop.QuitClosure()));
-
-  // Trigger layout.
-  scroll_view->InvalidateLayout();
-  views::test::RunScheduledLayout(scroll_view);
-
-  // The callback should not be called yet (it waits for a frame).
-  EXPECT_FALSE(callback_called);
-
-  run_loop.Run();
-
-  EXPECT_TRUE(callback_called);
-}
-
-// Verifies that the next successful frame post-layout callback is called only
-// once even if multiple layouts occur.
-TEST_F(WidgetScrollViewTest, NextSuccessfulFramePostLayoutCallbackOnce) {
-  auto contents = std::make_unique<View>();
-  contents->SetPreferredSize(gfx::Size(100, 100));
-  ScrollView* scroll_view = AddScrollViewWithContents(std::move(contents));
-
-  int callback_called_count = 0;
-  base::RunLoop run_loop;
-  scroll_view->RegisterNextSuccessfulFramePostLayoutCallback(base::BindOnce(
-      [](int* callback_called_count, base::OnceClosure quit_closure) {
-        (*callback_called_count)++;
-        std::move(quit_closure).Run();
-      },
-      &callback_called_count, run_loop.QuitClosure()));
-
-  // Trigger layout multiple times.
-  scroll_view->InvalidateLayout();
-  views::test::RunScheduledLayout(scroll_view);
-  scroll_view->InvalidateLayout();
-  views::test::RunScheduledLayout(scroll_view);
-
-  run_loop.Run();
-
-  EXPECT_EQ(1, callback_called_count);
-
-  // Trigger another layout and wait again to be sure it doesn't fire again.
-  // We need to wait for another frame to be sure.
-  base::RunLoop run_loop2;
-  widget()->GetCompositor()->RequestSuccessfulPresentationTimeForNextFrame(
-      base::BindOnce(
-          [](base::OnceClosure quit_closure,
-             const viz::FrameTimingDetails& frame_timing_details) {
-            std::move(quit_closure).Run();
-          },
-          run_loop2.QuitClosure()));
-
-  scroll_view->InvalidateLayout();
-  views::test::RunScheduledLayout(scroll_view);
-  run_loop2.Run();
-
-  EXPECT_EQ(1, callback_called_count);
 }
 
 TEST_F(ScrollViewTest, VerticalWithHeaderOverflowIndicators) {
@@ -3347,7 +3322,7 @@ TEST_F(WidgetScrollViewTest, CompositedTransposedScrollEvents) {
 // is somewhat ambiguous. This is the case where the horizontal component is
 // larger than the vertical.
 TEST_F(WidgetScrollViewTest,
-       DISABLED_CompositedTransposedScrollEventsHorizontalComponentIsLarger) {
+       CompositedTransposedScrollEventsHorizontalComponentIsLarger) {
   // Set up with a vertical scroll bar.
   ScrollView* scroll_view =
       AddScrollViewWithContentSize(gfx::Size(kDefaultHeight * 5, 10));

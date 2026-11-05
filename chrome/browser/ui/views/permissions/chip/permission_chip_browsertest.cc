@@ -6,6 +6,9 @@
 #include "base/memory/raw_ptr.h"
 #include "base/strings/strcat.h"
 #include "base/test/metrics/histogram_tester.h"
+#include "base/test/run_until.h"
+#include "base/test/scoped_feature_list.h"
+#include "build/build_config.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/location_bar/location_bar.h"
 #include "chrome/browser/ui/omnibox/omnibox_controller.h"
@@ -19,6 +22,7 @@
 #include "chrome/browser/ui/views/permissions/permission_prompt_chip.h"
 #include "chrome/browser/ui/views/tabs/common/tab_strip_view.h"
 #include "chrome/browser/ui/window_metadata/window_metadata_controller.h"
+#include "chrome/common/chrome_features.h"
 #include "chrome/grit/generated_resources.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/ui_test_utils.h"
@@ -27,20 +31,24 @@
 #include "components/permissions/permission_prompt.h"
 #include "components/permissions/permission_request_enums.h"
 #include "components/permissions/permission_request_manager.h"
+#include "components/permissions/permission_uma_constants.h"
 #include "components/permissions/prediction_service/permission_ui_selector.h"
 #include "components/permissions/resolvers/permission_prompt_options.h"
 #include "components/permissions/test/enums_to_string.h"
 #include "components/permissions/test/mock_permission_request.h"
+#include "content/public/common/content_features.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "ui/base/l10n/l10n_util.h"
-#include "ui/base/window_open_disposition.h"
+#include "ui/base/mojom/window_open_disposition.mojom-shared.h"
 #include "ui/events/base_event_utils.h"
 #include "ui/gfx/animation/animation_test_api.h"
 #include "ui/views/interaction/element_tracker_views.h"
 #include "ui/views/test/button_test_api.h"
+#include "ui/views/test/widget_test.h"
 #include "ui/views/view_utils.h"
+#include "ui/views/widget/widget.h"
 
 namespace {
 using ::content::RenderFrameHost;
@@ -77,6 +85,17 @@ class InfoBarObserver : public InfoBarManager::Observer {
 
  private:
   raw_ptr<WebContents> web_contents_;
+};
+
+// A request that stays pending, with its chip still showing, when the user
+// closes its prompt bubble.
+class KeepChipOnBubbleClosePermissionRequest
+    : public permissions::MockPermissionRequest {
+ public:
+  using permissions::MockPermissionRequest::MockPermissionRequest;
+
+  // permissions::PermissionRequest:
+  bool ShouldKeepChipOnBubbleClose() const override { return true; }
 };
 }  // namespace
 
@@ -204,6 +223,12 @@ class MockPermissionRequestManager
     requests_.clear();
   }
 
+  // Adds `request` to the requests, which are decided together.
+  void AddRequest(std::unique_ptr<permissions::PermissionRequest> request) {
+    raw_requests_.push_back(request.get());
+    requests_.push_back(std::move(request));
+  }
+
   void SetRequests(const GURL& origin,
                    const std::vector<permissions::RequestType>& request_types,
                    bool with_gesture) {
@@ -228,6 +253,16 @@ class MockPermissionRequestManager
       requests_[0]->set_requesting_frame_id(
           web_contents_->GetPrimaryMainFrame()->GetGlobalId());
     }
+  }
+
+  // Replaces the requests with `request`, e.g. a request that customizes its
+  // chip.
+  void SetRequest(std::unique_ptr<permissions::PermissionRequest> request) {
+    request->set_requesting_frame_id(
+        web_contents_->GetPrimaryMainFrame()->GetGlobalId());
+    raw_requests_ = {request.get()};
+    requests_.clear();
+    requests_.push_back(std::move(request));
   }
 
   void SetView(std::unique_ptr<permissions::PermissionPrompt> view) {
@@ -266,9 +301,19 @@ class PermissionChipBrowserTest : public InProcessBrowserTest {
     return BrowserView::GetBrowserViewForBrowser(browser());
   }
 
+  // WebUIPermissionChip resolves the prompt bubble's anchor asynchronously,
+  // once the WebUI has registered the chip element over Mojo. Waits for it so
+  // that any pending prompt bubble is created by the time this returns.
+  void WaitForBubbleAnchor(ChipController* controller) {
+    ASSERT_TRUE(base::test::RunUntil([controller] {
+      return !controller->is_waiting_for_anchor_for_testing();
+    }));
+  }
+
   void ClickOnChip(ChipController* controller) {
     controller->chip()->ExecuteForTesting();
     base::RunLoop().RunUntilIdle();
+    WaitForBubbleAnchor(controller);
   }
 
   void ClickOnAcceptPermissionRequestQuietChip(ChipController* controller) {
@@ -323,7 +368,7 @@ IN_PROC_BROWSER_TEST_F(PermissionChipBrowserTest, AccessibleName) {
 
   ASSERT_TRUE(ui_test_utils::NavigateToURLWithDisposition(
       browser(), embedded_test_server()->GetURL("/title2.html"),
-      WindowOpenDisposition::NEW_FOREGROUND_TAB,
+      ui::mojom::WindowOpenDisposition::kNewForegroundTab,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP));
 
   std::u16string tab_title =
@@ -376,6 +421,7 @@ IN_PROC_BROWSER_TEST_F(PermissionChipBrowserTest, ClickOnRequestChipTest) {
   chip_controller->chip()->ResetAnimation(
       PermissionChipInterface::AnimationState::kExpanded);
   chip_controller->OnExpandAnimationEnded();
+  WaitForBubbleAnchor(chip_controller);
   EXPECT_FALSE(chip_controller->IsAnimating());
 
   EXPECT_FALSE(chip_controller->is_collapse_timer_running_for_testing());
@@ -390,6 +436,140 @@ IN_PROC_BROWSER_TEST_F(PermissionChipBrowserTest, ClickOnRequestChipTest) {
 
   // A click on the chip hides the popup bubble and resolves a permission
   // request.
+  EXPECT_CALL(delegate, Dismiss(_)).WillOnce([&delegate]() {
+    delegate.ClearRequests();
+  });
+  ClickOnChip(chip_controller);
+  EXPECT_FALSE(chip_controller->IsBubbleShowing());
+  EXPECT_FALSE(delegate.IsRequestInProgress());
+}
+
+IN_PROC_BROWSER_TEST_F(PermissionChipBrowserTest,
+                       ClosingBubbleKeepsChipIfRequestAllows) {
+  auto& delegate = *test::MockPermissionRequestManager::CreateForWebContents(
+      GURL("https://test.origin"), {}, /*with_gesture=*/true, web_contents_);
+  delegate.SetRequest(std::make_unique<KeepChipOnBubbleClosePermissionRequest>(
+      GURL("https://test.origin"), permissions::RequestType::kNotifications,
+      permissions::PermissionRequestGestureType::GESTURE));
+  PermissionPromptChip chip_prompt(web_contents_, &delegate);
+  ChipController* chip_controller =
+      chip_prompt.get_chip_controller_for_testing();
+  chip_controller->chip()->ResetAnimation(
+      PermissionChipInterface::AnimationState::kExpanded);
+  chip_controller->OnExpandAnimationEnded();
+  WaitForBubbleAnchor(chip_controller);
+  ASSERT_TRUE(chip_controller->IsBubbleShowing());
+
+  // Closing the bubble with its close button doesn't dismiss the request, and
+  // keeps the chip.
+  EXPECT_CALL(delegate, Dismiss(_)).Times(0);
+  views::Widget* bubble_widget = chip_controller->GetBubbleWidget();
+  views::test::WidgetDestroyedWaiter bubble_destroyed_waiter(bubble_widget);
+  bubble_widget->CloseWithReason(
+      views::Widget::ClosedReason::kCloseButtonClicked);
+  bubble_destroyed_waiter.Wait();
+  EXPECT_TRUE(delegate.IsRequestInProgress());
+  EXPECT_TRUE(chip_controller->IsPermissionPromptChipVisible());
+  // Like a chip without a bubble, the chip collapses and then expires.
+  EXPECT_TRUE(chip_controller->is_collapse_timer_running_for_testing());
+
+  // Clicking the chip reopens the bubble.
+  ClickOnChip(chip_controller);
+  EXPECT_TRUE(chip_controller->IsBubbleShowing());
+  EXPECT_FALSE(chip_controller->is_collapse_timer_running_for_testing());
+  delegate.ClearRequests();
+}
+
+IN_PROC_BROWSER_TEST_F(PermissionChipBrowserTest, KeptChipExpires) {
+  auto& delegate = *test::MockPermissionRequestManager::CreateForWebContents(
+      GURL("https://test.origin"), {}, /*with_gesture=*/true, web_contents_);
+  delegate.SetRequest(std::make_unique<KeepChipOnBubbleClosePermissionRequest>(
+      GURL("https://test.origin"), permissions::RequestType::kNotifications,
+      permissions::PermissionRequestGestureType::GESTURE));
+  PermissionPromptChip chip_prompt(web_contents_, &delegate);
+  ChipController* chip_controller =
+      chip_prompt.get_chip_controller_for_testing();
+  chip_controller->chip()->ResetAnimation(
+      PermissionChipInterface::AnimationState::kExpanded);
+  chip_controller->OnExpandAnimationEnded();
+  WaitForBubbleAnchor(chip_controller);
+  ASSERT_TRUE(chip_controller->IsBubbleShowing());
+
+  // Clicking the chip while the bubble is showing closes the bubble, and keeps
+  // the chip.
+  EXPECT_CALL(delegate, Dismiss(_)).Times(0);
+  ClickOnChip(chip_controller);
+  EXPECT_FALSE(chip_controller->IsBubbleShowing());
+  EXPECT_TRUE(chip_controller->IsPermissionPromptChipVisible());
+
+  // The chip collapses, and then expires, which ignores the request.
+  chip_controller->fire_collapse_timer_for_testing();
+  EXPECT_TRUE(chip_controller->is_dismiss_timer_running_for_testing());
+  EXPECT_TRUE(chip_controller->IsPermissionPromptChipVisible());
+  EXPECT_CALL(delegate, Ignore(_)).WillOnce([&delegate]() {
+    delegate.ClearRequests();
+  });
+  chip_controller->fire_dismiss_timer_for_testing();
+  EXPECT_FALSE(chip_controller->IsPermissionPromptChipVisible());
+  EXPECT_FALSE(delegate.IsRequestInProgress());
+}
+
+IN_PROC_BROWSER_TEST_F(PermissionChipBrowserTest,
+                       ClosingBubbleOfCollapsedChipStartsDismissTimer) {
+  auto& delegate = *test::MockPermissionRequestManager::CreateForWebContents(
+      GURL("https://test.origin"), {}, /*with_gesture=*/true, web_contents_);
+  delegate.SetRequest(std::make_unique<KeepChipOnBubbleClosePermissionRequest>(
+      GURL("https://test.origin"), permissions::RequestType::kNotifications,
+      permissions::PermissionRequestGestureType::GESTURE));
+  PermissionPromptChip chip_prompt(web_contents_, &delegate);
+  ChipController* chip_controller =
+      chip_prompt.get_chip_controller_for_testing();
+  chip_controller->chip()->ResetAnimation(
+      PermissionChipInterface::AnimationState::kExpanded);
+  chip_controller->OnExpandAnimationEnded();
+  WaitForBubbleAnchor(chip_controller);
+  ASSERT_TRUE(chip_controller->IsBubbleShowing());
+
+  // Close the bubble, and let the chip collapse.
+  ClickOnChip(chip_controller);
+  ASSERT_FALSE(chip_controller->IsBubbleShowing());
+  chip_controller->fire_collapse_timer_for_testing();
+  chip_controller->chip()->ResetAnimation(
+      PermissionChipInterface::AnimationState::kCollapsed);
+  ASSERT_TRUE(chip_controller->chip()->IsFullyCollapsed());
+
+  // Reopen the bubble from the collapsed chip, and close it again. The chip
+  // has already collapsed, so it only waits to expire.
+  ClickOnChip(chip_controller);
+  ASSERT_TRUE(chip_controller->IsBubbleShowing());
+  ClickOnChip(chip_controller);
+  EXPECT_FALSE(chip_controller->IsBubbleShowing());
+  EXPECT_FALSE(chip_controller->is_collapse_timer_running_for_testing());
+  EXPECT_TRUE(chip_controller->is_dismiss_timer_running_for_testing());
+  delegate.ClearRequests();
+}
+
+IN_PROC_BROWSER_TEST_F(PermissionChipBrowserTest,
+                       ClosingBubbleDismissesRequestsIfAnyDoesNotKeepChip) {
+  auto& delegate = *test::MockPermissionRequestManager::CreateForWebContents(
+      GURL("https://test.origin"), {}, /*with_gesture=*/true, web_contents_);
+  delegate.SetRequest(std::make_unique<KeepChipOnBubbleClosePermissionRequest>(
+      GURL("https://test.origin"), permissions::RequestType::kMicStream,
+      permissions::PermissionRequestGestureType::GESTURE));
+  delegate.AddRequest(std::make_unique<permissions::MockPermissionRequest>(
+      GURL("https://test.origin"), permissions::RequestType::kCameraStream,
+      permissions::PermissionRequestGestureType::GESTURE));
+  PermissionPromptChip chip_prompt(web_contents_, &delegate);
+  ChipController* chip_controller =
+      chip_prompt.get_chip_controller_for_testing();
+  chip_controller->chip()->ResetAnimation(
+      PermissionChipInterface::AnimationState::kExpanded);
+  chip_controller->OnExpandAnimationEnded();
+  WaitForBubbleAnchor(chip_controller);
+  ASSERT_TRUE(chip_controller->IsBubbleShowing());
+
+  // The requests are decided together, and the camera request doesn't keep
+  // the chip, so closing the bubble dismisses both of them.
   EXPECT_CALL(delegate, Dismiss(_)).WillOnce([&delegate]() {
     delegate.ClearRequests();
   });
@@ -484,6 +664,75 @@ IN_PROC_BROWSER_TEST_F(PermissionChipBrowserTest,
   EXPECT_FALSE(delegate.IsRequestInProgress());
 }
 
+namespace {
+// A request that starts with only its chip.
+class ChipOnlyPermissionRequest : public permissions::MockPermissionRequest {
+ public:
+  using permissions::MockPermissionRequest::MockPermissionRequest;
+
+  // permissions::PermissionRequest:
+  bool ShouldBubbleStartOpen() const override { return false; }
+};
+}  // namespace
+
+IN_PROC_BROWSER_TEST_F(PermissionChipBrowserTest,
+                       ClickOnChipOpensBubbleIfRequestStartsWithOnlyChip) {
+  auto& delegate = *test::MockPermissionRequestManager::CreateForWebContents(
+      GURL("https://test.origin"), {}, /*with_gesture=*/true, web_contents_);
+  delegate.SetRequest(std::make_unique<ChipOnlyPermissionRequest>(
+      GURL("https://test.origin"), permissions::RequestType::kNotifications,
+      permissions::PermissionRequestGestureType::GESTURE));
+  PermissionPromptChip chip_prompt(web_contents_, &delegate);
+  ChipController* chip_controller =
+      chip_prompt.get_chip_controller_for_testing();
+  chip_controller->chip()->ResetAnimation(
+      PermissionChipInterface::AnimationState::kExpanded);
+  chip_controller->OnExpandAnimationEnded();
+  WaitForBubbleAnchor(chip_controller);
+
+  // Only the chip is shown. Like a chip without a bubble, it collapses and then
+  // expires.
+  EXPECT_EQ(chip_prompt.GetPromptDisposition(),
+            permissions::PermissionPromptDisposition::LOCATION_BAR_LEFT_CHIP);
+  EXPECT_FALSE(chip_controller->IsBubbleShowing());
+  EXPECT_TRUE(chip_controller->IsPermissionPromptChipVisible());
+  EXPECT_TRUE(chip_controller->is_collapse_timer_running_for_testing());
+  EXPECT_TRUE(delegate.IsRequestInProgress());
+
+  // Clicking the chip opens the bubble.
+  ClickOnChip(chip_controller);
+  EXPECT_TRUE(chip_controller->IsBubbleShowing());
+  EXPECT_FALSE(chip_controller->is_collapse_timer_running_for_testing());
+  delegate.ClearRequests();
+}
+
+IN_PROC_BROWSER_TEST_F(PermissionChipBrowserTest,
+                       ChipOnlyRequestShownAgainStartsCollapsed) {
+  auto& delegate = *test::MockPermissionRequestManager::CreateForWebContents(
+      GURL("https://test.origin"), {}, /*with_gesture=*/true, web_contents_);
+  delegate.SetRequest(std::make_unique<ChipOnlyPermissionRequest>(
+      GURL("https://test.origin"), permissions::RequestType::kNotifications,
+      permissions::PermissionRequestGestureType::GESTURE));
+  // The prompt is shown again, e.g. after the user switched tabs and came back.
+  delegate.SetAlreadyDisplayed();
+  PermissionPromptChip chip_prompt(web_contents_, &delegate);
+  ChipController* chip_controller =
+      chip_prompt.get_chip_controller_for_testing();
+
+  // Like a quiet chip that was already shown, the chip doesn't expand again,
+  // and expires after a while, which ignores the request.
+  EXPECT_FALSE(chip_controller->IsAnimating());
+  EXPECT_TRUE(chip_controller->chip()->IsFullyCollapsed());
+  EXPECT_FALSE(chip_controller->IsBubbleShowing());
+  EXPECT_FALSE(chip_controller->is_collapse_timer_running_for_testing());
+  EXPECT_TRUE(chip_controller->is_dismiss_timer_running_for_testing());
+  EXPECT_CALL(delegate, Ignore(_)).WillOnce([&delegate]() {
+    delegate.ClearRequests();
+  });
+  chip_controller->fire_dismiss_timer_for_testing();
+  EXPECT_FALSE(chip_controller->IsPermissionPromptChipVisible());
+}
+
 IN_PROC_BROWSER_TEST_F(PermissionChipBrowserTest, DisplayQuietChipAbusiveTest) {
   auto& delegate = *test::MockPermissionRequestManager::CreateForWebContents(
       GURL("https://test.origin"), {permissions::RequestType::kNotifications},
@@ -513,7 +762,15 @@ IN_PROC_BROWSER_TEST_F(PermissionChipBrowserTest, DisplayQuietChipAbusiveTest) {
   EXPECT_FALSE(delegate.IsRequestInProgress());
 }
 
-IN_PROC_BROWSER_TEST_F(PermissionChipBrowserTest, ClickOnQuietChipAbusiveTest) {
+// TODO(crbug.com/40063728): Flaky on Linux due to a race condition with the
+// auto-ignore timer.
+#if BUILDFLAG(IS_LINUX)
+#define MAYBE_ClickOnQuietChipAbusiveTest DISABLED_ClickOnQuietChipAbusiveTest
+#else
+#define MAYBE_ClickOnQuietChipAbusiveTest ClickOnQuietChipAbusiveTest
+#endif
+IN_PROC_BROWSER_TEST_F(PermissionChipBrowserTest,
+                       MAYBE_ClickOnQuietChipAbusiveTest) {
   auto& delegate = *test::MockPermissionRequestManager::CreateForWebContents(
       GURL("https://test.origin"), {permissions::RequestType::kNotifications},
       true, QuietUiReason::kTriggeredDueToAbusiveRequests, web_contents_);
@@ -585,6 +842,47 @@ IN_PROC_BROWSER_TEST_F(PermissionChipBrowserTest,
   EXPECT_FALSE(chip_controller->IsPermissionPromptChipVisible());
 }
 
+namespace {
+// A request without a content setting, whose chip shows a confirmation, like
+// ambient login.
+class NoContentSettingPermissionRequest
+    : public permissions::MockPermissionRequest {
+ public:
+  using permissions::MockPermissionRequest::MockPermissionRequest;
+
+  // permissions::PermissionRequest:
+  permissions::IconId GetBlockedIconForChip() const override {
+    return GetIconForChip();
+  }
+  std::optional<std::u16string> GetRequestChipText(
+      ChipTextType type) const override {
+    return u"Chip text";
+  }
+};
+}  // namespace
+
+IN_PROC_BROWSER_TEST_F(PermissionChipBrowserTest,
+                       ConfirmationWithoutContentSettingDoesNotOpenPageInfo) {
+  auto& delegate = *test::MockPermissionRequestManager::CreateForWebContents(
+      GURL("https://test.origin"), {}, /*with_gesture=*/true, web_contents_);
+  delegate.SetRequest(std::make_unique<NoContentSettingPermissionRequest>(
+      GURL("https://test.origin"), permissions::RequestType::kDiskQuota,
+      permissions::PermissionRequestGestureType::GESTURE));
+  PermissionPromptChip chip_prompt(web_contents_, &delegate);
+  ChipController* chip_controller =
+      chip_prompt.get_chip_controller_for_testing();
+
+  chip_controller->OnRequestDecided(permissions::PermissionAction::GRANTED);
+  ASSERT_TRUE(chip_controller->is_confirmation_showing());
+
+  // Page Info has no setting to show for the permission, so clicking the chip
+  // doesn't open it, and the confirmation still collapses on time.
+  chip_controller->chip()->ExecuteForTesting();
+  EXPECT_FALSE(chip_controller->IsBubbleShowing());
+  EXPECT_TRUE(chip_controller->is_collapse_timer_running_for_testing());
+  delegate.ClearRequests();
+}
+
 IN_PROC_BROWSER_TEST_F(PermissionChipBrowserTest,
                        PromptWithEmptyRequestsDoesNotCrash) {
   auto& delegate = *test::MockPermissionRequestManager::CreateForWebContents(
@@ -646,6 +944,54 @@ IN_PROC_BROWSER_TEST_F(
   EXPECT_TRUE(delegate.Requests().empty());
   EXPECT_EQ(chip_controller->permission_prompt_model(), nullptr);
   EXPECT_FALSE(chip_controller->IsPermissionPromptChipVisible());
+}
+
+// Uses the WebUI location bar, whose chips wait for the WebUI to register the
+// chip element before the prompt bubble is shown.
+class PermissionChipWebUIBrowserTest : public PermissionChipBrowserTest {
+ public:
+  PermissionChipWebUIBrowserTest() {
+    feature_list_.InitWithFeatures(
+        {features::kInitialWebUI, features::kWebUILocationBar}, {});
+  }
+
+ private:
+  ScopedFeatureList feature_list_;
+};
+
+// Hovering the chip while it waits for its anchor must not start the collapse
+// or dismiss timers, which would keep running once the bubble is shown.
+IN_PROC_BROWSER_TEST_F(PermissionChipWebUIBrowserTest,
+                       HoverWhileWaitingForAnchorDoesNotStartTimers) {
+  auto& delegate = *test::MockPermissionRequestManager::CreateForWebContents(
+      GURL("https://test.origin"), {permissions::RequestType::kNotifications},
+      true, web_contents_);
+  PermissionPromptChip chip_prompt(web_contents_, &delegate);
+  ChipController* chip_controller =
+      chip_prompt.get_chip_controller_for_testing();
+
+  // The bubble opens automatically once the chip has expanded, after waiting
+  // for the WebUI to register the chip element.
+  chip_controller->chip()->ResetAnimation(
+      PermissionChipInterface::AnimationState::kExpanded);
+  chip_controller->OnExpandAnimationEnded();
+  ASSERT_TRUE(chip_controller->is_waiting_for_anchor_for_testing());
+  EXPECT_FALSE(chip_controller->IsBubbleShowing());
+
+  chip_controller->RestartTimersOnMouseHover();
+  EXPECT_FALSE(chip_controller->is_collapse_timer_running_for_testing());
+  EXPECT_FALSE(chip_controller->is_dismiss_timer_running_for_testing());
+
+  WaitForBubbleAnchor(chip_controller);
+  EXPECT_TRUE(chip_controller->IsBubbleShowing());
+  EXPECT_FALSE(chip_controller->is_collapse_timer_running_for_testing());
+  EXPECT_FALSE(chip_controller->is_dismiss_timer_running_for_testing());
+
+  EXPECT_CALL(delegate, Dismiss(_)).WillOnce([&delegate]() {
+    delegate.ClearRequests();
+  });
+  ClickOnChip(chip_controller);
+  EXPECT_FALSE(chip_controller->IsBubbleShowing());
 }
 
 class PermissionPromiseLifetimeModulationTest

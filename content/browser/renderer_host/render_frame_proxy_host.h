@@ -12,6 +12,7 @@
 #include "base/functional/callback_forward.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/safe_ref.h"
+#include "components/viz/common/surfaces/local_surface_id.h"
 #include "content/browser/bad_message.h"
 #include "content/browser/renderer_host/agent_scheduling_group_host.h"
 #include "content/browser/site_instance_impl.h"
@@ -254,7 +255,8 @@ class CONTENT_EXPORT RenderFrameProxyHost
   // Requests a viz::LocalSurfaceId to disable auto-resize mode from the parent
   // renderer.
   void DisableAutoResize();
-  void DidUpdateVisualProperties(const cc::RenderFrameMetadata& metadata);
+  void DidUpdateChildLocalSurfaceId(
+      const viz::LocalSurfaceId& local_surface_id);
   void ChildProcessGone();
 
   bool IsInertForTesting();
@@ -276,6 +278,12 @@ class CONTENT_EXPORT RenderFrameProxyHost
 
   // Bind mojo endpoints of the Remote/RemoteMainFrame in blink.
   void BindRemoteFrameInterfaces(
+      mojo::PendingAssociatedRemote<blink::mojom::RemoteFrame>,
+      mojo::PendingAssociatedReceiver<blink::mojom::RemoteFrameHost>);
+  // Like BindRemoteFrameInterfaces, but resets any existing bindings first.
+  // Used by persistent widgets when re-attaching across same-origin
+  // navigations.
+  void RebindRemoteFrameInterfaces(
       mojo::PendingAssociatedRemote<blink::mojom::RemoteFrame>,
       mojo::PendingAssociatedReceiver<blink::mojom::RemoteFrameHost>);
   void BindRemoteMainFrameInterfaces(

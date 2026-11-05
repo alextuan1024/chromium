@@ -4,7 +4,10 @@
 
 #include "content/browser/security/cpsp/child_process_security_policy_shim.h"
 
+#include <string_view>
+
 #include "content/browser/isolated_origin_util.h"
+#include "content/browser/security/cpsp/child_process_security_policy_impl.h"
 #include "content/browser/site_info.h"
 
 namespace content::rust::child_process_security_policy {
@@ -28,6 +31,28 @@ std::unique_ptr<url::Origin> CreateOriginWithDefaultPortIfNecessary(
     const url::Origin& origin) {
   return std::make_unique<url::Origin>(
       IsolatedOriginUtil::CreateOriginWithDefaultPortIfNecessary(origin));
+}
+
+#if BUILDFLAG(IS_CHROMEOS)
+std::unique_ptr<GURL> NormalizeExternalFileUrl(const GURL& url) {
+  GURL::Replacements replacements;
+  replacements.ClearQuery();
+  replacements.ClearRef();
+  return std::make_unique<GURL>(url.ReplaceComponents(replacements));
+}
+#endif
+
+bool CanCommitMaybeOpaqueNewOrigin(ChildProcessId child_id,
+                                   const GURL& url,
+                                   bool url_is_precursor_of_opaque_origin) {
+  return ChildProcessSecurityPolicyImpl::GetInstance()
+      ->CanCommitMaybeOpaqueNewOrigin(child_id, url,
+                                      url_is_precursor_of_opaque_origin);
+}
+
+void LogCanCommitUrlFailureReason(::rust::Str failure_reason) {
+  ChildProcessSecurityPolicyImpl::LogCanCommitUrlFailureReason(
+      std::string_view(failure_reason));
 }
 
 }  // namespace content::rust::child_process_security_policy

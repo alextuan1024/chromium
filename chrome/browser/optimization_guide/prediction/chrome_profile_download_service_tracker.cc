@@ -4,6 +4,8 @@
 
 #include "chrome/browser/optimization_guide/prediction/chrome_profile_download_service_tracker.h"
 
+#include <algorithm>
+
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/download/background_download_service_factory.h"
 #include "chrome/browser/profiles/profile.h"
@@ -14,7 +16,12 @@
 namespace optimization_guide {
 
 ChromeProfileDownloadServiceTracker::ChromeProfileDownloadServiceTracker() {
+  // `profile_manager()` can be null in unit tests that do not set up a
+  // `TestingProfileManager` or after browser shutdown begins.
   auto* profile_manager = g_browser_process->profile_manager();
+  if (!profile_manager) {
+    return;
+  }
   profile_manager_observation_.Observe(profile_manager);
   // Start tracking any profiles that already exist.
   for (Profile* profile : profile_manager->GetLoadedProfiles()) {
@@ -23,10 +30,7 @@ ChromeProfileDownloadServiceTracker::ChromeProfileDownloadServiceTracker() {
 }
 
 ChromeProfileDownloadServiceTracker::~ChromeProfileDownloadServiceTracker() {
-  for (Profile* profile : observed_profiles_) {
-    profile->RemoveObserver(this);
-  }
-  observed_profiles_.clear();
+  OnProfileManagerDestroying();
 }
 
 void ChromeProfileDownloadServiceTracker::OnProfileAdded(Profile* profile) {
@@ -34,8 +38,27 @@ void ChromeProfileDownloadServiceTracker::OnProfileAdded(Profile* profile) {
       !profile->AllowsBrowserWindows()) {
     return;
   }
+  // This can be called twice for the same profile when the tracker is
+  // constructed from inside another `ProfileManagerObserver::OnProfileAdded()`
+  // callback:
+  //   1. The constructor finds `profile` in `GetLoadedProfiles()` and calls
+  //      `OnProfileAdded()` for it.
+  //   2. `ProfileManager` is still notifying observers about `profile`, and
+  //      the notification also reaches this newly registered observer.
+  // Skip the second call so that each profile is observed exactly once.
+  if (std::ranges::contains(observed_profiles_, profile)) {
+    return;
+  }
   observed_profiles_.push_back(profile);
   profile->AddObserver(this);
+}
+
+void ChromeProfileDownloadServiceTracker::OnProfileManagerDestroying() {
+  for (Profile* profile : observed_profiles_) {
+    profile->RemoveObserver(this);
+  }
+  observed_profiles_.clear();
+  profile_manager_observation_.Reset();
 }
 
 void ChromeProfileDownloadServiceTracker::OnProfileWillBeDestroyed(

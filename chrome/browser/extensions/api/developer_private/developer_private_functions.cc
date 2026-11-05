@@ -54,7 +54,6 @@
 #include "components/policy/core/common/policy_pref_names.h"
 #include "components/prefs/pref_service.h"
 #include "components/signin/public/base/signin_switches.h"
-#include "components/sync/base/features.h"
 #include "content/public/common/drop_data.h"
 #include "extensions/browser/crx_installer.h"
 #include "extensions/browser/disable_reason.h"
@@ -84,10 +83,10 @@
 #include "third_party/re2/src/re2/re2.h"
 #include "ui/base/clipboard/file_info.h"
 #include "ui/base/l10n/l10n_util.h"
-#include "ui/base/window_open_disposition.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
 
 #if BUILDFLAG(IS_ANDROID)
-#include "chrome/browser/ui/android/extensions/extension_developer_private_bridge.h"
+#include "chrome/browser/ui/android/extensions/extension_site_settings_android.h"
 #include "chrome/common/extensions/api/developer_private.h"
 #include "extensions/browser/extension_function.h"
 #else  // BUILDFLAG(IS_ANDROID)
@@ -136,7 +135,7 @@
 #include "extensions/common/url_pattern.h"
 #include "extensions/common/url_pattern_set.h"
 #include "net/base/registry_controlled_domains/registry_controlled_domain.h"
-#include "storage/browser/blob/shareable_file_reference.h"
+#include "storage/browser/blob/scoped_file.h"
 #include "storage/browser/file_system/external_mount_points.h"
 #include "storage/browser/file_system/file_system_context.h"
 #include "storage/browser/file_system/file_system_operation.h"
@@ -224,7 +223,7 @@ void PerformVerificationCheck(content::BrowserContext* context) {
 }
 
 std::string GetETldPlusOne(const GURL& site) {
-  DCHECK(site.is_valid());
+  CHECK(site.is_valid(), base::NotFatalUntil::M161);
   std::string etld_plus_one =
       net::registry_controlled_domains::GetDomainAndRegistry(
           site, net::registry_controlled_domains::INCLUDE_PRIVATE_REGISTRIES);
@@ -349,7 +348,7 @@ base::expected<void, std::string> SetDroppedPath(
     file_info = &drop_data->filenames.front();
   }
 
-  DCHECK(file_info);
+  CHECK(file_info, base::NotFatalUntil::M161);
   // Note(devlin): we don't do further validation that the file is a directory
   // here. This is validated in the JS, but if that fails, then trying to load
   // the file as an unpacked extension will also fail (reasonably gracefully).
@@ -526,6 +525,8 @@ DeveloperPrivateGetExtensionInfoFunction::Run() {
 
 void DeveloperPrivateGetExtensionInfoFunction::OnInfosGenerated(
     ExtensionInfoGenerator::ExtensionInfoList list) {
+  // TODO(crbug.com/577180920): CHECK-exclusion: Convert to a CHECK once we are
+  // confident it won't be triggered.
   DCHECK_LE(1u, list.size());
   Respond(list.empty() ? NoSuchExtensionError()
                        : WithArguments(list[0].ToValue()));
@@ -635,9 +636,6 @@ DeveloperPrivateOpenReviewPageFunction::Run() {
 
   Profile* profile = Profile::FromBrowserContext(browser_context());
   CHECK(profile);
-  if (!profile->GetPrefs()->GetBoolean(prefs::kExtensionReviewPromptsAllowed)) {
-    return RespondNow(Error("Review prompts are disabled by policy."));
-  }
   if (!ui_util::ShouldShowReviewPrompt(*extension, *profile)) {
     return RespondNow(Error("The extension is ineligible for review prompts."));
   }
@@ -650,8 +648,9 @@ DeveloperPrivateOpenReviewPageFunction::Run() {
   GURL review_url = util::GetCWSWritingReviewUrl(
       params->extension_id, util::CWSReviewSource::kExtensionsPage);
 
-  ExtensionTabUtil::NavigateToURL(WindowOpenDisposition::NEW_FOREGROUND_TAB,
-                                  web_contents, review_url, base::DoNothing());
+  ExtensionTabUtil::NavigateToURL(
+      ui::mojom::WindowOpenDisposition::kNewForegroundTab, web_contents,
+      review_url, base::DoNothing());
 
   return RespondNow(NoArguments());
 }
@@ -949,7 +948,7 @@ ExtensionFunction::ResponseAction DeveloperPrivateLoadUnpackedFunction::Run() {
 }
 
 void DeveloperPrivateLoadUnpackedFunction::ShowSelectFileDialog() {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
 
   // Start or cancel the file load without showing the select file dialog for
   // tests that require it.
@@ -1047,7 +1046,7 @@ void DeveloperPrivateLoadUnpackedFunction::OnGotManifestError(
     const std::u16string& error,
     size_t line_number,
     const std::string& manifest) {
-  DCHECK(!retry_guid_.empty());
+  CHECK(!retry_guid_.empty(), base::NotFatalUntil::M161);
   Finish(WithArguments(
       CreateLoadError(file_path, error, line_number, manifest, retry_guid_)
           .ToValue()));
@@ -1570,6 +1569,10 @@ DeveloperPrivateGetMatchingExtensionsForSiteFunction::Run() {
   PermissionsManager* permissions_manager =
       PermissionsManager::Get(browser_context());
   for (const auto& extension : enabled_extensions) {
+    if (!ui_util::ShouldDisplayInExtensionSettings(*extension)) {
+      continue;
+    }
+
     std::unique_ptr<const PermissionSet> granted_permissions =
         permissions_manager->GetExtensionGrantedPermissions(*extension);
     const URLPatternSet& extension_withheld_sites =
@@ -2277,12 +2280,7 @@ DeveloperPrivateUploadExtensionToAccountFunction::Run() {
   // - the extension is already associated with the signed in user's account.
   // - the extension is not syncable (for example, if it's unpacked).
   if (!AccountExtensionTracker::Get(profile_)->CanUploadAsAccountExtension(
-          *extension)
-#if BUILDFLAG(IS_CHROMEOS)
-      ||
-      !base::FeatureList::IsEnabled(syncer::kReplaceSyncPromosWithSignInPromos)
-#endif
-  ) {
+          *extension)) {
     return RespondNow(Error(ErrorUtils::FormatErrorMessage(
         kCannotUploadExtensionToAccount, extension_id_)));
   }
@@ -2371,13 +2369,17 @@ DeveloperPrivateShowSiteSettingsFunction::Run() {
       developer_private::ShowSiteSettings::Params::Create(args());
   EXTENSION_FUNCTION_VALIDATE(params);
   const std::string& extension_id = params->extension_id;
-  ExtensionDeveloperPrivateBridge::ShowSiteSettings(extension_id);
+  // The sender is chrome://extensions, shown in a tab, so the page can be
+  // opened next to it rather than in a settings surface of its own.
+  ShowExtensionSiteSettings(GetSenderWebContents(), extension_id);
   return RespondNow(NoArguments());
 }
 #else   // BUILDFLAG(IS_ANDROID)
 ExtensionFunction::ResponseAction DeveloperPrivateLoadDirectoryFunction::Run() {
   // In theory `extension()` can be null when an ExtensionFunction is invoked
   // from WebUI, but this should never be the case for this particular API.
+  // TODO(crbug.com/576392566): CHECK-exclusion: Convert to a CHECK once we are
+  // confident it won't be triggered.
   DCHECK(extension());
 
   // TODO(grv) : add unittests.
@@ -2565,7 +2567,7 @@ void DeveloperPrivateLoadDirectoryFunction::SnapshotFileCallback(
     base::File::Error result,
     const base::File::Info& file_info,
     const base::FilePath& src_path,
-    scoped_refptr<storage::ShareableFileReference> file_ref) {
+    storage::ScopedFile temp_file) {
   if (result != base::File::FILE_OK) {
     error_ = "Error in copying files from sync filesystem.";
     success_ = false;
@@ -2576,12 +2578,13 @@ void DeveloperPrivateLoadDirectoryFunction::SnapshotFileCallback(
       FROM_HERE,
       {base::MayBlock(), base::TaskShutdownBehavior::SKIP_ON_SHUTDOWN},
       base::BindOnce(&DeveloperPrivateLoadDirectoryFunction::CopyFile, this,
-                     src_path, target_path));
+                     src_path, target_path, std::move(temp_file)));
 }
 
 void DeveloperPrivateLoadDirectoryFunction::CopyFile(
     const base::FilePath& src_path,
-    const base::FilePath& target_path) {
+    const base::FilePath& target_path,
+    storage::ScopedFile temp_file) {
   if (!base::CreateDirectory(target_path.DirName())) {
     error_ = "Error in copying files from sync filesystem.";
     success_ = false;

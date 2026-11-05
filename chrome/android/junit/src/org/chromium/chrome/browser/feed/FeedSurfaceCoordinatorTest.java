@@ -28,6 +28,7 @@ import static org.chromium.chrome.browser.ntp_customization.NtpCustomizationUtil
 import android.app.Activity;
 import android.content.res.Configuration;
 import android.graphics.Bitmap;
+import android.graphics.Canvas;
 import android.graphics.Matrix;
 import android.graphics.Point;
 import android.os.SystemClock;
@@ -38,6 +39,7 @@ import android.widget.FrameLayout;
 import androidx.recyclerview.widget.LinearLayoutManager;
 import androidx.recyclerview.widget.RecyclerView;
 
+import org.jni_zero.JniUniquePtr;
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Rule;
@@ -168,6 +170,11 @@ public class FeedSurfaceCoordinatorTest {
 
     // Mocked JNI.
     @Mock private FeedSurfaceRendererBridge.Natives mFeedSurfaceRendererBridgeJniMock;
+
+    @Mock
+    private JniUniquePtr<FeedSurfaceRendererBridge.NativeFeedSurfaceRendererBridge>
+            mNativeSurfaceRenderer;
+
     @Mock private FeedServiceBridge.Natives mFeedServiceBridgeJniMock;
     @Mock private FeedProcessScopeDependencyProvider.Natives mProcessScopeJniMock;
     @Mock private FeedReliabilityLoggingBridge.Natives mFeedReliabilityLoggingBridgeJniMock;
@@ -216,6 +223,8 @@ public class FeedSurfaceCoordinatorTest {
         mLayoutManager = new LinearLayoutManager(mActivity);
         mActivity.setTheme(R.style.Theme_BrowserUI_DayNight);
         FeedSurfaceRendererBridgeJni.setInstanceForTesting(mFeedSurfaceRendererBridgeJniMock);
+        when(mFeedSurfaceRendererBridgeJniMock.init(any(), any(), anyInt(), anyLong()))
+                .thenReturn(mNativeSurfaceRenderer);
         FeedServiceBridgeJni.setInstanceForTesting(mFeedServiceBridgeJniMock);
         FeedProcessScopeDependencyProviderJni.setInstanceForTesting(mProcessScopeJniMock);
         FeedReliabilityLoggingBridgeJni.setInstanceForTesting(mFeedReliabilityLoggingBridgeJniMock);
@@ -569,8 +578,8 @@ public class FeedSurfaceCoordinatorTest {
     public void testDestroy_WithSwipeRefreshLayout() {
         mCoordinator.destroy();
 
-        FeedSwipeRefreshLayout swipeRefreshLayout = mock(FeedSwipeRefreshLayout.class);
-        when(swipeRefreshLayout.isRefreshing()).thenReturn(true);
+        FeedSwipeRefreshLayout swipeRefreshLayout =
+                FeedSwipeRefreshLayout.create(mActivity, View.NO_ID);
         mCoordinator =
                 new FeedSurfaceCoordinator(
                         mActivity,
@@ -595,11 +604,17 @@ public class FeedSurfaceCoordinatorTest {
                         mEdgeToEdgeSupplier,
                         mModuleRegistry);
 
+        swipeRefreshLayout.enableSwipe(/* scrollableContainerDelegate= */ null);
+        swipeRefreshLayout.setRefreshing(true);
+        assertTrue(swipeRefreshLayout.isEnabled());
+        assertTrue(swipeRefreshLayout.isRefreshing());
+        assertTrue(swipeRefreshLayout.getRefreshListenersForTesting().hasObserver(mCoordinator));
+
         mCoordinator.destroy();
 
-        verify(swipeRefreshLayout).setRefreshing(false);
-        verify(swipeRefreshLayout).removeOnRefreshListener(mCoordinator);
-        verify(swipeRefreshLayout).disableSwipe();
+        assertFalse(swipeRefreshLayout.getRefreshListenersForTesting().hasObserver(mCoordinator));
+        assertFalse(swipeRefreshLayout.isRefreshing());
+        assertFalse(swipeRefreshLayout.isEnabled());
 
         mCoordinator = null;
     }
@@ -630,6 +645,13 @@ public class FeedSurfaceCoordinatorTest {
         assertTrue(rootView.isFocused());
         assertFalse(otherView.isFocused());
         downEvent.recycle();
+    }
+
+    @Test
+    public void testHasDrawnFrame() {
+        assertFalse(mCoordinator.hasDrawnFrame());
+        mCoordinator.getView().draw(new Canvas());
+        assertTrue(mCoordinator.hasDrawnFrame());
     }
 
     private boolean hasStreamBound() {

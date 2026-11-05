@@ -8,8 +8,10 @@ import android.annotation.SuppressLint;
 import android.content.Context;
 import android.content.res.ColorStateList;
 import android.content.res.Resources;
+import android.content.res.Resources.Theme;
 import android.graphics.Outline;
 import android.graphics.drawable.Drawable;
+import android.text.TextUtils;
 import android.util.AttributeSet;
 import android.view.LayoutInflater;
 import android.view.View;
@@ -24,7 +26,7 @@ import android.widget.TextView;
 
 import androidx.annotation.ColorInt;
 import androidx.annotation.IntDef;
-import androidx.annotation.VisibleForTesting;
+import androidx.annotation.StyleRes;
 
 import org.chromium.base.ResettersForTesting;
 import org.chromium.build.annotations.NullMarked;
@@ -49,7 +51,7 @@ public class ImprovedBookmarkRow extends ViewLookupCachingFrameLayout
      * The base duration of the settling animation of the sheet. 218 ms is a spec for material
      * design (this is the minimum time a user is guaranteed to pay attention to something).
      */
-    @VisibleForTesting static final int BASE_ANIMATION_DURATION_MS = 218;
+    private static final int BASE_ANIMATION_DURATION_MS = 218;
 
     @IntDef({Location.TOP, Location.MIDDLE, Location.BOTTOM, Location.SOLO})
     @Retention(RetentionPolicy.SOURCE)
@@ -58,6 +60,7 @@ public class ImprovedBookmarkRow extends ViewLookupCachingFrameLayout
         int MIDDLE = 1;
         int BOTTOM = 2;
         int SOLO = 3;
+        int COUNT = 4;
     }
 
     private static boolean sEnableIconAnimationForTesting = true;
@@ -89,6 +92,15 @@ public class ImprovedBookmarkRow extends ViewLookupCachingFrameLayout
     private boolean mMoreButtonVisible;
     private boolean mSelectionEnabled;
     private boolean mIsSelected;
+    // The row's visual location within a run of consecutive rows, see #setVisualLocation. The
+    // backgrounds for each location are resolved lazily from the location's theme overlay and
+    // cached by @Location index so scrolling/rebinding does not re-allocate themes or re-inflate
+    // drawables.
+    private boolean mHasVisualLocation;
+    private @Location int mVisualLocation = Location.SOLO;
+    private final @Nullable Drawable[] mVisualLocationBackgrounds = new Drawable[Location.COUNT];
+    private final @Nullable Drawable[] mVisualLocationSelectedBackgrounds =
+            new Drawable[Location.COUNT];
 
     /**
      * Factory helper for building a visual improved bookmark row view.
@@ -135,6 +147,9 @@ public class ImprovedBookmarkRow extends ViewLookupCachingFrameLayout
                 BookmarkViewUtils.getImageIconCornerRadius(context.getResources(), displayPref));
         row.setStartImageSize(
                 BookmarkViewUtils.getImageIconSize(context.getResources(), displayPref));
+        if (BookmarkUtils.isDesktopBookmarksLayoutEnabled()) {
+            row.applyDesktopPadding();
+        }
         return row;
     }
 
@@ -208,6 +223,13 @@ public class ImprovedBookmarkRow extends ViewLookupCachingFrameLayout
 
         mTitleView = findViewById(R.id.title);
         mDescriptionView = findViewById(R.id.description);
+        // When visible, the description holds the bookmark's origin. Elide the start so that the
+        // registrable domain (eTLD+1) stays visible and a long, deceptive subdomain cannot spoof
+        // the origin.
+        mDescriptionView.setEllipsize(TextUtils.TruncateAt.START);
+        // Ensure IDN hostnames with RTL characters are composed LTR so bidi does not
+        // re-order host components.
+        mDescriptionView.setTextDirection(TextView.TEXT_DIRECTION_LTR);
         mAccessoryViewGroup = findViewById(R.id.custom_content_container);
 
         mLocalBookmarkImageView = findViewById(R.id.local_bookmark_image);
@@ -395,12 +417,55 @@ public class ImprovedBookmarkRow extends ViewLookupCachingFrameLayout
         mLocalBookmarkImageView.setVisibility(isLocalBookmark ? View.VISIBLE : View.GONE);
     }
 
+    /** Applies the start, top and bottom padding used by rows in the desktop bookmark manager. */
+    void applyDesktopPadding() {
+        int padding =
+                getResources().getDimensionPixelSize(R.dimen.improved_bookmark_row_padding_desktop);
+        mContainer.setPaddingRelative(padding, padding, mContainer.getPaddingEnd(), padding);
+    }
+
+    /**
+     * Styles the row's background based on its visual location within a run of consecutive bookmark
+     * rows. The outer corners (the top of the first row and the bottom of the last row) are fully
+     * rounded while corners shared with adjacent rows use a smaller radius.
+     *
+     * @param location The visual location of the row within the run of consecutive rows.
+     */
+    void setVisualLocation(@Location int location) {
+        if (mHasVisualLocation && mVisualLocation == location) return;
+        mHasVisualLocation = true;
+        mVisualLocation = location;
+
+        // Lazily inflate and cache the normal and selected drawables for each location so that
+        // rebinding rows while scrolling does not re-allocate Themes or re-inflate drawables.
+        if (mVisualLocationBackgrounds[location] == null) {
+            Resources res = getResources();
+            Theme theme = res.newTheme();
+            theme.setTo(getContext().getTheme());
+            theme.applyStyle(getVisualLocationThemeOverlay(location), /* force= */ true);
+            mVisualLocationBackgrounds[location] =
+                    res.getDrawable(R.drawable.improved_bookmark_row_position_background, theme);
+            mVisualLocationSelectedBackgrounds[location] =
+                    res.getDrawable(
+                            R.drawable.improved_bookmark_row_position_selected_background, theme);
+        }
+
+        updateView();
+    }
+
     void updateView() {
         setDefaultFocusHighlightEnabled(mIsSelected);
-        mContainer.setBackgroundResource(
-                mIsSelected
-                        ? R.drawable.rounded_rectangle_surface_container_low
-                        : R.drawable.improved_bookmark_row_visual_background);
+        if (mHasVisualLocation) {
+            mContainer.setBackground(
+                    mIsSelected
+                            ? mVisualLocationSelectedBackgrounds[mVisualLocation]
+                            : mVisualLocationBackgrounds[mVisualLocation]);
+        } else {
+            mContainer.setBackgroundResource(
+                    mIsSelected
+                            ? R.drawable.rounded_rectangle_surface_container_low
+                            : R.drawable.improved_bookmark_row_visual_background);
+        }
 
         boolean checkVisible = mSelectionEnabled && mIsSelected;
         boolean moreVisible = mMoreButtonVisible && !mIsSelected && mBookmarkIdEditable;
@@ -422,11 +487,16 @@ public class ImprovedBookmarkRow extends ViewLookupCachingFrameLayout
         return mFolderIconView;
     }
 
-    // Testing specific methods below.
-
-    public void setStartImageViewForTesting(RoundedCornerImageView startImageView) {
-        mStartImageView = startImageView;
+    private static @StyleRes int getVisualLocationThemeOverlay(@Location int location) {
+        return switch (location) {
+            case Location.TOP -> R.style.ThemeOverlay_BookmarkRow_ListPosition_Top;
+            case Location.MIDDLE -> R.style.ThemeOverlay_BookmarkRow_ListPosition_Middle;
+            case Location.BOTTOM -> R.style.ThemeOverlay_BookmarkRow_ListPosition_Bottom;
+            default -> R.style.ThemeOverlay_BookmarkRow_ListPosition_Solo;
+        };
     }
+
+    // Testing specific methods below.
 
     public boolean isSelectedForTesting() {
         return mIsSelected;

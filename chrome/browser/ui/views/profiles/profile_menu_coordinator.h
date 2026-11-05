@@ -7,10 +7,9 @@
 
 #include <optional>
 
+#include "base/functional/callback_helpers.h"
 #include "base/memory/raw_ref.h"
 #include "base/memory/weak_ptr.h"
-#include "base/observer_list.h"
-#include "base/observer_list_types.h"
 #include "chrome/browser/signin/signin_promo_util.h"
 #include "ui/base/unowned_user_data/scoped_unowned_user_data.h"
 #include "ui/views/bubble/bubble_anchor.h"
@@ -24,21 +23,11 @@ namespace signin_metrics {
 enum class AccessPoint;
 }  // namespace signin_metrics
 
-namespace views {
-class Widget;
-}  // namespace views
-
 // Handles the lifetime and showing/hidden state of the profile menu bubble.
 // Owned by the associated browser.
 class ProfileMenuCoordinator {
  public:
   DECLARE_USER_DATA(ProfileMenuCoordinator);
-
-  class Observer : public base::CheckedObserver {
-   public:
-    virtual void OnProfileMenuShown(views::Widget* widget) {}
-    virtual void OnProfileMenuCoordinatorDestroyed() {}
-  };
 
   ProfileMenuCoordinator(BrowserWindowInterface* browser, Profile* profile);
 
@@ -48,20 +37,20 @@ class ProfileMenuCoordinator {
   ProfileMenuCoordinator& operator=(const ProfileMenuCoordinator&) = delete;
   ~ProfileMenuCoordinator();
 
-  void AddObserver(Observer* observer);
-  void RemoveObserver(Observer* observer);
-
   // Shows the the profile bubble for this browser.
   //
   // If `from_avatar_promo` is set, then trigger of the menu originated from a
   // promo that was shown on the AvatarButton.
-  void Show(bool is_source_accelerator, bool from_avatar_promo = false);
+  //
+  // `keep_anchor_visible` is kept alive until the menu is closed, or destroyed
+  // immediately if no menu is shown, so callers can keep the avatar button
+  // visible while the menu is anchored to it.
+  void Show(bool is_source_accelerator,
+            bool from_avatar_promo = false,
+            base::ScopedClosureRunner keep_anchor_visible = {});
 
   // Returns true if the bubble is currently showing for the owning browser.
   bool IsShowing() const;
-
-  // Returns the profile menu widget if showing, or nullptr.
-  views::Widget* GetProfileMenuWidget();
 
   ProfileMenuViewBase* GetProfileMenuViewBaseForTesting();
 
@@ -74,7 +63,8 @@ class ProfileMenuCoordinator {
   views::BubbleAnchor GetAvatarToolbarButton();
 
   void ShowWithPromoResults(bool is_source_accelerator,
-                            bool from_avatar_promo
+                            bool from_avatar_promo,
+                            base::ScopedClosureRunner keep_anchor_visible
 #if BUILDFLAG(ENABLE_DICE_SUPPORT)
                             ,
                             signin::ProfileMenuAvatarButtonPromoInfo promo_info
@@ -87,7 +77,6 @@ class ProfileMenuCoordinator {
 
   const raw_ref<Profile> profile_;
   views::ViewTracker bubble_tracker_;
-  base::ObserverList<Observer> observers_;
 
   base::WeakPtrFactory<ProfileMenuCoordinator> weak_pointer_factory_{this};
 };

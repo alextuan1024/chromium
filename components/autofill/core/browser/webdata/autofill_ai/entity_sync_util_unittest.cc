@@ -243,7 +243,8 @@ TEST(EntitySyncUtilTest, CreateEntityDataFromEntityInstance) {
   EntityInstance vehicle_entity = test::GetVehicleEntityInstance();
   std::unique_ptr<syncer::EntityData> entity_data =
       CreateEntityDataFromEntityInstance(vehicle_entity,
-                                         /*base_specifics=*/{});
+                                         /*base_specifics=*/{},
+                                         /*legal_message_token=*/{});
 
   sync_pb::AutofillValuableSpecifics specifics =
       entity_data->specifics.autofill_valuable();
@@ -417,7 +418,7 @@ TEST(EntitySyncUtilTest,
       EntityType(EntityTypeName::kVehicle), std::move(attributes),
       EntityInstance::EntityId("00000000-0000-4000-8000-200000000000"),
       /*nickname=*/"", /*date_modified=*/{}, /*use_count=*/0, /*use_date=*/{},
-      EntityInstance::WalletRecordTypePayload{.management_url = ""},
+      EntityInstance::WalletRecordTypePayload{.management_url = GURL()},
       EntityInstance::AreAttributesReadOnly(false),
       /*frecency_override=*/"");
 
@@ -807,8 +808,6 @@ TEST(EntitySyncUtilTest, EntityTypeToPassType) {
 
 // Tests that no attributes are created for fields with unset or empty values.
 TEST(EntitySyncUtilTest, CreateEntityInstanceFromSpecifics_EmptyFields) {
-  base::test::ScopedFeatureList feature{
-      features::kAutofillAiImportConstraintsForSync};
   // Passport is used as an example here. This is representative of the general
   // case because the implementation uses generic helpers across all entities.
   sync_pb::AutofillValuableSpecifics specifics;
@@ -1153,42 +1152,77 @@ TEST(EntitySyncUtilTest, CreateEntityInstanceFromSpecifics_Shipment) {
             "Product 1, Product 2");
 }
 
-TEST(EntitySyncUtilTest, CreateSpecificsFromEntityInstance_WithContextToken) {
+TEST(EntitySyncUtilTest,
+     CreateSpecificsFromEntityInstance_WithLegalMessageToken) {
+  // Include non-UTF-8 bytes (`\xff\xfe`) to verify binary `bytes` handling.
+  const std::string raw_token = "sample_token_\xff\xfe";
   EntityInstance vehicle_entity = test::GetVehicleEntityInstance();
   sync_pb::AutofillValuableSpecifics specifics =
       CreateSpecificsFromEntityInstance(vehicle_entity,
-                                        /*base_specifics=*/{},
-                                        "sample_context_token");
-  EXPECT_TRUE(specifics.has_context_token());
-  EXPECT_EQ(specifics.context_token(), "sample_context_token");
+                                        /*base_specifics=*/{}, raw_token);
+  EXPECT_TRUE(specifics.has_legal_message_token());
+  EXPECT_EQ(specifics.legal_message_token(), raw_token);
 }
 
 TEST(EntitySyncUtilTest,
-     CreateSpecificsFromEntityInstance_WithoutContextToken) {
+     CreateSpecificsFromEntityInstance_WithoutLegalMessageToken) {
   EntityInstance vehicle_entity = test::GetVehicleEntityInstance();
   sync_pb::AutofillValuableSpecifics specifics =
       CreateSpecificsFromEntityInstance(vehicle_entity,
                                         /*base_specifics=*/{});
-  EXPECT_FALSE(specifics.has_context_token());
+  EXPECT_FALSE(specifics.has_legal_message_token());
 
   sync_pb::AutofillValuableSpecifics specifics_empty_token =
       CreateSpecificsFromEntityInstance(vehicle_entity,
                                         /*base_specifics=*/{},
-                                        /*context_token=*/"");
-  EXPECT_FALSE(specifics_empty_token.has_context_token());
+                                        /*legal_message_token=*/"");
+  EXPECT_FALSE(specifics_empty_token.has_legal_message_token());
 }
 
-TEST(EntitySyncUtilTest, CreateEntityDataFromEntityInstance_WithContextToken) {
+TEST(EntitySyncUtilTest,
+     CreateEntityDataFromEntityInstance_WithLegalMessageToken) {
+  // Include non-UTF-8 bytes (`\xff\xfe`) to verify binary `bytes` handling.
+  const std::string raw_token = "sample_token_\xff\xfe";
   EntityInstance vehicle_entity = test::GetVehicleEntityInstance();
   std::unique_ptr<syncer::EntityData> entity_data =
       CreateEntityDataFromEntityInstance(vehicle_entity,
-                                         /*base_specifics=*/{},
-                                         "sample_context_token");
+                                         /*base_specifics=*/{}, raw_token);
   ASSERT_TRUE(entity_data);
   ASSERT_TRUE(entity_data->specifics.has_autofill_valuable());
-  EXPECT_TRUE(entity_data->specifics.autofill_valuable().has_context_token());
-  EXPECT_EQ(entity_data->specifics.autofill_valuable().context_token(),
-            "sample_context_token");
+  EXPECT_TRUE(
+      entity_data->specifics.autofill_valuable().has_legal_message_token());
+  EXPECT_EQ(entity_data->specifics.autofill_valuable().legal_message_token(),
+            raw_token);
+}
+
+// Tests that the pass_view_url is used as management URL.
+TEST(EntitySyncUtilTest, CreateEntityInstanceFromSpecifics_WithManagementUrl) {
+  sync_pb::AutofillValuableSpecifics specifics =
+      TestFlightReservationSpecifics();
+  specifics.set_pass_view_url("https://wallet.google.com/wallet/passes/123");
+
+  std::optional<EntityInstance> flight_reservation =
+      CreateEntityInstanceFromSpecifics(specifics);
+  ASSERT_TRUE(flight_reservation.has_value());
+
+  EXPECT_EQ(std::get<EntityInstance::WalletRecordTypePayload>(
+                flight_reservation->record_type_data())
+                .management_url,
+            GURL("https://wallet.google.com/wallet/passes/123"));
+}
+
+// Tests that the management URL is added to the specifics.
+TEST(EntitySyncUtilTest, CreateSpecificsFromEntityInstance_WithManagementUrl) {
+  sync_pb::AutofillValuableSpecifics specifics =
+      CreateSpecificsFromEntityInstance(
+          test::GetFlightReservationEntityInstance(
+              {.record_type =
+                   EntityInstance::WalletRecordTypePayload{
+                       .management_url = GURL(
+                           "https://wallet.google.com/wallet/passes/123")}}),
+          /*base_specifics=*/{});
+  EXPECT_EQ(specifics.pass_view_url(),
+            "https://wallet.google.com/wallet/passes/123");
 }
 
 }  // namespace

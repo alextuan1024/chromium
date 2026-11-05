@@ -18,7 +18,6 @@
 #include "base/logging.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/ui/read_anything/read_anything_prefs.h"
-#include "chrome/common/chrome_switches.h"
 #include "components/component_updater/component_updater_service.h"
 #include "components/crx_file/id_util.h"
 #include "components/prefs/pref_registry_simple.h"
@@ -35,21 +34,21 @@
 namespace {
 
 #if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
-const base::FilePath::CharType kBindingsMainWasmFileName[] =
+constexpr base::FilePath::CharType kBindingsMainWasmFileName[] =
     FILE_PATH_LITERAL("bindings_main.wasm");
-const base::FilePath::CharType kBindingsMainJsFileName[] =
+constexpr base::FilePath::CharType kBindingsMainJsFileName[] =
     FILE_PATH_LITERAL("bindings_main.js");
-const base::FilePath::CharType kWorkletProcessorJsFileName[] =
+constexpr base::FilePath::CharType kWorkletProcessorJsFileName[] =
     FILE_PATH_LITERAL("streaming_worklet_processor.js");
-const base::FilePath::CharType kVoicesJsonFileName[] =
+constexpr base::FilePath::CharType kVoicesJsonFileName[] =
     FILE_PATH_LITERAL("voices.json");
-const base::FilePath::CharType kManifestV3FileName[] =
+constexpr base::FilePath::CharType kManifestV3FileName[] =
     FILE_PATH_LITERAL("wasm_tts_manifest_v3.json");
-const base::FilePath::CharType kOffscreenHtmlFileName[] =
+constexpr base::FilePath::CharType kOffscreenHtmlFileName[] =
     FILE_PATH_LITERAL("offscreen.html");
-const base::FilePath::CharType kOffscreenCompiledFileName[] =
+constexpr base::FilePath::CharType kOffscreenCompiledFileName[] =
     FILE_PATH_LITERAL("offscreen_compiled.js");
-const base::FilePath::CharType kBackgroundCompiledFileName[] =
+constexpr base::FilePath::CharType kBackgroundCompiledFileName[] =
     FILE_PATH_LITERAL("background_compiled.js");
 #endif
 
@@ -60,7 +59,7 @@ constexpr std::array<uint8_t, 32> kWasmTtsEnginePublicKeySHA256 = {
     0xb9, 0x26, 0xa1, 0x6f, 0x7b, 0xc2, 0x14, 0x17, 0xf1, 0xb0, 0x1e,
     0x56, 0x89, 0xcb, 0x53, 0x8e, 0x13, 0x92, 0xc1, 0x44, 0x5d};
 
-const char kWasmTtsEngineManifestName[] = "WASM TTS Engine";
+constexpr char kWasmTtsEngineManifestName[] = "WASM TTS Engine";
 
 #if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
 class WasmTTSEngineDirectory {
@@ -71,7 +70,7 @@ class WasmTTSEngineDirectory {
   }
 
   void Get(base::OnceCallback<void(const base::FilePath&)> callback) {
-    DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+    CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
     callbacks_.push_back(std::move(callback));
     if (!dir_.empty()) {
       FireCallbacks();
@@ -79,20 +78,20 @@ class WasmTTSEngineDirectory {
   }
 
   void Set(const base::FilePath& new_dir) {
-    DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+    CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
     CHECK(!new_dir.empty());
     dir_ = new_dir;
     FireCallbacks();
   }
 
   bool IsSet() const {
-    DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+    CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
     return !dir_.empty();
   }
 
  private:
   void FireCallbacks() {
-    DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+    CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
     CHECK(!dir_.empty());
     std::vector<base::OnceCallback<void(const base::FilePath&)>> callbacks;
     std::swap(callbacks, callbacks_);
@@ -207,14 +206,12 @@ void WasmTtsEngineComponentInstallerPolicy::MaybeReinstallTtsEngine(
     return;
   }
 
-  const base::FilePath::CharType* manifest_file = kManifestV3FileName;
-
   // If it's been more than 14 days since reading mode was last opened,
   // re-install the engine so that unused voices can be removed.
   EmbeddedA11yExtensionLoader::GetInstance()->Init();
   EmbeddedA11yExtensionLoader::GetInstance()->InstallExtensionWithIdAndPath(
       extension_misc::kComponentUpdaterTTSEngineExtensionId, install_dir,
-      manifest_file,
+      kManifestV3FileName,
       /*should_localize=*/false);
 
   // If reading mode hasn't been opened in longer than 14 days but less than
@@ -282,9 +279,8 @@ const std::string WasmTtsEngineComponentInstallerPolicy::GetExtensionId() {
 void WasmTtsEngineComponentInstallerPolicy::UpdateWasmComponentOnDemand() {
   const base::CommandLine* command_line =
       base::CommandLine::ForCurrentProcess();
-  if (command_line->HasSwitch(::switches::kTestType) ||
-      command_line->HasSwitch(switches::kDisableComponentUpdate) ||
-      !g_browser_process || !g_browser_process->component_updater()) {
+  if (command_line->HasSwitch(::switches::kTestType) || !g_browser_process ||
+      !g_browser_process->component_updater()) {
     return;
   }
   const std::string crx_id = component_updater::
@@ -293,7 +289,8 @@ void WasmTtsEngineComponentInstallerPolicy::UpdateWasmComponentOnDemand() {
       crx_id, component_updater::OnDemandUpdater::Priority::FOREGROUND,
       base::BindOnce([](update_client::Error error) {
         if (error != update_client::Error::NONE &&
-            error != update_client::Error::UPDATE_IN_PROGRESS) {
+            error != update_client::Error::UPDATE_IN_PROGRESS &&
+            error != update_client::Error::UPDATE_DISABLED) {
           DLOG(ERROR)
               << "On demand update of the Wasm TTS Engine component failed "
                  "with error: "

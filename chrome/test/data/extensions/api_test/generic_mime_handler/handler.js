@@ -6,13 +6,22 @@ chrome.test.runTests([
   async function getStreamInfoAndFetchStream() {
     const info = await chrome.mimeHandler.getStreamInfo();
 
-    // Branch for the options-disable test: if the original URL carries
-    // ?action=disable, call setMimeHandlerOptions to disable this
-    // handler for application/pdf, then succeed.
-    const url = new URL(info.originalUrl);
-    if (url.searchParams.get('action') === 'disable') {
+    // The ?action query of the PDF URL picks which setMimeHandlerOptions() call
+    // the handler makes.
+    const optionsByAction = {
+      'disable': {enabled: false},
+      'disable-embedded': {canEmbed: false},
+    };
+    const options =
+        optionsByAction[new URL(info.originalUrl).searchParams.get('action')];
+    if (options) {
       await chrome.mimeHandler.setMimeHandlerOptions(
-          'application/pdf', {enabled: false});
+          'application/pdf', options);
+      const storedOptions =
+          await chrome.mimeHandler.getMimeHandlerOptions('application/pdf');
+      for (const [member, value] of Object.entries(options)) {
+        chrome.test.assertEq(value, storedOptions[member]);
+      }
       chrome.test.succeed();
       return;
     }

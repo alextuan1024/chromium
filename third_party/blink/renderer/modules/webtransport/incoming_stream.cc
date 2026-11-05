@@ -21,7 +21,6 @@
 #include "third_party/blink/renderer/core/streams/underlying_byte_source_base.h"
 #include "third_party/blink/renderer/core/typed_arrays/array_buffer/array_buffer_contents.h"
 #include "third_party/blink/renderer/core/typed_arrays/dom_array_buffer.h"
-#include "third_party/blink/renderer/core/typed_arrays/dom_array_piece.h"
 #include "third_party/blink/renderer/core/typed_arrays/dom_typed_array.h"
 #include "third_party/blink/renderer/modules/webtransport/web_transport_error.h"
 #include "third_party/blink/renderer/platform/bindings/exception_code.h"
@@ -56,7 +55,7 @@ class IncomingStream::UnderlyingByteSource final
   }
 
   ScriptPromise<IDLUndefined> Cancel(v8::Local<v8::Value> reason) override {
-    uint8_t code = 0;
+    uint32_t code = 0;
     WebTransportError* exception =
         V8WebTransportError::ToWrappable(script_state_->GetIsolate(), reason);
     if (exception) {
@@ -81,7 +80,7 @@ class IncomingStream::UnderlyingByteSource final
 
 IncomingStream::IncomingStream(
     ScriptState* script_state,
-    base::OnceCallback<void(std::optional<uint8_t>, bool)> on_abort,
+    base::OnceCallback<void(std::optional<uint32_t>, bool)> on_abort,
     mojo::ScopedDataPipeConsumerHandle handle)
     : script_state_(script_state),
       on_abort_(std::move(on_abort)),
@@ -279,9 +278,9 @@ size_t IncomingStream::RespondBYOBRequestOrEnqueueBytes(
   ScriptState::Scope scope(script_state_);
 
   if (ReadableStreamBYOBRequest* request = controller_->byobRequest()) {
-    DOMArrayPiece view(request->view().Get());
-    size_t byob_response_length = std::min(view.ByteLength(), source.size());
-    view.ByteSpan().copy_prefix_from(source.first(byob_response_length));
+    base::span<uint8_t> view = request->view()->ByteSpan();
+    size_t byob_response_length = std::min(view.size(), source.size());
+    view.copy_prefix_from(source.first(byob_response_length));
     request->respond(script_state_, byob_response_length, exception_state);
     return byob_response_length;
   }
@@ -316,7 +315,7 @@ void IncomingStream::ErrorStreamAbortAndReset(ScriptValue exception) {
   AbortAndReset(std::nullopt);
 }
 
-void IncomingStream::AbortAndReset(std::optional<uint8_t> code) {
+void IncomingStream::AbortAndReset(std::optional<uint32_t> code) {
   DVLOG(1) << "IncomingStream::AbortAndReset() this=" << this;
 
   state_ = State::kAborted;

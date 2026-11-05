@@ -41,8 +41,7 @@
 #include "components/sync/protocol/web_app_specifics.pb.h"
 #include "components/webapps/browser/installable/installable_metrics.h"
 #include "components/webapps/browser/uninstall_result_code.h"
-#include "third_party/blink/public/common/features.h"
-#include "ui/base/window_open_disposition.h"
+#include "ui/base/mojom/window_open_disposition.mojom-shared.h"
 
 namespace web_app {
 
@@ -350,7 +349,7 @@ void ApplyManifestMigrationCommand::AppUninstalledCompleteMigration(
                                apps::LaunchContainer::kLaunchContainerWindow,
                                // Note: This is overridden with the web app
                                // config, as per kOverrideWithWebAppConfig.
-                               WindowOpenDisposition::NEW_WINDOW,
+                               ui::mojom::WindowOpenDisposition::kNewWindow,
                                apps::LaunchSource::kFromMigration);
   LaunchWebAppWindowSetting launch_setting =
       LaunchWebAppWindowSetting::kOverrideWithWebAppConfig;

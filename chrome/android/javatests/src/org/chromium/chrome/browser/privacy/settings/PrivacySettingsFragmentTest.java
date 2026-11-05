@@ -9,16 +9,20 @@ import static androidx.test.espresso.action.ViewActions.click;
 import static androidx.test.espresso.assertion.ViewAssertions.doesNotExist;
 import static androidx.test.espresso.assertion.ViewAssertions.matches;
 import static androidx.test.espresso.matcher.ViewMatchers.hasDescendant;
+import static androidx.test.espresso.matcher.ViewMatchers.isDescendantOfA;
 import static androidx.test.espresso.matcher.ViewMatchers.isDisplayed;
 import static androidx.test.espresso.matcher.ViewMatchers.withId;
 import static androidx.test.espresso.matcher.ViewMatchers.withText;
 
+import static org.hamcrest.CoreMatchers.allOf;
 import static org.hamcrest.CoreMatchers.containsString;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doReturn;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 
 import static org.chromium.ui.test.util.ViewUtils.clickOnClickableSpan;
@@ -69,6 +73,7 @@ import org.chromium.chrome.browser.preferences.ChromeSharedPreferences;
 import org.chromium.chrome.browser.preferences.Pref;
 import org.chromium.chrome.browser.privacy_guide.PrivacyGuideInteractions;
 import org.chromium.chrome.browser.profiles.ProfileManager;
+import org.chromium.chrome.browser.settings.SettingsInTab;
 import org.chromium.chrome.browser.settings.SettingsNavigationFactory;
 import org.chromium.chrome.browser.settings.SettingsTestRule;
 import org.chromium.chrome.browser.sync.settings.GoogleServicesSettings;
@@ -96,7 +101,6 @@ import java.util.concurrent.TimeUnit;
 @RunWith(ChromeJUnit4ClassRunner.class)
 @CommandLineFlags.Add({ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE})
 @Batch(Batch.PER_CLASS)
-@DisableFeatures(ChromeFeatureList.SETTINGS_MULTI_COLUMN)
 public class PrivacySettingsFragmentTest {
     // Name of the histogram to record the entry on Privacy Guide via the S&P link-row.
     public static final String ENTRY_EXIT_HISTOGRAM = "Settings.PrivacyGuide.EntryExit";
@@ -130,19 +134,34 @@ public class PrivacySettingsFragmentTest {
     @Mock private SettingsNavigation mSettingsNavigation;
 
     @Mock private SettingsIndexData mSearchIndexDataMock;
+    @Mock private PrivacyPreferencesManagerImpl.Natives mPrivacyPreferencesManagerJniMock;
 
-    private void waitForOptionsMenu() {
+    /**
+     * Waits until the settings UI is ready to be captured by a render test.
+     *
+     * <p>The toolbar and its menu are inflated before the preference list is populated, and
+     * RecyclerView cross-fades rows as preferences are updated, so taking a screenshot as soon as
+     * the menu exists can capture an empty list. Wait for the rows, then drop the item animator,
+     * which ends any in-flight fade and keeps later preference updates from starting a new one.
+     */
+    private void waitForSettingsToRender() {
         CriteriaHelper.pollUiThread(
                 () -> {
-                    return mSettingsActivityTestRule
-                                    .getActivity()
-                                    .findViewById(R.id.menu_id_targeted_help)
-                            != null;
+                    Activity activity = mSettingsActivityTestRule.getActivity();
+                    // Settings in a tab has no help menu item.
+                    if (!SettingsInTab.shouldOpenSettingsInTab()
+                            && activity.findViewById(R.id.menu_id_targeted_help) == null) {
+                        return false;
+                    }
+                    RecyclerView listView = mSettingsActivityTestRule.getFragment().getListView();
+                    return listView != null && listView.getChildCount() > 0;
                 });
+        PrivacySettings fragment = mSettingsActivityTestRule.getFragment();
+        ThreadUtils.runOnUiThreadBlocking(() -> fragment.getListView().setItemAnimator(null));
     }
 
     private void scrollToSetting(Matcher<View> matcher) {
-        onView(withId(R.id.recycler_view))
+        onView(allOf(withId(R.id.recycler_view), isDescendantOfA(withId(R.id.preferences_detail))))
                 .perform(RecyclerViewActions.scrollTo(hasDescendant(matcher)));
     }
 
@@ -152,7 +171,7 @@ public class PrivacySettingsFragmentTest {
                         ? R.string.settings_incognito_window_lock_title
                         : R.string.settings_incognito_tab_lock_title;
         String incognitoLockTitle = mSettingsActivityTestRule.getActivity().getString(titleResId);
-        onView(withId(R.id.recycler_view))
+        onView(allOf(withId(R.id.recycler_view), isDescendantOfA(withId(R.id.preferences_detail))))
                 .perform(RecyclerViewActions.scrollTo(hasDescendant(withText(incognitoLockTitle))));
         onView(withText(incognitoLockTitle)).check(matches(isDisplayed()));
         for (int i = 0; i < privacySettings.getListView().getChildCount(); ++i) {
@@ -186,6 +205,7 @@ public class PrivacySettingsFragmentTest {
     public void setUp() {
         NativeLibraryTestUtils.loadNativeLibraryAndInitBrowserProcess();
         mActionTester = new UserActionTester();
+        PrivacyPreferencesManagerImplJni.setInstanceForTesting(mPrivacyPreferencesManagerJniMock);
     }
 
     @After
@@ -216,17 +236,15 @@ public class PrivacySettingsFragmentTest {
                             ContentSettingsType.JAVASCRIPT_OPTIMIZER,
                             ContentSetting.DEFAULT);
                     getPrefService().clearPref(Pref.UNIVERSAL_OPT_OUT_ENABLED);
-                    getPrefService().clearPref(Pref.UNIVERSAL_OPT_OUT_ELIGIBLE);
                 });
     }
 
     @Test
     @LargeTest
     @Feature({"RenderTest"})
-    @DisableFeatures({ChromeFeatureList.SETTINGS_MULTI_COLUMN})
     public void testRenderTopView() throws IOException {
         mSettingsActivityTestRule.startSettingsActivity();
-        waitForOptionsMenu();
+        waitForSettingsToRender();
         View view =
                 mSettingsActivityTestRule
                         .getActivity()
@@ -238,10 +256,9 @@ public class PrivacySettingsFragmentTest {
     @Test
     @LargeTest
     @Feature({"RenderTest"})
-    @DisableFeatures({ChromeFeatureList.SETTINGS_MULTI_COLUMN})
     public void testRenderBottomView() throws IOException {
         mSettingsActivityTestRule.startSettingsActivity();
-        waitForOptionsMenu();
+        waitForSettingsToRender();
         PrivacySettings fragment = mSettingsActivityTestRule.getFragment();
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
@@ -259,11 +276,10 @@ public class PrivacySettingsFragmentTest {
     @Test
     @LargeTest
     @Feature({"RenderTest"})
-    @DisableFeatures({ChromeFeatureList.SETTINGS_MULTI_COLUMN})
     public void testRenderWhenPrivacyGuideViewed() throws IOException {
         setPrivacyGuideViewed(true);
         mSettingsActivityTestRule.startSettingsActivity();
-        waitForOptionsMenu();
+        waitForSettingsToRender();
         View view =
                 mSettingsActivityTestRule
                         .getActivity()
@@ -275,11 +291,10 @@ public class PrivacySettingsFragmentTest {
     @Test
     @LargeTest
     @Feature({"RenderTest"})
-    @DisableFeatures({ChromeFeatureList.SETTINGS_MULTI_COLUMN})
     public void testRenderWhenPrivacyGuideNotViewed() throws IOException {
         setPrivacyGuideViewed(false);
         mSettingsActivityTestRule.startSettingsActivity();
-        waitForOptionsMenu();
+        waitForSettingsToRender();
         View view =
                 mSettingsActivityTestRule
                         .getActivity()
@@ -291,12 +306,11 @@ public class PrivacySettingsFragmentTest {
     @Test
     @LargeTest
     @Feature({"RenderTest"})
-    @DisableFeatures(ChromeFeatureList.SETTINGS_MULTI_COLUMN)
     public void testRenderIncognitoLockView_DeviceScreenLockDisabled() throws IOException {
         IncognitoReauthManager.setIsIncognitoReauthFeatureAvailableForTesting(true);
 
         mSettingsActivityTestRule.startSettingsActivity();
-        waitForOptionsMenu();
+        waitForSettingsToRender();
         PrivacySettings fragment = mSettingsActivityTestRule.getFragment();
 
         mRenderTestRule.render(
@@ -307,13 +321,12 @@ public class PrivacySettingsFragmentTest {
     @Test
     @LargeTest
     @Feature({"RenderTest"})
-    @DisableFeatures(ChromeFeatureList.SETTINGS_MULTI_COLUMN)
     public void testRenderIncognitoLockView_DeviceScreenLockEnabled() throws IOException {
         IncognitoReauthManager.setIsIncognitoReauthFeatureAvailableForTesting(true);
         IncognitoReauthSettingUtils.setIsDeviceScreenLockEnabledForTesting(true);
 
         mSettingsActivityTestRule.startSettingsActivity();
-        waitForOptionsMenu();
+        waitForSettingsToRender();
         PrivacySettings fragment = mSettingsActivityTestRule.getFragment();
 
         mRenderTestRule.render(
@@ -387,7 +400,8 @@ public class PrivacySettingsFragmentTest {
         mSettingsActivityTestRule.startSettingsActivity();
         SettingsNavigationFactory.setInstanceForTesting(mSettingsNavigation);
 
-        onView(withId(R.id.recycler_view)).perform(RecyclerViewActions.scrollToLastPosition());
+        onView(allOf(withId(R.id.recycler_view), isDescendantOfA(withId(R.id.preferences_detail))))
+                .perform(RecyclerViewActions.scrollToLastPosition());
         String footer =
                 mSettingsActivityTestRule
                         .getActivity()
@@ -405,12 +419,18 @@ public class PrivacySettingsFragmentTest {
     @Test
     @LargeTest
     public void testSettingsFragmentAttachedMetric() {
-        // Expect "PrivacySettings".hashCode() to be logged.
-        int expectedValue = 1505293227;
-        assertEquals(expectedValue, "PrivacySettings".hashCode());
+        // Expect "MainSettings".hashCode() and "PrivacySettings".hashCode() to be logged.
+        int expectedMainValue = -67456740;
+        int expectedPrivacyValue = 1505293227;
+        assertEquals(expectedMainValue, "MainSettings".hashCode());
+        assertEquals(expectedPrivacyValue, "PrivacySettings".hashCode());
         try (var histogram =
-                HistogramWatcher.newSingleRecordWatcher(
-                        "Settings.FragmentAttached", expectedValue)) {
+                HistogramWatcher.newBuilder()
+                        .expectIntRecords(
+                                "Settings.FragmentAttached",
+                                expectedMainValue,
+                                expectedPrivacyValue)
+                        .build()) {
             mSettingsActivityTestRule.startSettingsActivity();
             SettingsNavigationFactory.setInstanceForTesting(mSettingsNavigation);
         }
@@ -603,12 +623,17 @@ public class PrivacySettingsFragmentTest {
         ChromeFeatureList.UNIVERSAL_OPT_OUT
     })
     public void testUniversalOptOutSettingsVisible_EligibleAndTurnedOn() {
+        setUniversalOptOutEligibleForTesting(true);
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
                     getPrefService().setBoolean(Pref.UNIVERSAL_OPT_OUT_ENABLED, true);
-                    getPrefService().setBoolean(Pref.UNIVERSAL_OPT_OUT_ELIGIBLE, true);
                 });
+        var histogram =
+                HistogramWatcher.newSingleRecordWatcher(
+                        "Privacy.UniversalOptOut.SettingsVisibility", true);
         mSettingsActivityTestRule.startSettingsActivity();
+        histogram.assertExpected();
+
         scrollToSetting(withText(R.string.universal_opt_out_title));
         onView(withText(R.string.universal_opt_out_title)).check(matches(isDisplayed()));
     }
@@ -620,12 +645,18 @@ public class PrivacySettingsFragmentTest {
         ChromeFeatureList.UNIVERSAL_OPT_OUT
     })
     public void testUniversalOptOutSettingsVisible_EligibleAndTurnedOff() {
+        setUniversalOptOutEligibleForTesting(true);
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
                     getPrefService().setBoolean(Pref.UNIVERSAL_OPT_OUT_ENABLED, false);
-                    getPrefService().setBoolean(Pref.UNIVERSAL_OPT_OUT_ELIGIBLE, true);
                 });
+
+        var histogram =
+                HistogramWatcher.newSingleRecordWatcher(
+                        "Privacy.UniversalOptOut.SettingsVisibility", true);
         mSettingsActivityTestRule.startSettingsActivity();
+        histogram.assertExpected();
+
         scrollToSetting(withText(R.string.universal_opt_out_title));
         onView(withText(R.string.universal_opt_out_title)).check(matches(isDisplayed()));
     }
@@ -637,12 +668,17 @@ public class PrivacySettingsFragmentTest {
         ChromeFeatureList.UNIVERSAL_OPT_OUT
     })
     public void testUniversalOptOutSettingsVisible_NotEligibleAndTurnedOn() {
+        setUniversalOptOutEligibleForTesting(false);
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
                     getPrefService().setBoolean(Pref.UNIVERSAL_OPT_OUT_ENABLED, true);
-                    getPrefService().setBoolean(Pref.UNIVERSAL_OPT_OUT_ELIGIBLE, false);
                 });
+        var histogram =
+                HistogramWatcher.newSingleRecordWatcher(
+                        "Privacy.UniversalOptOut.SettingsVisibility", true);
         mSettingsActivityTestRule.startSettingsActivity();
+        histogram.assertExpected();
+
         scrollToSetting(withText(R.string.universal_opt_out_title));
         onView(withText(R.string.universal_opt_out_title)).check(matches(isDisplayed()));
     }
@@ -654,12 +690,17 @@ public class PrivacySettingsFragmentTest {
         ChromeFeatureList.UNIVERSAL_OPT_OUT
     })
     public void testUniversalOptOutSettingsHidden_NotEligibleAndTurnedOff() {
+        setUniversalOptOutEligibleForTesting(false);
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
                     getPrefService().setBoolean(Pref.UNIVERSAL_OPT_OUT_ENABLED, false);
-                    getPrefService().setBoolean(Pref.UNIVERSAL_OPT_OUT_ELIGIBLE, false);
                 });
+        var histogram =
+                HistogramWatcher.newSingleRecordWatcher(
+                        "Privacy.UniversalOptOut.SettingsVisibility", false);
         mSettingsActivityTestRule.startSettingsActivity();
+        histogram.assertExpected();
+
         onView(withText(R.string.universal_opt_out_title)).check(doesNotExist());
     }
 
@@ -667,7 +708,13 @@ public class PrivacySettingsFragmentTest {
     @LargeTest
     @DisableFeatures(ChromeFeatureList.UNIVERSAL_OPT_OUT_SETTINGS)
     public void testUniversalOptOutSettingsHidden_FeatureDisabled() {
+        setUniversalOptOutEligibleForTesting(true);
+        var histogram =
+                HistogramWatcher.newSingleRecordWatcher(
+                        "Privacy.UniversalOptOut.SettingsVisibility", false);
         mSettingsActivityTestRule.startSettingsActivity();
+        histogram.assertExpected();
+
         onView(withText(R.string.universal_opt_out_title)).check(doesNotExist());
     }
 
@@ -682,11 +729,11 @@ public class PrivacySettingsFragmentTest {
         ChromeFeatureList.UNIVERSAL_OPT_OUT
     })
     public void testSearchableIndex_UniversalOptOutSettings_RemovedWhenNonEligible() {
+        setUniversalOptOutEligibleForTesting(false);
         var indexProvider = PrivacySettings.SEARCH_INDEX_DATA_PROVIDER;
         ThreadUtils.runOnUiThreadBlocking(
                 () -> {
                     getPrefService().setBoolean(Pref.UNIVERSAL_OPT_OUT_ENABLED, false);
-                    getPrefService().setBoolean(Pref.UNIVERSAL_OPT_OUT_ELIGIBLE, false);
                     indexProvider.updateDynamicPreferences(
                             mSettingsActivityTestRule.getActivity(),
                             mSearchIndexDataMock,
@@ -694,6 +741,28 @@ public class PrivacySettingsFragmentTest {
                 });
 
         verify(mSearchIndexDataMock)
+                .removeEntry(indexProvider.getUniqueId(PrivacySettings.PREF_UNIVERSAL_OPT_OUT));
+    }
+
+    @Test
+    @MediumTest
+    @EnableFeatures({
+        ChromeFeatureList.UNIVERSAL_OPT_OUT_SETTINGS,
+        ChromeFeatureList.UNIVERSAL_OPT_OUT
+    })
+    public void testSearchableIndex_UniversalOptOutSettings_KeptWhenEligible() {
+        setUniversalOptOutEligibleForTesting(true);
+        var indexProvider = PrivacySettings.SEARCH_INDEX_DATA_PROVIDER;
+        ThreadUtils.runOnUiThreadBlocking(
+                () -> {
+                    getPrefService().setBoolean(Pref.UNIVERSAL_OPT_OUT_ENABLED, false);
+                    indexProvider.updateDynamicPreferences(
+                            mSettingsActivityTestRule.getActivity(),
+                            mSearchIndexDataMock,
+                            ProfileManager.getLastUsedRegularProfile());
+                });
+
+        verify(mSearchIndexDataMock, never())
                 .removeEntry(indexProvider.getUniqueId(PrivacySettings.PREF_UNIVERSAL_OPT_OUT));
     }
 
@@ -712,5 +781,9 @@ public class PrivacySettingsFragmentTest {
 
         verify(mSearchIndexDataMock)
                 .removeEntry(indexProvider.getUniqueId(PrivacySettings.PREF_UNIVERSAL_OPT_OUT));
+    }
+
+    private void setUniversalOptOutEligibleForTesting(boolean eligible) {
+        doReturn(eligible).when(mPrivacyPreferencesManagerJniMock).isUniversalOptOutEligible(any());
     }
 }

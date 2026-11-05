@@ -12,6 +12,7 @@ import static org.chromium.chrome.browser.contextmenu.ContextMenuItemWithIconBut
 import static org.chromium.chrome.browser.incognito.IncognitoUtils.shouldOpenIncognitoAsWindow;
 import static org.chromium.ui.listmenu.ListMenuItemProperties.ENABLED;
 import static org.chromium.ui.listmenu.ListMenuItemProperties.MENU_ITEM_ID;
+import static org.chromium.ui.listmenu.ListMenuItemProperties.SHORTCUT_TEXT;
 import static org.chromium.ui.listmenu.ListMenuItemProperties.TEXT_APPEARANCE_ID;
 import static org.chromium.ui.listmenu.ListMenuItemProperties.TITLE;
 
@@ -35,17 +36,19 @@ import androidx.browser.customtabs.CustomContentAction;
 import androidx.browser.customtabs.CustomTabsIntent;
 
 import org.chromium.base.ApiCompatibilityUtils;
+import org.chromium.base.Callback;
 import org.chromium.base.ContextUtils;
-import org.chromium.base.DeviceInfo;
 import org.chromium.base.LocaleUtils;
 import org.chromium.base.Log;
 import org.chromium.base.ResettersForTesting;
 import org.chromium.base.metrics.RecordHistogram;
 import org.chromium.base.metrics.RecordUserAction;
 import org.chromium.base.shared_preferences.SharedPreferencesManager;
+import org.chromium.blink_public.common.BlinkFeatures;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.R;
+import org.chromium.chrome.browser.KeyboardShortcuts;
 import org.chromium.chrome.browser.bookmarks.BookmarkUtils;
 import org.chromium.chrome.browser.contextmenu.ChromeContextMenuItem.Item;
 import org.chromium.chrome.browser.contextmenu.ContextMenuCoordinator.ContextMenuItemType;
@@ -55,9 +58,10 @@ import org.chromium.chrome.browser.enterprise.util.DataProtectionBridge;
 import org.chromium.chrome.browser.ephemeraltab.EphemeralTabCoordinator;
 import org.chromium.chrome.browser.firstrun.FirstRunStatus;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
-import org.chromium.chrome.browser.glic.GlicEnabling;
+import org.chromium.chrome.browser.glic.GlicContextMenuUtils;
 import org.chromium.chrome.browser.glic.GlicKeyedService.GlicInvocationSource;
 import org.chromium.chrome.browser.glic.GlicKeyedServiceHandler;
+import org.chromium.chrome.browser.glic.GlicMetrics;
 import org.chromium.chrome.browser.incognito.IncognitoUtils;
 import org.chromium.chrome.browser.lens.LensController;
 import org.chromium.chrome.browser.lens.LensEntryPoint;
@@ -82,13 +86,11 @@ import org.chromium.chrome.browser.share.send_tab_to_self.SendTabToSelfAndroidBr
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.tab.TabContextMenuItemDelegate;
 import org.chromium.chrome.browser.tab.TabUtils;
-import org.chromium.chrome.browser.tab_bottom_sheet.TabBottomSheetUtils;
 import org.chromium.chrome.browser.translate.TranslateBridge;
 import org.chromium.chrome.browser.translate.TranslateUtils;
 import org.chromium.chrome.browser.ui.lens.LensOverlayCoordinator;
 import org.chromium.chrome.browser.ui.lens.LensOverlayInvocationSource;
 import org.chromium.chrome.browser.ui.lens.LensOverlayTabHelper;
-import org.chromium.chrome.browser.ui.side_panel.AndroidSidePanelEnabledFn;
 import org.chromium.chrome.browser.ui.signin.ForcedSigninStatusProvider;
 import org.chromium.components.browser_ui.share.ShareParams;
 import org.chromium.components.browser_ui.widget.BrowserUiListMenuUtils;
@@ -106,6 +108,7 @@ import org.chromium.components.search_engines.TemplateUrlService;
 import org.chromium.components.ukm.UkmRecorder;
 import org.chromium.components.url_formatter.UrlFormatter;
 import org.chromium.content_public.browser.BrowserStartupController;
+import org.chromium.content_public.browser.ContentFeatureMap;
 import org.chromium.content_public.browser.WebContents;
 import org.chromium.content_public.common.ContentUrlConstants;
 import org.chromium.ui.base.WindowAndroid;
@@ -122,7 +125,10 @@ import org.chromium.url.GURL;
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Objects;
+import java.util.Set;
 import java.util.function.Supplier;
 
 /** A {@link ContextMenuPopulator} used for showing the default Chrome context menu. */
@@ -140,11 +146,6 @@ public class ChromeContextMenuPopulator implements ContextMenuPopulator {
             "CustomTabs.ContextMenu.SelectedContextualCustomActionType";
     private static @Nullable Boolean sIsDefaultBrowserForTesting;
 
-    // Feature params on ClankGlicContextMenu gating each context-menu entry
-    // point, so every entry shares the same feature (and experiment).
-    @VisibleForTesting static final String PARAM_SHOW_ASK_GEMINI_ON_LINK = "show_on_link";
-    @VisibleForTesting static final String PARAM_SHOW_ASK_GEMINI_ON_PAGE = "show_on_page";
-
     private final Context mContext;
     private final ContextMenuItemDelegate mItemDelegate;
     private final List<CustomContentAction> mCustomContentActions;
@@ -155,6 +156,12 @@ public class ChromeContextMenuPopulator implements ContextMenuPopulator {
 
     private final boolean mIsDownloadRestrictedByPolicy;
     private final SparseArray<CustomContentAction> mCustomActionMap;
+
+    /** Glic invocation sources of the Glic items shown in this menu. */
+    private final Set<Integer> mShownGlicSources = new HashSet<>();
+
+    /** Glic invocation source of the Glic item the user clicked, or null if none. */
+    private @Nullable Integer mClickedGlicSource;
 
     private PendingIntentSender mPendingIntentSender;
 
@@ -269,6 +276,7 @@ public class ChromeContextMenuPopulator implements ContextMenuPopulator {
             Action.TRANSLATE,
             Action.CREATE_QR_CODE,
             Action.ASK_GEMINI,
+            Action.ASK_GEMINI_IMAGE,
         })
         @Retention(RetentionPolicy.SOURCE)
         public @interface Action {
@@ -332,7 +340,8 @@ public class ChromeContextMenuPopulator implements ContextMenuPopulator {
             int TRANSLATE = 57;
             int CREATE_QR_CODE = 58;
             int ASK_GEMINI = 59;
-            int NUM_ENTRIES = 60;
+            int ASK_GEMINI_IMAGE = 60;
+            int NUM_ENTRIES = 61;
         }
 
         // LINT.ThenChange(/tools/metrics/histograms/enums.xml:ContextMenuOptionAndroid)
@@ -472,13 +481,16 @@ public class ChromeContextMenuPopulator implements ContextMenuPopulator {
 
     @VisibleForTesting
     boolean shouldShowEmptySpaceContextMenu() {
-        // Enable empty space context menu from mouse-right click on all device form factors.
+        // Enable empty space context menu from mouse-right click on all device form factors, and
+        // from keyboard when keyboard context menu support is enabled.
         // Limit long press (touch) as trigger only when desktop agent is used, because
         //   * some phones always identify as having a touchpad (crbug.com/429262357), and
         //   * known web compatibility issue on tablet devices (crbug.com/45188879).
         return (mParams.getSourceType() == MenuSourceType.MOUSE
-                || (TabUtils.isUsingDesktopUserAgent(mItemDelegate.getWebContents())
-                        && mParams.getSourceType() == MenuSourceType.LONG_PRESS));
+                || (mParams.getSourceType() == MenuSourceType.KEYBOARD
+                        && ContentFeatureMap.isEnabled(BlinkFeatures.ANDROID_KEYBOARD_CONTEXT_MENU))
+                || (mParams.getSourceType() == MenuSourceType.LONG_PRESS
+                        && TabUtils.isUsingDesktopUserAgent(mItemDelegate.getWebContents())));
     }
 
     @VisibleForTesting
@@ -508,39 +520,38 @@ public class ChromeContextMenuPopulator implements ContextMenuPopulator {
 
     @VisibleForTesting
     boolean shouldShowAskGeminiForLink() {
-        // Enable on desktop if side panel is enabled, and enable on mobile if
-        // bottom sheet is enabled.
-        return ChromeFeatureList.isEnabled(ChromeFeatureList.CLANK_GLIC_CONTEXT_MENU)
-                && ChromeFeatureList.getFieldTrialParamByFeatureAsBoolean(
-                        ChromeFeatureList.CLANK_GLIC_CONTEXT_MENU,
-                        PARAM_SHOW_ASK_GEMINI_ON_LINK,
-                        true)
-                && (AndroidSidePanelEnabledFn.isEnabled()
-                        || TabBottomSheetUtils.isTabBottomSheetEnabled())
-                && !DeviceInfo.isAutomotive()
-                && !mItemDelegate.isIncognito()
-                && GlicEnabling.isEnabledForProfile(getProfile());
+        return UrlUtilities.isHttpOrHttps(mParams.getLinkUrl())
+                && GlicContextMenuUtils.shouldShowAskGeminiForLink(getProfile(), mContext);
     }
 
     @VisibleForTesting
     boolean shouldShowAskGeminiForPage() {
-        // The empty-space (page) entry point is desktop Android only, where
-        // Glic is presented in the side panel.
-        return ChromeFeatureList.isEnabled(ChromeFeatureList.CLANK_GLIC_CONTEXT_MENU)
-                && ChromeFeatureList.getFieldTrialParamByFeatureAsBoolean(
-                        ChromeFeatureList.CLANK_GLIC_CONTEXT_MENU,
-                        PARAM_SHOW_ASK_GEMINI_ON_PAGE,
-                        false)
-                && AndroidSidePanelEnabledFn.isEnabled()
-                && !DeviceInfo.isAutomotive()
-                && !mItemDelegate.isIncognito()
-                && GlicEnabling.isEnabledForProfile(getProfile());
+        return GlicContextMenuUtils.shouldShowAskGeminiForPage(getProfile(), mContext);
+    }
+
+    @VisibleForTesting
+    boolean shouldShowAskGeminiForImage() {
+        return GlicContextMenuUtils.shouldShowAskGeminiForImage(getProfile());
+    }
+
+    /** Returns the Glic invocation source of the "Ask Gemini" item for this menu's target. */
+    private @GlicInvocationSource int getAskGeminiInvocationSource() {
+        return mParams.isAnchor()
+                ? GlicInvocationSource.WEB_CONTENTS_CONTEXT_MENU_LINK
+                : GlicInvocationSource.WEB_CONTENTS_CONTEXT_MENU_PAGE;
+    }
+
+    private static void recordGlicEntryPointClick(
+            @GlicInvocationSource int source, @Nullable Tab tab) {
+        boolean isNtp = tab != null && UrlUtilities.isNtpUrl(tab.getUrl());
+        GlicMetrics.recordEntryPointClick(source, isNtp);
     }
 
     @Override
     public List<ModelList> buildContextMenu() {
         int nextCustomMenuItemId = CUSTOM_MENU_ITEM_ID_START;
         mCustomActionMap.clear();
+        mShownGlicSources.clear();
 
         List<ModelList> groupedItems = new ArrayList<>();
 
@@ -571,6 +582,7 @@ public class ChromeContextMenuPopulator implements ContextMenuPopulator {
             if (shouldShowAskGeminiForPage()) {
                 ModelList geminiGroup = new ModelList();
                 geminiGroup.add(createListItem(Item.ASK_GEMINI));
+                mShownGlicSources.add(getAskGeminiInvocationSource());
                 groupedItems.add(geminiGroup);
             }
 
@@ -716,6 +728,7 @@ public class ChromeContextMenuPopulator implements ContextMenuPopulator {
                 }
                 if (shouldShowAskGeminiForLink()) {
                     linkGroup.add(createListItem(Item.ASK_GEMINI));
+                    mShownGlicSources.add(getAskGeminiInvocationSource());
                 }
             }
             if (!MailTo.isMailTo(mParams.getLinkUrl().getSpec())
@@ -874,6 +887,11 @@ public class ChromeContextMenuPopulator implements ContextMenuPopulator {
                 imageGroup.add(createShareListItem(Item.SHARE_IMAGE, Item.DIRECT_SHARE_IMAGE));
             }
 
+            if (shouldShowAskGeminiForImage()) {
+                imageGroup.add(createListItem(Item.ASK_GEMINI_IMAGE));
+                mShownGlicSources.add(GlicInvocationSource.SHARED_IMAGE);
+            }
+
             groupedItems.add(imageGroup);
         }
 
@@ -888,7 +906,7 @@ public class ChromeContextMenuPopulator implements ContextMenuPopulator {
                                 /* showInProductHelp= */ false,
                                 !mIsDownloadRestrictedByPolicy));
             }
-            if (!mParams.isEncrypted()) {
+            if (!mParams.isEncrypted() && mParams.hasReadableVideoFrame()) {
                 if (ChromeFeatureList.sContextMenuCopyVideoFrame.isEnabled()) {
                     videoGroup.add(
                             createListItem(
@@ -897,8 +915,6 @@ public class ChromeContextMenuPopulator implements ContextMenuPopulator {
                                     /* enabled= */ true));
                 }
                 if (ChromeFeatureList.sContextMenuDownloadVideoFrame.isEnabled()
-                        && mParams.canSaveMedia()
-                        && UrlUtilities.isDownloadableScheme(mParams.getSrcUrl())
                         && mMode != ContextMenuMode.THIN_WEB_VIEW) {
                     videoGroup.add(
                             createListItem(
@@ -1266,7 +1282,9 @@ public class ChromeContextMenuPopulator implements ContextMenuPopulator {
                     new ShareParams.Builder(
                                     getWindow(),
                                     ContextMenuUtils.getAltText(mParams),
-                                    mParams.getUrl().getSpec())
+                                    mParams.isAnchor()
+                                            ? mParams.getUrl().getSpec()
+                                            : mParams.getPageUrl().getSpec())
                             .build();
             assumeNonNull(mShareDelegateSupplier.get())
                     .share(
@@ -1342,8 +1360,7 @@ public class ChromeContextMenuPopulator implements ContextMenuPopulator {
             mNativeDelegate.setPictureInPicture(enterPiP);
         } else if (itemId == R.id.contextmenu_show_interest_in_element) {
             recordContextMenuSelection(ContextMenuUma.Action.SHOW_INTEREST_IN_ELEMENT);
-            WebContents webContents = mItemDelegate.getWebContents();
-            webContents.showInterestInElement(mParams.getInterestForNodeID());
+            mNativeDelegate.showInterestInElement();
         } else if (itemId == R.id.contextmenu_open_image_in_new_tab) {
             recordContextMenuSelection(ContextMenuUma.Action.OPEN_IMAGE_IN_NEW_TAB);
             GURL url =
@@ -1353,13 +1370,17 @@ public class ChromeContextMenuPopulator implements ContextMenuPopulator {
                                     && !mParams.getLinkUrl().isEmpty())
                             ? mParams.getLinkUrl()
                             : mParams.getSrcUrl();
+            var additionalNavigationParams = mParams.takeAdditionalNavigationParams();
             verifyGenericCopyImageActionIsAllowedByPolicy(
                     url.getSpec(),
-                    () ->
+                    (isAllowed) -> {
+                        if (isAllowed) {
                             mItemDelegate.onOpenImageInNewTab(
-                                    url,
-                                    mParams.getReferrer(),
-                                    mParams.getAdditionalNavigationParams()));
+                                    url, mParams.getReferrer(), additionalNavigationParams);
+                        } else if (additionalNavigationParams != null) {
+                            additionalNavigationParams.destroy();
+                        }
+                    });
         } else if (itemId == R.id.contextmenu_open_image_in_ephemeral_tab) {
             recordContextMenuSelection(ContextMenuUma.Action.OPEN_IMAGE_IN_EPHEMERAL_TAB);
             GURL url =
@@ -1369,12 +1390,17 @@ public class ChromeContextMenuPopulator implements ContextMenuPopulator {
                                     && !mParams.getLinkUrl().isEmpty())
                             ? mParams.getLinkUrl()
                             : mParams.getSrcUrl();
+            var additionalNavigationParams = mParams.takeAdditionalNavigationParams();
             verifyGenericCopyImageActionIsAllowedByPolicy(
                     url.getSpec(),
-                    () -> {
-                        String title = getTitleOrGuessIfNotPresent();
-                        mItemDelegate.onOpenInEphemeralTab(
-                                url, title, mParams.getAdditionalNavigationParams());
+                    (isAllowed) -> {
+                        if (isAllowed) {
+                            String title = getTitleOrGuessIfNotPresent();
+                            mItemDelegate.onOpenInEphemeralTab(
+                                    url, title, additionalNavigationParams);
+                        } else if (additionalNavigationParams != null) {
+                            additionalNavigationParams.destroy();
+                        }
                     });
         } else if (itemId == R.id.contextmenu_open_in_new_tab) {
             recordContextMenuSelection(ContextMenuUma.Action.OPEN_IN_NEW_TAB);
@@ -1383,14 +1409,14 @@ public class ChromeContextMenuPopulator implements ContextMenuPopulator {
                     mParams.getUrl(),
                     mParams.getReferrer(),
                     /* navigateToTab= */ false,
-                    mParams.getAdditionalNavigationParams());
+                    mParams.takeAdditionalNavigationParams());
         } else if (itemId == R.id.contextmenu_open_in_new_tab_in_group) {
             recordContextMenuSelection(ContextMenuUma.Action.OPEN_IN_NEW_TAB_IN_GROUP);
             RecordUserAction.record("TabContextMenu.OpenInNewTabInGroup");
             mItemDelegate.onOpenInNewTabInGroup(
                     mParams.getUrl(),
                     mParams.getReferrer(),
-                    mParams.getAdditionalNavigationParams());
+                    mParams.takeAdditionalNavigationParams());
         } else if (itemId == R.id.contextmenu_open_in_incognito_tab) {
             recordContextMenuSelection(ContextMenuUma.Action.OPEN_IN_INCOGNITO_TAB);
             mItemDelegate.onOpenInNewIncognitoTab(mParams.getUrl());
@@ -1404,7 +1430,7 @@ public class ChromeContextMenuPopulator implements ContextMenuPopulator {
                     mParams.getReferrer(),
                     mItemDelegate.isIncognito(),
                     /* preferNew= */ false,
-                    mParams.getAdditionalNavigationParams());
+                    mParams.takeAdditionalNavigationParams());
         } else if (itemId == R.id.contextmenu_open_in_new_window) {
             recordContextMenuSelection(ContextMenuUma.Action.OPEN_IN_NEW_WINDOW);
             mItemDelegate.openInOtherWindow(
@@ -1412,22 +1438,21 @@ public class ChromeContextMenuPopulator implements ContextMenuPopulator {
                     mParams.getReferrer(),
                     mItemDelegate.isIncognito(),
                     /* preferNew= */ true,
-                    mParams.getAdditionalNavigationParams());
+                    mParams.takeAdditionalNavigationParams());
         } else if (itemId == R.id.contextmenu_open_in_ephemeral_tab) {
             recordContextMenuSelection(ContextMenuUma.Action.OPEN_IN_EPHEMERAL_TAB);
             mItemDelegate.onOpenInEphemeralTab(
                     mParams.getUrl(),
                     mParams.getLinkText(),
-                    mParams.getAdditionalNavigationParams());
+                    mParams.takeAdditionalNavigationParams());
         } else if (itemId == R.id.contextmenu_open_image) {
             recordContextMenuSelection(ContextMenuUma.Action.OPEN_IMAGE);
             mItemDelegate.onOpenImageUrl(
                     mParams.getSrcUrl(),
                     mParams.getReferrer(),
-                    mParams.getAdditionalNavigationParams());
+                    mParams.takeAdditionalNavigationParams());
         } else if (itemId == R.id.contextmenu_read_later) {
             recordContextMenuSelection(ContextMenuUma.Action.READ_LATER);
-            // TODO(crbug.com/40156623): Download the page to offline page backend.
             String title = mParams.getTitleText();
             if (TextUtils.isEmpty(title)) {
                 title = mParams.getLinkText();
@@ -1456,10 +1481,24 @@ public class ChromeContextMenuPopulator implements ContextMenuPopulator {
             }
         } else if (itemId == R.id.contextmenu_ask_gemini) {
             recordContextMenuSelection(ContextMenuUma.Action.ASK_GEMINI);
+            @GlicInvocationSource int source = getAskGeminiInvocationSource();
             Tab askGeminiTab = getTab();
+            recordGlicEntryPointClick(source, askGeminiTab);
+            mClickedGlicSource = source;
             if (askGeminiTab != null) {
-                GlicKeyedServiceHandler.invoke(
-                        getProfile(), askGeminiTab, GlicInvocationSource.WEB_CONTENTS_CONTEXT_MENU);
+                GlicKeyedServiceHandler.invoke(getProfile(), askGeminiTab, source);
+            }
+        } else if (itemId == R.id.contextmenu_ask_gemini_image) {
+            recordContextMenuSelection(ContextMenuUma.Action.ASK_GEMINI_IMAGE);
+            Tab askGeminiImageTab = getTab();
+            recordGlicEntryPointClick(GlicInvocationSource.SHARED_IMAGE, askGeminiImageTab);
+            mClickedGlicSource = GlicInvocationSource.SHARED_IMAGE;
+            if (askGeminiImageTab != null) {
+                GlicKeyedServiceHandler.shareContextImage(
+                        getProfile(),
+                        askGeminiImageTab,
+                        mNativeDelegate.getRenderFrameHost(),
+                        mParams.getSrcUrl());
             }
         } else {
             onTabBackedItemSelected(itemId);
@@ -1484,7 +1523,15 @@ public class ChromeContextMenuPopulator implements ContextMenuPopulator {
     }
 
     @Override
-    public void onMenuClosed() {}
+    public void onMenuClosed() {
+        Profile profile = getProfile();
+        for (int source : mShownGlicSources) {
+            GlicMetrics.recordWebContentsContextMenuResult(
+                    profile, source, Objects.equals(mClickedGlicSource, source));
+        }
+        mShownGlicSources.clear();
+        mClickedGlicSource = null;
+    }
 
     @Override
     public boolean hasCustomItems() {
@@ -1551,7 +1598,10 @@ public class ChromeContextMenuPopulator implements ContextMenuPopulator {
     /** Copy the video frame, that triggered the current context menu, to system clipboard. */
     private void copyVideoFrameToClipboard() {
         verifyGenericCopyImageActionIsAllowedByPolicy(
-                mParams.getSrcUrl().getSpec(), mNativeDelegate::copyVideoFrame);
+                mParams.getSrcUrl().getSpec(),
+                (isAllowed) -> {
+                    if (isAllowed) mNativeDelegate.copyVideoFrame();
+                });
     }
 
     /** Download the video frame, that triggered the current context menu, to the device. */
@@ -1560,13 +1610,9 @@ public class ChromeContextMenuPopulator implements ContextMenuPopulator {
     }
 
     private void verifyGenericCopyImageActionIsAllowedByPolicy(
-            String imageUri, Runnable continueIfCopyAllowed) {
+            String imageUri, Callback<Boolean> callback) {
         DataProtectionBridge.verifyGenericCopyImageActionIsAllowedByPolicy(
-                imageUri,
-                mItemDelegate.getWebContents().getMainFrame(),
-                (isAllowed) -> {
-                    if (isAllowed) continueIfCopyAllowed.run();
-                });
+                imageUri, mItemDelegate.getWebContents().getMainFrame(), callback);
     }
 
     /**
@@ -1759,12 +1805,14 @@ public class ChromeContextMenuPopulator implements ContextMenuPopulator {
                 .with(TITLE, title)
                 .with(ENABLED, enabled)
                 .with(TEXT_APPEARANCE_ID, BrowserUiListMenuUtils.getDefaultTextAppearanceStyle())
+                .with(SHORTCUT_TEXT, KeyboardShortcuts.getShortcutText(menuItemId))
                 .build();
     }
 
     private ListItem createShareListItem(@Item int item, @Item int iconButtonItem) {
         final boolean isLink = (item == Item.SHARE_LINK || item == Item.SHARE_PAGE);
-        final Pair<Drawable, CharSequence> shareInfo = createRecentShareAppInfo(isLink);
+        final Pair<@Nullable Drawable, @Nullable CharSequence> shareInfo =
+                createRecentShareAppInfo(isLink);
         final PropertyModel model =
                 new PropertyModel.Builder(ContextMenuItemWithIconButtonProperties.ALL_KEYS)
                         .with(MENU_ITEM_ID, ChromeContextMenuItem.getMenuId(item))
@@ -1795,7 +1843,8 @@ public class ChromeContextMenuPopulator implements ContextMenuPopulator {
      *
      * @param isLink Whether the item is SHARE_LINK.
      */
-    private static Pair<Drawable, CharSequence> createRecentShareAppInfo(boolean isLink) {
+    private static Pair<@Nullable Drawable, @Nullable CharSequence> createRecentShareAppInfo(
+            boolean isLink) {
         return isLink
                 ? ShareHelper.getShareableIconAndNameForText()
                 // Use jpeg as a generic image type to be shared. Most apps accepting jpeg

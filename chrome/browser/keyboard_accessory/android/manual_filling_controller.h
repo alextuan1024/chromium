@@ -77,7 +77,7 @@ class ManualFillingController {
   // Notifies that the focused field changed which allows the controller to
   // update the UI visibility.
   virtual void NotifyFocusedInputChanged(
-      autofill::FieldRendererId focused_field_id,
+      autofill::FieldGlobalId focused_field_id,
       autofill::mojom::FocusedFieldType focused_field_type) = 0;
 
   // Returns the last field id passed to `NotifyFocusedInputChanged()`.
@@ -110,9 +110,14 @@ class ManualFillingController {
   // Passing `std::nullopt` clears the selection.
   virtual void SetSelectedSuggestion(std::optional<int> suggestion_index) = 0;
 
-  // Navigates to the next or previous suggestion in the accessory bar. Returns
-  // true if a suggestion was selected, false otherwise.
-  virtual bool NavigateSuggestions(autofill::NavigationDirection direction) = 0;
+  // Performs the keyboard navigation `action` in the accessory bar. Returns
+  // whether the action was handled, i.e. whether the triggering key event
+  // should be consumed.
+  virtual bool Navigate(autofill::NavigationAction action) = 0;
+
+  // Clicks the keyboard-selected manual fallback icon. Returns whether one was
+  // selected.
+  virtual bool AcceptFallback() = 0;
 
   // --------------------------
   // Methods called by UI code:

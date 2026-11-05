@@ -10,9 +10,11 @@
 #include "base/check.h"
 #include "base/memory/ptr_util.h"
 #include "content/public/browser/web_contents.h"
+#include "third_party/jni_zero/default_conversions.h"
+#include "third_party/jni_zero/jni_zero.h"
 #include "ui/android/window_android.h"
 
-// Must come after all headers that specialize FromJniType() / ToJniType().
+// Must come after headers that provide symbols used by @JniType.
 #include "chrome/browser/password_edit_dialog/android/jni_headers/PasswordEditDialogBridge_jni.h"
 
 PasswordEditDialog::~PasswordEditDialog() = default;
@@ -21,7 +23,7 @@ PasswordEditDialog::~PasswordEditDialog() = default;
 std::unique_ptr<PasswordEditDialog> PasswordEditDialogBridge::Create(
     content::WebContents* web_contents,
     PasswordEditDialogBridgeDelegate* delegate) {
-  DCHECK(web_contents);
+  CHECK(web_contents, base::NotFatalUntil::M161);
   CHECK(delegate);
 
   ui::WindowAndroid* window_android = web_contents->GetTopLevelNativeWindow();
@@ -40,11 +42,11 @@ PasswordEditDialogBridge::PasswordEditDialogBridge(
 
   JNIEnv* env = base::android::AttachCurrentThread();
   java_password_dialog_ = Java_PasswordEditDialogBridge_create(
-      env, reinterpret_cast<intptr_t>(this), j_window_android);
+      env, jni_zero::MakeRaw(this), j_window_android);
 }
 
 PasswordEditDialogBridge::~PasswordEditDialogBridge() {
-  DCHECK(java_password_dialog_.is_null());
+  CHECK(java_password_dialog_.is_null(), base::NotFatalUntil::M161);
 }
 
 void PasswordEditDialogBridge::ShowPasswordEditDialog(
@@ -55,16 +57,9 @@ void PasswordEditDialogBridge::ShowPasswordEditDialog(
     bool is_saving_blocked_by_trusted_vault_error) {
   JNIEnv* env = base::android::AttachCurrentThread();
 
-  base::android::ScopedJavaLocalRef<jobjectArray> j_saved_usernames =
-      base::android::ToJavaArrayOfStrings(env, saved_usernames);
-  base::android::ScopedJavaLocalRef<jstring> j_account_email =
-      account_email.has_value()
-          ? base::android::ConvertUTF8ToJavaString(env, account_email.value())
-          : nullptr;
-
   Java_PasswordEditDialogBridge_showPasswordEditDialog(
-      env, java_password_dialog_, j_saved_usernames, username, password,
-      j_account_email, is_saving_blocked_by_trusted_vault_error);
+      env, java_password_dialog_, saved_usernames, username, password,
+      account_email, is_saving_blocked_by_trusted_vault_error);
 }
 
 void PasswordEditDialogBridge::Dismiss() {

@@ -131,7 +131,7 @@ struct BLINK_EXPORT WebNavigationInfo {
   // If the navigation was triggered by a script tool, this contains the
   // ID of the tool invocation. This helps the browser to associate the
   // navigation with the tool that caused it.
-  std::optional<base::UnguessableToken> script_tool_invocation_id;
+  std::optional<ToolInvocationToken> script_tool_invocation_id;
 
   // The host of the entity that injected the script initiating this
   // navigation. This is only populated when the initiator document's
@@ -152,7 +152,10 @@ struct BLINK_EXPORT WebNavigationInfo {
   bool initiator_frame_is_ad = false;
 
   // Whether there is ad script in stack when the navigation is initiated. Note
-  // that will also be true if the initiator frame is ad.
+  // that will also be true when any script is executing if the initiator frame
+  // is an ad, even if the script itself isn't recognized as an ad script.
+  // However it will be false if the navigation was initiated from an ad frame,
+  // but not by a script.
   bool is_ad_script_in_stack = false;
 
   // Whether this is a navigation in the opener frame initiated
@@ -443,7 +446,7 @@ struct BLINK_EXPORT WebNavigationParams {
   // If the navigation was triggered by a script tool, this contains the
   // ID of the tool invocation. This helps the browser to associate the
   // navigation with the tool that caused it.
-  std::optional<base::UnguessableToken> script_tool_invocation_id;
+  std::optional<ToolInvocationToken> script_tool_invocation_id;
 
   // Seed for all PAAPI Auction Nonces generated in this document.
   base::Uuid base_auction_nonce;
@@ -578,20 +581,6 @@ struct BLINK_EXPORT WebNavigationParams {
   // where the value is coming from.
   bool ancestor_or_self_has_cspee = false;
 
-  // Reduced Accept-Language negotiates the language when navigating to a new
-  // document in the main frame, and the browser supplies the same negotiated
-  // language to the main frame and all its subframes when committing a
-  // navigation. This value will be used as the Accept-Language for subresource
-  // requests made by the document committed by this navigation. For example,
-  // when navigating to a URL with embedded image subresource request, the
-  // language negotiation only happens in top-level document. It will store the
-  // top-level document's negotiated language as `reduced_accept_language` here.
-  // Whenever fetching image subresources, the HTTP Accept-Language header will
-  // be set as the reduced accept language which was stored here. As we only do
-  // language negotiation on the top-level document, all subresource requests
-  // will inherit the Accept-Language header value of the top-level document.
-  WebString reduced_accept_language;
-
   // Carries on the `navigational_delivery_type` in `NavigationParam` on the
   // renderer side.
   network::mojom::NavigationDeliveryType navigation_delivery_type =
@@ -678,6 +667,11 @@ struct BLINK_EXPORT WebNavigationParams {
   // document.
   mojom::ScriptInjectionPolicy script_injection_policy =
       mojom::ScriptInjectionPolicy::kNone;
+
+  // Whether the document may bind RestrictedDeviceBoundSessionManager. Set
+  // from CommitNavigationParams; false when the document commits without
+  // them.
+  bool can_use_device_bound_session_js_api = false;
 };
 
 }  // namespace blink

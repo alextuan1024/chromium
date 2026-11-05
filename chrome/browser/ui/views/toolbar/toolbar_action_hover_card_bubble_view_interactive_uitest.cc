@@ -20,6 +20,7 @@
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/views/toolbar/toolbar_action_hover_card_controller.h"
 #include "chrome/browser/ui/views/toolbar/toolbar_view.h"
+#include "chrome/common/chrome_features.h"
 #include "chrome/grit/generated_resources.h"
 #include "chrome/test/base/interactive_test_utils.h"
 #include "chrome/test/base/ui_test_utils.h"
@@ -70,7 +71,7 @@ class SafeWidgetDestroyedWaiter : public views::WidgetObserver {
     if (!observation_.IsObserving()) {
       return;
     }
-    DCHECK(quit_closure_.is_null());
+    CHECK(quit_closure_.is_null(), base::NotFatalUntil::M162);
     quit_closure_ = run_loop_.QuitClosure();
     run_loop_.Run();
   }
@@ -91,8 +92,10 @@ class ToolbarActionHoverCardBubbleViewUITest : public ExtensionsToolbarUITest {
             gfx::Animation::RichAnimationRenderMode::FORCE_DISABLED)) {
     ToolbarActionHoverCardController::disable_animations_for_testing_ = true;
     scoped_feature_list_.InitWithFeatures(
-        {extensions_features::kExtensionsMenuAccessControl},
-        {features::kExtensionsPinnedByDefault});
+        /*enabled_features=*/{extensions_features::
+                                  kExtensionsMenuAccessControl},
+        /*disabled_features=*/{features::kExtensionsPinnedByDefault,
+                               features::kWebUIExtensionsContainer});
   }
   ToolbarActionHoverCardBubbleViewUITest(
       const ToolbarActionHoverCardBubbleViewUITest&) = delete;
@@ -646,8 +649,11 @@ class ToolbarActionHoverCardBubbleViewDisabledFeatureUITest
   ToolbarActionHoverCardBubbleViewDisabledFeatureUITest() {
     scoped_feature_list_.Reset();
     scoped_feature_list_.InitWithFeatures(
-        {}, {extensions_features::kExtensionsMenuAccessControl,
-             features::kExtensionsPinnedByDefault});
+        /*enabled_features=*/{},
+        /*disabled_features=*/{
+            extensions_features::kExtensionsMenuAccessControl,
+            features::kExtensionsPinnedByDefault,
+            features::kWebUIExtensionsContainer});
   }
 };
 

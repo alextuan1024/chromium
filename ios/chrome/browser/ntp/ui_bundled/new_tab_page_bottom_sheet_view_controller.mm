@@ -9,6 +9,7 @@
 #import "ios/chrome/browser/content_suggestions/magic_stack/public/magic_stack_constants.h"
 #import "ios/chrome/browser/content_suggestions/magic_stack/public/magic_stack_utils.h"
 #import "ios/chrome/browser/content_suggestions/magic_stack/ui/magic_stack_collection_view.h"
+#import "ios/chrome/browser/content_suggestions/most_visited_tiles/ui/most_visited_tiles_collection_view.h"
 #import "ios/chrome/browser/content_suggestions/ui/content_suggestions_collection_utils.h"
 #import "ios/chrome/browser/ntp/ui_bundled/new_tab_page_color_palette_util.h"
 #import "ios/chrome/browser/ntp/ui_bundled/new_tab_page_constants.h"
@@ -35,6 +36,13 @@ constexpr CGFloat kPadFormSheetMinWidth = 300.0;
 // Minimum drag velocity required to trigger a state transition.
 constexpr CGFloat kMinimumDragVelocityToChangeState = 250.0;
 
+// Minimum fraction of promo height that must be visible in the bottom sheet and
+// window to count as visible for impression tracking.
+constexpr CGFloat kSigninPromoVisibilityThresholdFraction = 1.0 / 3.0;
+
+// Threshold for floating point scroll offset comparisons.
+constexpr CGFloat kFloatingPointEpsilon = 0.001;
+
 }  // namespace
 
 @interface NewTabPageBottomSheetViewController () <UIGestureRecognizerDelegate,
@@ -49,6 +57,7 @@ constexpr CGFloat kMinimumDragVelocityToChangeState = 250.0;
   UIView* _magicStackContainerView;
   UIView* _mostVisitedContainerView;
   UIView* _mostVisitedView;
+  MostVisitedTilesCollectionView* _mostVisitedCollectionView;
   UIView* _contentContainerView;
   NTPCardBackgroundView* _feedCardBackgroundView;
   NSLayoutConstraint* _magicStackHeightConstraint;
@@ -68,6 +77,11 @@ constexpr CGFloat kMinimumDragVelocityToChangeState = 250.0;
   __weak id<UIScrollViewDelegate> _originalFeedDelegate;
 
   BOOL _isBottomOmnibox;
+  UIViewController* _feedTopSectionViewController;
+  BOOL _feedTopSectionVisible;
+  UIView* _feedTopSectionContainerView;
+  NSArray<NSLayoutConstraint*>* _feedTopSectionConstraints;
+  BOOL _isSigninPromoVisible;
   NSArray<NSLayoutConstraint*>* _headerContainerConstraints;
   NSArray<NSLayoutConstraint*>* _feedCardBackgroundConstraints;
   NSLayoutConstraint* _magicStackTopConstraint;
@@ -80,14 +94,94 @@ constexpr CGFloat kMinimumDragVelocityToChangeState = 250.0;
 
 #pragma mark - Public
 
+- (CGFloat)feedTopSectionHeight {
+  if (![self hasFeedTopSection]) {
+    return 0.0;
+  }
+  CGFloat width = _contentContainerView
+                      ? _contentContainerView.bounds.size.width
+                      : self.view.bounds.size.width;
+  if (width > 0) {
+    CGSize targetSize = CGSizeMake(width, UILayoutFittingCompressedSize.height);
+    CGFloat height =
+        [_feedTopSectionViewController.view
+              systemLayoutSizeFittingSize:targetSize
+            withHorizontalFittingPriority:UILayoutPriorityRequired
+                  verticalFittingPriority:UILayoutPriorityFittingSizeLevel]
+            .height;
+    if (height > 0) {
+      return height;
+    }
+  }
+  CGFloat fittingHeight =
+      [_feedTopSectionViewController.view
+          systemLayoutSizeFittingSize:UILayoutFittingCompressedSize]
+          .height;
+  if (fittingHeight > 0) {
+    return fittingHeight;
+  }
+  return _feedTopSectionViewController.view.frame.size.height;
+}
+
+- (void)handleFeedTopSectionClosed {
+  _feedTopSectionVisible = NO;
+  _feedTopSectionViewController.view.hidden = YES;
+  _feedTopSectionContainerView.hidden = YES;
+  __weak __typeof(self) weakSelf = self;
+  [UIView animateWithDuration:0.25
+                   animations:^{
+                     [weakSelf updateFeedLayout];
+                   }];
+}
+
+- (void)updateFeedLayout {
+  [self updateHeaderContainerHierarchy];
+  [self updateFeedInsets];
+  [self.view layoutIfNeeded];
+}
+
+- (void)updateFeedSigninPromoVisibility {
+  if (!_feedTopSectionVisible || !_feedTopSectionViewController ||
+      _feedTopSectionViewController.view.hidden ||
+      !_feedTopSectionContainerView || _feedTopSectionContainerView.hidden ||
+      !self.view.window) {
+    if (_isSigninPromoVisible) {
+      _isSigninPromoVisible = NO;
+      [self.delegate bottomSheetViewController:self
+                didChangeSigninPromoVisibility:NO];
+    }
+    return;
+  }
+
+  CGRect promoWindowFrame = [_feedTopSectionContainerView
+      convertRect:_feedTopSectionContainerView.bounds
+           toView:nil];
+  CGRect sheetWindowFrame = [self.view convertRect:self.view.bounds toView:nil];
+  CGRect visibleSheetFrame =
+      CGRectIntersection(sheetWindowFrame, self.view.window.bounds);
+  CGRect visibleIntersection =
+      CGRectIntersection(promoWindowFrame, visibleSheetFrame);
+  BOOL isVisible =
+      !CGRectIsNull(visibleIntersection) &&
+      !CGRectIsEmpty(visibleIntersection) &&
+      (visibleIntersection.size.height >=
+       promoWindowFrame.size.height * kSigninPromoVisibilityThresholdFraction);
+
+  if (_isSigninPromoVisible != isVisible) {
+    _isSigninPromoVisible = isVisible;
+    [self.delegate bottomSheetViewController:self
+              didChangeSigninPromoVisibility:isVisible];
+  }
+}
+
 - (CGFloat)headerHeight {
   if ([self isIPadRegularLayout]) {
     return 0.0;
   }
-  CGFloat height = kMagicStackHeight + kMagicStackToFeedSpacing;
+  CGFloat height = GetMagicStackHeight(self) + kMagicStackToFeedSpacing;
   if (IsMVTInBottomSheetEnabled() && _mostVisitedContainerView) {
-    CGFloat mvtHeight =
-        MostVisitedContainerHeight(_mostVisitedContainerView, _mostVisitedView);
+    CGFloat mvtHeight = MostVisitedContainerHeight(_mostVisitedCollectionView,
+                                                   _mostVisitedView);
     if (mvtHeight > 0) {
       height += mvtHeight + content_suggestions::ReducedModuleSpacing();
     }
@@ -105,6 +199,10 @@ constexpr CGFloat kMinimumDragVelocityToChangeState = 250.0;
     return;
   }
   CGFloat topInset = [self headerHeight];
+  CGFloat promoHeight = [self feedTopSectionHeight];
+  if (promoHeight > 0) {
+    topInset += promoHeight + kMagicStackToFeedSpacing;
+  }
   CGFloat bottomInset = 0.0;
   if (_isBottomOmnibox && _sheetState == BottomSheetSnappingState::kExpanded) {
     bottomInset = kToolbarHeight + self.view.safeAreaInsets.bottom;
@@ -112,9 +210,29 @@ constexpr CGFloat kMinimumDragVelocityToChangeState = 250.0;
     bottomInset = self.view.safeAreaInsets.bottom;
   }
   UIEdgeInsets insets = UIEdgeInsetsMake(topInset, 0, bottomInset, 0);
-  if (!UIEdgeInsetsEqualToEdgeInsets(_feedScrollView.contentInset, insets)) {
+  CGFloat oldTopInset = _feedScrollView.contentInset.top;
+  CGFloat oldOffsetY = _feedScrollView.contentOffset.y;
+  const BOOL insetsChanged =
+      !UIEdgeInsetsEqualToEdgeInsets(_feedScrollView.contentInset, insets);
+  if (insetsChanged) {
     _feedScrollView.contentInset = insets;
     _feedScrollView.verticalScrollIndicatorInsets = insets;
+  }
+
+  if (_sheetState != BottomSheetSnappingState::kExpanded) {
+    if (std::abs(oldOffsetY - (-topInset)) > kFloatingPointEpsilon) {
+      _feedScrollView.contentOffset = CGPointMake(0, -topInset);
+    }
+  } else {
+    if (oldOffsetY <= -oldTopInset) {
+      if (std::abs(oldOffsetY - (-topInset)) > kFloatingPointEpsilon) {
+        _feedScrollView.contentOffset = CGPointMake(0, -topInset);
+      }
+    } else if (insetsChanged) {
+      CGFloat delta = topInset - oldTopInset;
+      _feedScrollView.contentOffset =
+          CGPointMake(0, MAX(oldOffsetY - delta, -topInset));
+    }
   }
 }
 
@@ -173,6 +291,10 @@ constexpr CGFloat kMinimumDragVelocityToChangeState = 250.0;
   _contentContainerView = [[UIView alloc] init];
   _contentContainerView.translatesAutoresizingMaskIntoConstraints = NO;
   [self.view addSubview:_contentContainerView];
+
+  // Add feed top section container view that encapsulates feed promos.
+  _feedTopSectionContainerView = [[UIView alloc] init];
+  _feedTopSectionContainerView.translatesAutoresizingMaskIntoConstraints = NO;
 
   [NSLayoutConstraint activateConstraints:@[
     [_contentContainerView.leadingAnchor
@@ -262,11 +384,16 @@ constexpr CGFloat kMinimumDragVelocityToChangeState = 250.0;
   }
 
   if (_mostVisitedView) {
-    [self embedMostVisitedView:_mostVisitedView];
+    [self embedMostVisitedView:_mostVisitedView
+                collectionView:_mostVisitedCollectionView];
   }
 
   if (_magicStackViewController) {
     [self embedMagicStackViewController];
+  }
+
+  if (_feedTopSectionViewController) {
+    [self embedFeedTopSectionViewController];
   }
 
   __weak __typeof(self) weakSelf = self;
@@ -283,6 +410,10 @@ constexpr CGFloat kMinimumDragVelocityToChangeState = 250.0;
   [self applyBackgroundTheme];
 }
 
+#pragma mark - Private
+
+// Handles trait changes for size classes, preferred content size, and
+// background traits.
 - (void)handleTraitChanges {
   if (IsMVTInBottomSheetEnabled() && _magicStackTopConstraint) {
     _magicStackTopConstraint.constant =
@@ -294,6 +425,7 @@ constexpr CGFloat kMinimumDragVelocityToChangeState = 250.0;
   [self updateBottomSheetPositionAnimated:NO];
 }
 
+// Applies background theme based on image background trait and iPad layout.
 - (void)applyBackgroundTheme {
   BOOL hasBlurredBackground =
       [self.traitCollection boolForNewTabPageImageBackgroundTrait];
@@ -305,9 +437,126 @@ constexpr CGFloat kMinimumDragVelocityToChangeState = 250.0;
         [self isIPadRegularLayout]
             ? NTPCardBackgroundColor(
                   [self.traitCollection objectForNewTabPageTrait])
-            : [UIColor colorNamed:kSurfaceContainerLowColor];
+            : [UIColor colorNamed:kNTPModuleBackgroundColor];
     _blurBackgroundView.hidden = YES;
   }
+}
+
+// Returns whether the feed scroll view is loaded and embedded in the content
+// container.
+- (BOOL)hasFeed {
+  return _feedScrollView &&
+         [_feedScrollView isDescendantOfView:_contentContainerView];
+}
+
+// Returns whether the feed top section view controller is present and visible.
+- (BOOL)hasFeedTopSection {
+  return _feedTopSectionVisible && _feedTopSectionViewController &&
+         !_feedTopSectionViewController.view.hidden;
+}
+
+- (void)updateFeedTopSectionHierarchyWithPromo:(BOOL)hasPromo {
+  _feedTopSectionContainerView.hidden = !hasPromo;
+  if (hasPromo) {
+    if (_feedTopSectionContainerView.superview != _feedScrollView) {
+      [_feedTopSectionContainerView removeFromSuperview];
+      [_feedScrollView addSubview:_feedTopSectionContainerView];
+    }
+    _feedTopSectionConstraints = @[
+      [_feedTopSectionContainerView.leadingAnchor
+          constraintEqualToAnchor:_feedScrollView.frameLayoutGuide.leadingAnchor
+                         constant:kNewTabPageHorizontalMargin],
+      [_feedTopSectionContainerView.trailingAnchor
+          constraintEqualToAnchor:_feedScrollView.frameLayoutGuide
+                                      .trailingAnchor
+                         constant:-kNewTabPageHorizontalMargin],
+      [_feedTopSectionContainerView.bottomAnchor
+          constraintEqualToAnchor:_feedScrollView.topAnchor
+                         constant:-kMagicStackToFeedSpacing],
+    ];
+  } else {
+    [_feedTopSectionContainerView removeFromSuperview];
+  }
+}
+
+- (void)updateFeedCardBackgroundHierarchyWithFeed:(BOOL)hasFeed {
+  UIView* targetParent = hasFeed ? _feedScrollView : _contentContainerView;
+  if (_feedCardBackgroundView.superview != targetParent) {
+    [_feedCardBackgroundView removeFromSuperview];
+    [targetParent insertSubview:_feedCardBackgroundView atIndex:0];
+  }
+  if (hasFeed) {
+    [_feedScrollView sendSubviewToBack:_feedCardBackgroundView];
+  }
+
+  NSLayoutConstraint* topConstraint =
+      hasFeed ? [_feedCardBackgroundView.topAnchor
+                    constraintEqualToAnchor:_feedScrollView.topAnchor]
+              : [_feedCardBackgroundView.topAnchor
+                    constraintEqualToAnchor:_headerContainerView.bottomAnchor
+                                   constant:kMagicStackToFeedSpacing];
+  NSLayoutConstraint* verticalConstraint =
+      hasFeed ? [_feedCardBackgroundView.heightAnchor
+                    constraintGreaterThanOrEqualToAnchor:_contentContainerView
+                                                             .heightAnchor]
+              : [_feedCardBackgroundView.bottomAnchor
+                    constraintEqualToAnchor:_contentContainerView.bottomAnchor];
+  NSLayoutXAxisAnchor* leadingAnchor =
+      hasFeed ? _feedScrollView.frameLayoutGuide.leadingAnchor
+              : _contentContainerView.leadingAnchor;
+  NSLayoutXAxisAnchor* trailingAnchor =
+      hasFeed ? _feedScrollView.frameLayoutGuide.trailingAnchor
+              : _contentContainerView.trailingAnchor;
+  _feedCardBackgroundConstraints = @[
+    topConstraint,
+    [_feedCardBackgroundView.leadingAnchor
+        constraintEqualToAnchor:leadingAnchor],
+    [_feedCardBackgroundView.trailingAnchor
+        constraintEqualToAnchor:trailingAnchor],
+    verticalConstraint,
+  ];
+}
+
+- (void)updateHeaderContainerHierarchyForCompactWithPromo:(BOOL)hasPromo {
+  if (_headerContainerView.superview != _feedScrollView) {
+    [_headerContainerView removeFromSuperview];
+    [_feedScrollView addSubview:_headerContainerView];
+  }
+  NSLayoutYAxisAnchor* bottomAnchor =
+      hasPromo ? _feedTopSectionContainerView.topAnchor
+               : _feedScrollView.topAnchor;
+  _headerContainerConstraints = @[
+    [_headerContainerView.leadingAnchor
+        constraintEqualToAnchor:_feedScrollView.frameLayoutGuide.leadingAnchor],
+    [_headerContainerView.trailingAnchor
+        constraintEqualToAnchor:_feedScrollView.frameLayoutGuide
+                                    .trailingAnchor],
+    [_headerContainerView.bottomAnchor
+        constraintEqualToAnchor:bottomAnchor
+                       constant:-kMagicStackToFeedSpacing],
+  ];
+
+  [self updateFeedCardBackgroundHierarchyWithFeed:YES];
+}
+
+- (void)updateHeaderContainerHierarchyWithoutFeed {
+  _feedTopSectionContainerView.hidden = YES;
+  [_feedTopSectionContainerView removeFromSuperview];
+
+  if (_headerContainerView.superview != _contentContainerView) {
+    [_headerContainerView removeFromSuperview];
+    [_contentContainerView addSubview:_headerContainerView];
+  }
+  _headerContainerConstraints = @[
+    [_headerContainerView.leadingAnchor
+        constraintEqualToAnchor:_contentContainerView.leadingAnchor],
+    [_headerContainerView.trailingAnchor
+        constraintEqualToAnchor:_contentContainerView.trailingAnchor],
+    [_headerContainerView.topAnchor
+        constraintEqualToAnchor:_contentContainerView.topAnchor],
+  ];
+
+  [self updateFeedCardBackgroundHierarchyWithFeed:NO];
 }
 
 - (void)updateHeaderContainerHierarchy {
@@ -320,81 +569,46 @@ constexpr CGFloat kMinimumDragVelocityToChangeState = 250.0;
   [self detachMagicStackViewController];
 
   const BOOL isRegular = [self isIPadRegularLayout];
+  const BOOL hasPromo = [self hasFeedTopSection];
   _headerContainerView.hidden = isRegular;
   _feedCardBackgroundView.hidden = isRegular;
 
   // Pure view move and constraint updates.
   [NSLayoutConstraint deactivateConstraints:_headerContainerConstraints];
   [NSLayoutConstraint deactivateConstraints:_feedCardBackgroundConstraints];
-  if (!isRegular && _feedScrollView &&
-      [_feedScrollView isDescendantOfView:_contentContainerView]) {
-    if (_headerContainerView.superview != _feedScrollView) {
-      [_headerContainerView removeFromSuperview];
-      [_feedScrollView addSubview:_headerContainerView];
-    }
-    _headerContainerConstraints = @[
-      [_headerContainerView.leadingAnchor
-          constraintEqualToAnchor:_contentContainerView.leadingAnchor],
-      [_headerContainerView.trailingAnchor
-          constraintEqualToAnchor:_contentContainerView.trailingAnchor],
-      [_headerContainerView.bottomAnchor
-          constraintEqualToAnchor:_feedScrollView.topAnchor
-                         constant:-kMagicStackToFeedSpacing],
-    ];
+  [NSLayoutConstraint deactivateConstraints:_feedTopSectionConstraints];
+  _headerContainerConstraints = @[];
+  _feedCardBackgroundConstraints = @[];
+  _feedTopSectionConstraints = @[];
 
-    if (_feedCardBackgroundView.superview != _feedScrollView) {
-      [_feedCardBackgroundView removeFromSuperview];
-      [_feedScrollView insertSubview:_feedCardBackgroundView atIndex:0];
+  if ([self hasFeed]) {
+    [self updateFeedTopSectionHierarchyWithPromo:hasPromo];
+    if (!isRegular) {
+      [self updateHeaderContainerHierarchyForCompactWithPromo:hasPromo];
+    } else {
+      [_headerContainerView removeFromSuperview];
     }
-    [_feedScrollView sendSubviewToBack:_feedCardBackgroundView];
-    _feedCardBackgroundConstraints = @[
-      [_feedCardBackgroundView.topAnchor
-          constraintEqualToAnchor:_feedScrollView.topAnchor],
-      [_feedCardBackgroundView.leadingAnchor
-          constraintEqualToAnchor:_contentContainerView.leadingAnchor],
-      [_feedCardBackgroundView.trailingAnchor
-          constraintEqualToAnchor:_contentContainerView.trailingAnchor],
-      [_feedCardBackgroundView.heightAnchor
-          constraintGreaterThanOrEqualToAnchor:_contentContainerView
-                                                   .heightAnchor],
-    ];
   } else {
-    if (_headerContainerView.superview != _contentContainerView) {
-      [_headerContainerView removeFromSuperview];
-      [_contentContainerView addSubview:_headerContainerView];
-    }
-    _headerContainerConstraints = @[
-      [_headerContainerView.leadingAnchor
-          constraintEqualToAnchor:_contentContainerView.leadingAnchor],
-      [_headerContainerView.trailingAnchor
-          constraintEqualToAnchor:_contentContainerView.trailingAnchor],
-      [_headerContainerView.topAnchor
-          constraintEqualToAnchor:_contentContainerView.topAnchor],
-    ];
-
-    if (_feedCardBackgroundView.superview != _contentContainerView) {
-      [_feedCardBackgroundView removeFromSuperview];
-      [_contentContainerView insertSubview:_feedCardBackgroundView atIndex:0];
-    }
-    _feedCardBackgroundConstraints = @[
-      [_feedCardBackgroundView.topAnchor
-          constraintEqualToAnchor:_headerContainerView.bottomAnchor
-                         constant:kMagicStackToFeedSpacing],
-      [_feedCardBackgroundView.leadingAnchor
-          constraintEqualToAnchor:_contentContainerView.leadingAnchor],
-      [_feedCardBackgroundView.trailingAnchor
-          constraintEqualToAnchor:_contentContainerView.trailingAnchor],
-      [_feedCardBackgroundView.bottomAnchor
-          constraintEqualToAnchor:_contentContainerView.bottomAnchor],
-    ];
+    [self updateHeaderContainerHierarchyWithoutFeed];
   }
-  [NSLayoutConstraint activateConstraints:_headerContainerConstraints];
-  [NSLayoutConstraint activateConstraints:_feedCardBackgroundConstraints];
+
+  if (_headerContainerConstraints.count > 0) {
+    [NSLayoutConstraint activateConstraints:_headerContainerConstraints];
+  }
+  if (_feedCardBackgroundConstraints.count > 0) {
+    [NSLayoutConstraint activateConstraints:_feedCardBackgroundConstraints];
+  }
+  if (_feedTopSectionConstraints.count > 0) {
+    [NSLayoutConstraint activateConstraints:_feedTopSectionConstraints];
+  }
   [self updateFeedInsets];
 
   // Post-Attach Magic Stack to target parent (feed VC if inside
   // feed scroll view, self otherwise).
   [self embedMagicStackViewController];
+  if (hasPromo) {
+    [self embedFeedTopSectionViewController];
+  }
 }
 
 - (void)didMoveToParentViewController:(UIViewController*)parent {
@@ -421,17 +635,30 @@ constexpr CGFloat kMinimumDragVelocityToChangeState = 250.0;
   }
 }
 
+- (void)viewDidAppear:(BOOL)animated {
+  [super viewDidAppear:animated];
+  [self updateFeedSigninPromoVisibility];
+}
+
 - (void)invalidate {
   [self detachMagicStackViewController];
   [self detachFeedViewController];
+  [self detachFeedTopSectionViewController];
+  _feedTopSectionViewController = nil;
+  _feedTopSectionContainerView = nil;
   _magicStackViewController = nil;
   _feedViewController = nil;
   self.delegate = nil;
   _mostVisitedView = nil;
+  _mostVisitedCollectionView = nil;
   _headerContainerView = nil;
   _feedCardBackgroundView = nil;
+  [NSLayoutConstraint deactivateConstraints:_headerContainerConstraints];
+  [NSLayoutConstraint deactivateConstraints:_feedCardBackgroundConstraints];
+  [NSLayoutConstraint deactivateConstraints:_feedTopSectionConstraints];
   _headerContainerConstraints = nil;
   _feedCardBackgroundConstraints = nil;
+  _feedTopSectionConstraints = nil;
   _magicStackTopConstraint = nil;
   _bottomSheetWidthConstraint = nil;
   _contentContainerTopConstraintRegular.active = NO;
@@ -522,6 +749,8 @@ constexpr CGFloat kMinimumDragVelocityToChangeState = 250.0;
 
 - (void)detachFeedViewController {
   [self resetFeedScrollView];
+  [self detachFeedTopSectionViewController];
+  [_feedTopSectionContainerView removeFromSuperview];
   if (_feedViewController) {
     [_feedViewController willMoveToParentViewController:nil];
     [_feedViewController.view removeFromSuperview];
@@ -592,17 +821,38 @@ constexpr CGFloat kMinimumDragVelocityToChangeState = 250.0;
   }
 }
 
+// Returns the target parent view controller for the magic stack.
+- (UIViewController*)targetParentForMagicStack {
+  return ([self hasFeed] && _headerContainerView.superview == _feedScrollView &&
+          _feedViewController)
+             ? _feedViewController
+             : self;
+}
+
+// Returns the target parent view controller for the feed top section.
+- (UIViewController*)targetParentForFeedTopSection {
+  return ([self hasFeed] &&
+          _feedTopSectionContainerView.superview == _feedScrollView &&
+          _feedViewController)
+             ? _feedViewController
+             : self;
+}
+
 - (void)embedMagicStackViewController {
   if (!_magicStackViewController || !_magicStackContainerView ||
       !self.isViewLoaded) {
     return;
   }
-  UIViewController* targetParent =
-      (_feedScrollView &&
-       [_feedScrollView isDescendantOfView:_contentContainerView] &&
-       _feedViewController)
-          ? _feedViewController
-          : self;
+  if ([self isIPadRegularLayout]) {
+    return;
+  }
+  UIView* expectedHeaderSuperview =
+      [self hasFeed] ? _feedScrollView : _contentContainerView;
+  if (_headerContainerView.superview != expectedHeaderSuperview) {
+    [self updateHeaderContainerHierarchy];
+    return;
+  }
+  UIViewController* targetParent = [self targetParentForMagicStack];
   if (_magicStackViewController.parentViewController == targetParent &&
       _magicStackViewController.view.superview == _magicStackContainerView) {
     return;
@@ -619,24 +869,108 @@ constexpr CGFloat kMinimumDragVelocityToChangeState = 250.0;
   [_magicStackViewController didMoveToParentViewController:targetParent];
 }
 
-- (void)embedMostVisitedView:(UIView*)mostVisitedView {
-  if (_mostVisitedView != mostVisitedView) {
+- (UIViewController*)feedTopSectionViewController {
+  return _feedTopSectionViewController;
+}
+
+- (void)setFeedTopSectionViewController:
+    (UIViewController*)feedTopSectionViewController {
+  if (_feedTopSectionViewController == feedTopSectionViewController) {
+    return;
+  }
+  [self detachFeedTopSectionViewController];
+  _feedTopSectionViewController = feedTopSectionViewController;
+  if (self.isViewLoaded) {
+    if (_feedTopSectionViewController) {
+      [self embedFeedTopSectionViewController];
+    }
+    [self updateHeaderContainerHierarchy];
+  }
+}
+
+- (BOOL)feedTopSectionVisible {
+  return _feedTopSectionVisible;
+}
+
+- (void)setFeedTopSectionVisible:(BOOL)feedTopSectionVisible {
+  if (_feedTopSectionVisible == feedTopSectionVisible) {
+    return;
+  }
+  _feedTopSectionVisible = feedTopSectionVisible;
+  if (self.isViewLoaded) {
+    [self updateFeedLayout];
+  }
+}
+
+- (void)embedFeedTopSectionViewController {
+  if (!_feedTopSectionViewController || !_feedTopSectionContainerView ||
+      !self.isViewLoaded) {
+    return;
+  }
+  if ([self hasFeed] &&
+      _feedTopSectionContainerView.superview != _feedScrollView) {
+    [self updateHeaderContainerHierarchy];
+    return;
+  }
+  UIViewController* targetParent = [self targetParentForFeedTopSection];
+  if (_feedTopSectionViewController.parentViewController == targetParent &&
+      _feedTopSectionViewController.view.superview ==
+          _feedTopSectionContainerView) {
+    return;
+  }
+  if (_feedTopSectionViewController.parentViewController) {
+    [_feedTopSectionViewController willMoveToParentViewController:nil];
+    [_feedTopSectionViewController.view removeFromSuperview];
+    [_feedTopSectionViewController removeFromParentViewController];
+  }
+  [targetParent addChildViewController:_feedTopSectionViewController];
+  _feedTopSectionViewController.view.translatesAutoresizingMaskIntoConstraints =
+      NO;
+  [_feedTopSectionContainerView addSubview:_feedTopSectionViewController.view];
+  AddSameConstraints(_feedTopSectionViewController.view,
+                     _feedTopSectionContainerView);
+  [_feedTopSectionViewController didMoveToParentViewController:targetParent];
+}
+
+- (void)detachFeedTopSectionViewController {
+  if (!_feedTopSectionViewController) {
+    return;
+  }
+  [_feedTopSectionViewController willMoveToParentViewController:nil];
+  [_feedTopSectionViewController.view removeFromSuperview];
+  [_feedTopSectionViewController removeFromParentViewController];
+  [NSLayoutConstraint deactivateConstraints:_feedTopSectionConstraints];
+  _feedTopSectionConstraints = @[];
+}
+
+- (void)embedMostVisitedView:(UIView*)mostVisitedView
+              collectionView:(MostVisitedTilesCollectionView*)collectionView {
+  BOOL viewChanged = (_mostVisitedView != mostVisitedView);
+  if (viewChanged) {
     if (_mostVisitedView) {
       [_mostVisitedView removeFromSuperview];
     }
     _mostVisitedView = mostVisitedView;
   }
-  if (self.isViewLoaded && _mostVisitedView && _mostVisitedContainerView) {
-    if (_mostVisitedView.superview == _mostVisitedContainerView) {
-      return;
-    }
+  _mostVisitedCollectionView = collectionView;
+  if (!self.isViewLoaded || !_mostVisitedContainerView) {
+    return;
+  }
+  if (!viewChanged && _mostVisitedView &&
+      _mostVisitedView.superview == _mostVisitedContainerView) {
+    return;
+  }
+  if (!viewChanged && !_mostVisitedView) {
+    return;
+  }
+  if (_mostVisitedView) {
     _mostVisitedView.translatesAutoresizingMaskIntoConstraints = NO;
     [_mostVisitedContainerView addSubview:_mostVisitedView];
     AddSameConstraints(_mostVisitedView, _mostVisitedContainerView);
-    [self.view setNeedsLayout];
-    [self.view layoutIfNeeded];
-    [self updateFeedInsets];
   }
+  [_mostVisitedContainerView layoutIfNeeded];
+  [self.view layoutIfNeeded];
+  [self updateFeedInsets];
 }
 
 #pragma mark - Snapping Offsets
@@ -670,8 +1004,10 @@ constexpr CGFloat kMinimumDragVelocityToChangeState = 250.0;
 #pragma mark - iPad Regular Layout Helpers
 
 - (BOOL)isIPadRegularLayout {
-  return self.traitCollection.horizontalSizeClass ==
-         UIUserInterfaceSizeClassRegular;
+  UITraitCollection* traitCollection =
+      self.parentViewController ? self.parentViewController.traitCollection
+                                : self.traitCollection;
+  return traitCollection.horizontalSizeClass == UIUserInterfaceSizeClassRegular;
 }
 
 #pragma mark - Bottom Sheet Snapping and Panning
@@ -791,35 +1127,34 @@ constexpr CGFloat kMinimumDragVelocityToChangeState = 250.0;
 
   if (_sheetState != BottomSheetSnappingState::kExpanded && _feedScrollView) {
     CGFloat topInset = _feedScrollView.contentInset.top;
-    [_feedScrollView setContentOffset:CGPointMake(0, -topInset)
-                             animated:animated];
+    _feedScrollView.contentOffset = CGPointMake(0, -topInset);
   }
 
   if (!animated) {
     _bottomSheetTopConstraint.constant = targetConstant;
     [self.delegate bottomSheetViewController:self
                           didUpdateTopOffset:targetConstant];
+    [self updateFeedSigninPromoVisibility];
   } else {
     __weak __typeof(self) weakSelf = self;
     [UIView animateWithDuration:0.3
-                          delay:0
-         usingSpringWithDamping:0.85
-          initialSpringVelocity:0.5
-                        options:UIViewAnimationOptionCurveEaseInOut
-                     animations:^{
-                       NewTabPageBottomSheetViewController* strongSelf =
-                           weakSelf;
-                       if (!strongSelf) {
-                         return;
-                       }
-                       strongSelf.bottomSheetTopConstraint.constant =
-                           targetConstant;
-                       [strongSelf.delegate
-                           bottomSheetViewController:strongSelf
-                                  didUpdateTopOffset:targetConstant];
-                       [strongSelf.view.superview layoutIfNeeded];
-                     }
-                     completion:nil];
+        delay:0
+        usingSpringWithDamping:0.85
+        initialSpringVelocity:0.5
+        options:UIViewAnimationOptionCurveEaseInOut
+        animations:^{
+          NewTabPageBottomSheetViewController* strongSelf = weakSelf;
+          if (!strongSelf) {
+            return;
+          }
+          strongSelf.bottomSheetTopConstraint.constant = targetConstant;
+          [strongSelf.delegate bottomSheetViewController:strongSelf
+                                      didUpdateTopOffset:targetConstant];
+          [strongSelf.view.superview layoutIfNeeded];
+        }
+        completion:^(BOOL finished) {
+          [weakSelf updateFeedSigninPromoVisibility];
+        }];
   }
 }
 
@@ -955,6 +1290,7 @@ constexpr CGFloat kMinimumDragVelocityToChangeState = 250.0;
   _bottomSheetTopConstraint.constant = targetConstant;
   [self.delegate bottomSheetViewController:self
                         didUpdateTopOffset:targetConstant];
+  [self updateFeedSigninPromoVisibility];
 
   if (gesture.state == UIGestureRecognizerStateEnded) {
     [self snapSheetWithVelocity:velocity currentConstant:targetConstant];
@@ -1007,6 +1343,10 @@ constexpr CGFloat kMinimumDragVelocityToChangeState = 250.0;
   if (_bottomSheetTopConstraint.constant <= expandedOffset) {
     if (_feedScrollView.contentOffset.y > -topInset || deltaY <= 0) {
       _feedScrollView.bounces = YES;
+      if (gesture.state == UIGestureRecognizerStateEnded ||
+          gesture.state == UIGestureRecognizerStateCancelled) {
+        _lastFeedPanTranslationY = 0.0;
+      }
       return;
     }
   }
@@ -1028,8 +1368,10 @@ constexpr CGFloat kMinimumDragVelocityToChangeState = 250.0;
   _bottomSheetTopConstraint.constant = targetConstant;
   [self.delegate bottomSheetViewController:self
                         didUpdateTopOffset:targetConstant];
+  [self updateFeedSigninPromoVisibility];
 
   if (gesture.state == UIGestureRecognizerStateEnded) {
+    _lastFeedPanTranslationY = 0.0;
     if (_bottomSheetTopConstraint.constant > expandedOffset) {
       [self snapSheetWithVelocity:velocity
                   currentConstant:_bottomSheetTopConstraint.constant];
@@ -1037,6 +1379,7 @@ constexpr CGFloat kMinimumDragVelocityToChangeState = 250.0;
       _feedScrollView.bounces = YES;
     }
   } else if (gesture.state == UIGestureRecognizerStateCancelled) {
+    _lastFeedPanTranslationY = 0.0;
     [self updateBottomSheetPositionAnimated:YES];
   }
 }

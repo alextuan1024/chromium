@@ -6,6 +6,8 @@ package org.chromium.chrome.browser.omnibox.fusebox;
 
 import static com.google.common.truth.Truth.assertThat;
 
+import static org.mockito.Mockito.doReturn;
+
 import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
@@ -15,21 +17,26 @@ import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
 import org.mockito.quality.Strictness;
 
+import org.chromium.base.TimeUtils;
 import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.base.test.util.HistogramWatcher;
 import org.chromium.chrome.browser.omnibox.fusebox.FuseboxMetrics.AiModeActivationSource;
 import org.chromium.chrome.browser.omnibox.fusebox.FuseboxMetrics.FuseboxAttachmentButtonType;
-import org.chromium.chrome.browser.omnibox.fusebox.FuseboxProperties.PopupButtonData;
-import org.chromium.chrome.browser.omnibox.fusebox.FuseboxProperties.PopupButtonType;
+import org.chromium.chrome.browser.omnibox.fusebox.FuseboxMetrics.FuseboxAttachmentSizeLimitCheck;
+import org.chromium.chrome.browser.omnibox.fusebox.FuseboxMetrics.MobileFuseboxPickerOutcome;
+import org.chromium.chrome.browser.omnibox.fusebox.PopupButtonData.PopupButtonType;
 import org.chromium.components.feature_engagement.Tracker;
+import org.chromium.components.metrics.OmniboxEventProtosIntDef.PageClassification;
 import org.chromium.components.omnibox.AimModelsProtoIntDef.ModelMode;
 import org.chromium.components.omnibox.AutocompleteRequestType;
+import org.chromium.components.omnibox.InputSourceProtoIntDef.InputSource;
 import org.chromium.components.omnibox.OmniboxFeatures;
 import org.chromium.components.omnibox.ToolModeProtoIntDef.ToolMode;
 import org.chromium.ui.base.MimeTypeUtils;
 import org.chromium.ui.modelutil.PropertyModel;
 
 import java.util.Arrays;
+import java.util.List;
 
 @RunWith(BaseRobolectricTestRunner.class)
 public class FuseboxMetricsUnitTest {
@@ -38,6 +45,7 @@ public class FuseboxMetricsUnitTest {
 
     private final PropertyModel mPropertyModel = new PropertyModel(FuseboxProperties.ALL_KEYS);
     @Mock private Tracker mTracker;
+    @Mock private FuseboxAttachmentModelList mModelList;
     private FuseboxMetrics mMetrics;
 
     @Before
@@ -50,15 +58,14 @@ public class FuseboxMetricsUnitTest {
         var histogramWatcher =
                 HistogramWatcher.newSingleRecordWatcher(
                         "Omnibox.MobileFusebox.AiModeActivationSource",
-                        FuseboxMetrics.AiModeActivationSource.DEDICATED_BUTTON);
-        FuseboxMetrics.notifyAiModeActivated(
-                FuseboxMetrics.AiModeActivationSource.DEDICATED_BUTTON);
+                        AiModeActivationSource.DEDICATED_BUTTON);
+        FuseboxMetrics.notifyAiModeActivated(AiModeActivationSource.DEDICATED_BUTTON);
         histogramWatcher.assertExpected();
 
         histogramWatcher =
                 HistogramWatcher.newSingleRecordWatcher(
                         "Omnibox.MobileFusebox.AiModeActivationSource",
-                        FuseboxMetrics.AiModeActivationSource.TOOL_MENU);
+                        AiModeActivationSource.TOOL_MENU);
         FuseboxMetrics.notifyAiModeActivated(AiModeActivationSource.TOOL_MENU);
         histogramWatcher.assertExpected();
 
@@ -75,33 +82,33 @@ public class FuseboxMetricsUnitTest {
         var histogramWatcher =
                 HistogramWatcher.newSingleRecordWatcher(
                         FuseboxMetrics.FILE_ATTACHMENT_SIZE_LIMIT_CHECK_HISTOGRAM,
-                        FuseboxMetrics.FuseboxAttachmentSizeLimitCheck.UNDER_LIMIT_ON_METERED);
+                        FuseboxAttachmentSizeLimitCheck.UNDER_LIMIT_ON_METERED);
         FuseboxMetrics.notifyAttachmentSizeLimitCheck(
-                FuseboxMetrics.FuseboxAttachmentSizeLimitCheck.UNDER_LIMIT_ON_METERED);
+                FuseboxAttachmentSizeLimitCheck.UNDER_LIMIT_ON_METERED);
         histogramWatcher.assertExpected();
 
         histogramWatcher =
                 HistogramWatcher.newSingleRecordWatcher(
                         FuseboxMetrics.FILE_ATTACHMENT_SIZE_LIMIT_CHECK_HISTOGRAM,
-                        FuseboxMetrics.FuseboxAttachmentSizeLimitCheck.UNDER_LIMIT_ON_UNMETERED);
+                        FuseboxAttachmentSizeLimitCheck.UNDER_LIMIT_ON_UNMETERED);
         FuseboxMetrics.notifyAttachmentSizeLimitCheck(
-                FuseboxMetrics.FuseboxAttachmentSizeLimitCheck.UNDER_LIMIT_ON_UNMETERED);
+                FuseboxAttachmentSizeLimitCheck.UNDER_LIMIT_ON_UNMETERED);
         histogramWatcher.assertExpected();
 
         histogramWatcher =
                 HistogramWatcher.newSingleRecordWatcher(
                         FuseboxMetrics.FILE_ATTACHMENT_SIZE_LIMIT_CHECK_HISTOGRAM,
-                        FuseboxMetrics.FuseboxAttachmentSizeLimitCheck.OVER_LIMIT_ON_METERED);
+                        FuseboxAttachmentSizeLimitCheck.OVER_LIMIT_ON_METERED);
         FuseboxMetrics.notifyAttachmentSizeLimitCheck(
-                FuseboxMetrics.FuseboxAttachmentSizeLimitCheck.OVER_LIMIT_ON_METERED);
+                FuseboxAttachmentSizeLimitCheck.OVER_LIMIT_ON_METERED);
         histogramWatcher.assertExpected();
 
         histogramWatcher =
                 HistogramWatcher.newSingleRecordWatcher(
                         FuseboxMetrics.FILE_ATTACHMENT_SIZE_LIMIT_CHECK_HISTOGRAM,
-                        FuseboxMetrics.FuseboxAttachmentSizeLimitCheck.OVER_LIMIT_ON_UNMETERED);
+                        FuseboxAttachmentSizeLimitCheck.OVER_LIMIT_ON_UNMETERED);
         FuseboxMetrics.notifyAttachmentSizeLimitCheck(
-                FuseboxMetrics.FuseboxAttachmentSizeLimitCheck.OVER_LIMIT_ON_UNMETERED);
+                FuseboxAttachmentSizeLimitCheck.OVER_LIMIT_ON_UNMETERED);
         histogramWatcher.assertExpected();
     }
 
@@ -125,9 +132,9 @@ public class FuseboxMetricsUnitTest {
         var histogramWatcher =
                 HistogramWatcher.newSingleRecordWatcher(
                         "Omnibox.MobileFusebox.AttachmentButtonUsed",
-                        FuseboxMetrics.FuseboxAttachmentButtonType.CLIPBOARD);
+                        FuseboxAttachmentButtonType.CLIPBOARD);
 
-        mMetrics.notifyAttachmentButtonUsed(FuseboxMetrics.FuseboxAttachmentButtonType.CLIPBOARD);
+        mMetrics.notifyAttachmentButtonUsed(FuseboxAttachmentButtonType.CLIPBOARD);
 
         histogramWatcher.assertExpected();
     }
@@ -156,6 +163,30 @@ public class FuseboxMetricsUnitTest {
     }
 
     @Test
+    public void testNotifyAttachmentIconFallback() {
+        HistogramWatcher histogramWatcher =
+                HistogramWatcher.newSingleRecordWatcher(
+                        FuseboxMetrics.ATTACHMENT_ICON_FALLBACK_HISTOGRAM,
+                        InputSource.INPUT_SOURCE_CAMERA);
+
+        FuseboxMetrics.notifyAttachmentIconFallback(InputSource.INPUT_SOURCE_CAMERA);
+
+        histogramWatcher.assertExpected();
+    }
+
+    @Test
+    public void testNotifyAttachmentLabelFallback() {
+        HistogramWatcher histogramWatcher =
+                HistogramWatcher.newSingleRecordWatcher(
+                        FuseboxMetrics.ATTACHMENT_LABEL_FALLBACK_HISTOGRAM,
+                        InputSource.INPUT_SOURCE_DRIVE);
+
+        FuseboxMetrics.notifyAttachmentLabelFallback(InputSource.INPUT_SOURCE_DRIVE);
+
+        histogramWatcher.assertExpected();
+    }
+
+    @Test
     public void testToolModeHistogramBound() {
         // When this test fails, it means the proto added a new tool mode, and
         // TOOL_MODE_HISTOGRAM_BOUND needs to be updated.
@@ -170,29 +201,26 @@ public class FuseboxMetricsUnitTest {
     }
 
     @Test
+    public void testInputSourceHistogramBound() {
+        // When this test fails, it means the proto added a new input source, and
+        // INPUT_SOURCE_HISTOGRAM_BOUND needs to be updated.
+        assertThat(InputSource.MAX_VALUE).isLessThan(FuseboxMetrics.INPUT_SOURCE_HISTOGRAM_BOUND);
+    }
+
+    @Test
     public void testNotifyAttachmentsPopupToggled_ShowPopup_WithModelButtons() {
         PopupButtonData data1 =
-                new PopupButtonData(
-                        (data) -> {},
-                        "Pro",
-                        /* iconId= */ 0,
-                        /* enabled= */ true,
-                        /* selected= */ false,
-                        PopupButtonType.MODEL,
-                        ModelMode.MODEL_MODE_GEMINI_PRO,
-                        /* hasColor= */ false,
-                        /* tooltip= */ "");
+                new PopupButtonData.Builder()
+                        .setText("Pro")
+                        .setType(PopupButtonType.MODEL)
+                        .setProtoId(ModelMode.MODEL_MODE_GEMINI_PRO)
+                        .build();
         PopupButtonData data2 =
-                new PopupButtonData(
-                        (data) -> {},
-                        "Flash",
-                        /* iconId= */ 0,
-                        /* enabled= */ true,
-                        /* selected= */ false,
-                        PopupButtonType.MODEL,
-                        ModelMode.MODEL_MODE_GEMINI_PRO_AUTOROUTE,
-                        /* hasColor= */ false,
-                        /* tooltip= */ "");
+                new PopupButtonData.Builder()
+                        .setText("Flash")
+                        .setType(PopupButtonType.MODEL)
+                        .setProtoId(ModelMode.MODEL_MODE_GEMINI_PRO_AUTOROUTE)
+                        .build();
         mPropertyModel.set(
                 FuseboxProperties.POPUP_MODEL_BUTTON_DATA_LIST, Arrays.asList(data1, data2));
 
@@ -226,22 +254,22 @@ public class FuseboxMetricsUnitTest {
                         .expectBooleanRecord("Omnibox.MobileFusebox.AttachmentsPopupToggled", true)
                         .expectIntRecord(
                                 "Omnibox.MobileFusebox.AttachmentButtonShown",
-                                FuseboxMetrics.FuseboxAttachmentButtonType.CAMERA)
+                                FuseboxAttachmentButtonType.CAMERA)
                         .expectIntRecord(
                                 "Omnibox.MobileFusebox.AttachmentButtonShown",
-                                FuseboxMetrics.FuseboxAttachmentButtonType.GALLERY)
+                                FuseboxAttachmentButtonType.GALLERY)
                         .expectIntRecord(
                                 "Omnibox.MobileFusebox.AttachmentButtonShown",
-                                FuseboxMetrics.FuseboxAttachmentButtonType.TAB_PICKER)
+                                FuseboxAttachmentButtonType.TAB_PICKER)
                         .expectIntRecord(
                                 "Omnibox.MobileFusebox.AttachmentButtonShown",
-                                FuseboxMetrics.FuseboxAttachmentButtonType.CURRENT_TAB)
+                                FuseboxAttachmentButtonType.CURRENT_TAB)
                         .expectIntRecord(
                                 "Omnibox.MobileFusebox.AttachmentButtonShown",
-                                FuseboxMetrics.FuseboxAttachmentButtonType.FILES)
+                                FuseboxAttachmentButtonType.FILES)
                         .expectIntRecord(
                                 "Omnibox.MobileFusebox.AttachmentButtonShown",
-                                FuseboxMetrics.FuseboxAttachmentButtonType.DRIVE_FILES)
+                                FuseboxAttachmentButtonType.DRIVE_FILES)
                         .build();
 
         mMetrics.notifyAttachmentsPopupToggled(/* toShowPopup= */ true, mPropertyModel, mTracker);
@@ -252,38 +280,23 @@ public class FuseboxMetricsUnitTest {
     @Test
     public void testNotifyAttachmentsPopupToggled_ShowPopup_ToolButtonsVisible() {
         PopupButtonData dataAi =
-                new PopupButtonData(
-                        (data) -> {},
-                        "AI Mode",
-                        /* iconId= */ 0,
-                        /* enabled= */ true,
-                        /* selected= */ false,
-                        PopupButtonType.TOOL,
-                        ToolMode.TOOL_MODE_UNSPECIFIED,
-                        /* hasColor= */ false,
-                        /* tooltip= */ "");
+                new PopupButtonData.Builder()
+                        .setText("AI Mode")
+                        .setType(PopupButtonType.TOOL)
+                        .setProtoId(ToolMode.TOOL_MODE_UNSPECIFIED)
+                        .build();
         PopupButtonData dataImage =
-                new PopupButtonData(
-                        (data) -> {},
-                        "Create Image",
-                        /* iconId= */ 0,
-                        /* enabled= */ true,
-                        /* selected= */ false,
-                        PopupButtonType.TOOL,
-                        ToolMode.TOOL_MODE_IMAGE_GEN,
-                        /* hasColor= */ false,
-                        /* tooltip= */ "");
+                new PopupButtonData.Builder()
+                        .setText("Create Image")
+                        .setType(PopupButtonType.TOOL)
+                        .setProtoId(ToolMode.TOOL_MODE_IMAGE_GEN)
+                        .build();
         PopupButtonData dataDeep =
-                new PopupButtonData(
-                        (data) -> {},
-                        "Deep Search",
-                        /* iconId= */ 0,
-                        /* enabled= */ true,
-                        /* selected= */ false,
-                        PopupButtonType.TOOL,
-                        ToolMode.TOOL_MODE_DEEP_SEARCH,
-                        /* hasColor= */ false,
-                        /* tooltip= */ "");
+                new PopupButtonData.Builder()
+                        .setText("Deep Search")
+                        .setType(PopupButtonType.TOOL)
+                        .setProtoId(ToolMode.TOOL_MODE_DEEP_SEARCH)
+                        .build();
         mPropertyModel.set(
                 FuseboxProperties.POPUP_TOOL_BUTTON_DATA_LIST,
                 Arrays.asList(dataAi, dataImage, dataDeep));
@@ -320,6 +333,24 @@ public class FuseboxMetricsUnitTest {
     }
 
     @Test
+    public void testNotifyAttachmentsPopupClosed_ItemSelected() {
+        var histogramWatcher =
+                HistogramWatcher.newSingleRecordWatcher(
+                        "Omnibox.MobileFusebox.AttachmentsPopupItemSelected", true);
+        FuseboxMetrics.notifyAttachmentsPopupClosed(/* itemSelected= */ true);
+        histogramWatcher.assertExpected();
+    }
+
+    @Test
+    public void testNotifyAttachmentsPopupClosed_NoItemSelected() {
+        var histogramWatcher =
+                HistogramWatcher.newSingleRecordWatcher(
+                        "Omnibox.MobileFusebox.AttachmentsPopupItemSelected", false);
+        FuseboxMetrics.notifyAttachmentsPopupClosed(/* itemSelected= */ false);
+        histogramWatcher.assertExpected();
+    }
+
+    @Test
     public void testNotifyOmniboxSessionEnded_SessionStarted_Navigation_NoAttachments() {
         mMetrics.notifyOmniboxSessionStarted();
 
@@ -331,11 +362,18 @@ public class FuseboxMetricsUnitTest {
                         .expectIntRecord(
                                 "Omnibox.MobileFusebox.AutocompleteRequestTypeAtNavigation",
                                 AutocompleteRequestType.SEARCH)
+                        .expectIntRecord(
+                                "Omnibox.MobileFusebox.AutocompleteRequestTypeAtNavigation.Other",
+                                AutocompleteRequestType.SEARCH)
                         // No attachment button usage/shown metrics should be recorded.
                         .build();
 
         mMetrics.notifyOmniboxSessionEnded(
-                true, AutocompleteRequestType.SEARCH, ModelMode.MODEL_MODE_GEMINI_REGULAR);
+                true,
+                PageClassification.OTHER,
+                AutocompleteRequestType.SEARCH,
+                ModelMode.MODEL_MODE_GEMINI_REGULAR,
+                /* modelList= */ null);
 
         histogramWatcher.assertExpected();
     }
@@ -353,12 +391,20 @@ public class FuseboxMetricsUnitTest {
                                 "Omnibox.MobileFusebox.AutocompleteRequestTypeAtNavigation",
                                 AutocompleteRequestType.AI_MODE)
                         .expectIntRecord(
+                                "Omnibox.MobileFusebox.AutocompleteRequestTypeAtNavigation"
+                                        + ".ShortcutsWidget",
+                                AutocompleteRequestType.AI_MODE)
+                        .expectIntRecord(
                                 "Omnibox.MobileFusebox.ModelAtNavigation",
                                 ModelMode.MODEL_MODE_GEMINI_REGULAR)
                         .build();
 
         mMetrics.notifyOmniboxSessionEnded(
-                true, AutocompleteRequestType.AI_MODE, ModelMode.MODEL_MODE_GEMINI_REGULAR);
+                true,
+                PageClassification.ANDROID_SHORTCUTS_WIDGET,
+                AutocompleteRequestType.AI_MODE,
+                ModelMode.MODEL_MODE_GEMINI_REGULAR,
+                /* modelList= */ null);
 
         histogramWatcher.assertExpected();
     }
@@ -384,25 +430,25 @@ public class FuseboxMetricsUnitTest {
                                 FuseboxAttachmentButtonType.TAB_PICKER)
                         .expectIntRecord(
                                 "Omnibox.MobileFusebox.AttachmentButtonShown",
-                                FuseboxMetrics.FuseboxAttachmentButtonType.CAMERA)
+                                FuseboxAttachmentButtonType.CAMERA)
                         .expectIntRecord(
                                 "Omnibox.MobileFusebox.AttachmentButtonShown",
-                                FuseboxMetrics.FuseboxAttachmentButtonType.GALLERY)
+                                FuseboxAttachmentButtonType.GALLERY)
                         .expectIntRecord(
                                 "Omnibox.MobileFusebox.AttachmentButtonShown",
-                                FuseboxMetrics.FuseboxAttachmentButtonType.FILES)
+                                FuseboxAttachmentButtonType.FILES)
                         .expectIntRecord(
                                 "Omnibox.MobileFusebox.AttachmentButtonShown",
-                                FuseboxMetrics.FuseboxAttachmentButtonType.SUGGESTED_TAB)
+                                FuseboxAttachmentButtonType.SUGGESTED_TAB)
                         .expectIntRecord(
                                 "Omnibox.MobileFusebox.AttachmentButtonUsed",
-                                FuseboxMetrics.FuseboxAttachmentButtonType.CAMERA)
+                                FuseboxAttachmentButtonType.CAMERA)
                         .expectIntRecord(
                                 "Omnibox.MobileFusebox.AttachmentButtonUsed",
-                                FuseboxMetrics.FuseboxAttachmentButtonType.TAB_PICKER)
+                                FuseboxAttachmentButtonType.TAB_PICKER)
                         .expectIntRecord(
                                 "Omnibox.MobileFusebox.AttachmentButtonUsed",
-                                FuseboxMetrics.FuseboxAttachmentButtonType.SUGGESTED_TAB)
+                                FuseboxAttachmentButtonType.SUGGESTED_TAB)
 
                         // Session End Metrics:
                         .expectBooleanRecord(
@@ -421,11 +467,13 @@ public class FuseboxMetricsUnitTest {
                                 false)
                         .expectBooleanRecord(
                                 "Omnibox.MobileFusebox.AttachmentButtonUsedInSession.Files", false)
-                        .expectBooleanRecord(
-                                "Omnibox.MobileFusebox.AttachmentButtonUsedInSession.SuggestedTab",
-                                true)
+                        .expectNoRecords(
+                                "Omnibox.MobileFusebox.AttachmentButtonUsedInSession.SuggestedTab")
                         .expectIntRecord(
                                 "Omnibox.MobileFusebox.AutocompleteRequestTypeAtAbandon",
+                                AutocompleteRequestType.AI_MODE)
+                        .expectIntRecord(
+                                "Omnibox.MobileFusebox.AutocompleteRequestTypeAtAbandon.SRP",
                                 AutocompleteRequestType.AI_MODE)
                         .expectIntRecord(
                                 "Omnibox.MobileFusebox.ModelAtAbandon",
@@ -434,15 +482,17 @@ public class FuseboxMetricsUnitTest {
 
         mMetrics.notifyAttachmentsPopupToggled(/* toShowPopup= */ true, mPropertyModel, mTracker);
 
-        mMetrics.notifyAttachmentButtonUsed(FuseboxMetrics.FuseboxAttachmentButtonType.CAMERA);
-        mMetrics.notifyAttachmentButtonUsed(FuseboxMetrics.FuseboxAttachmentButtonType.TAB_PICKER);
-        mMetrics.notifyAttachmentButtonShown(
-                FuseboxMetrics.FuseboxAttachmentButtonType.SUGGESTED_TAB);
-        mMetrics.notifyAttachmentButtonUsed(
-                FuseboxMetrics.FuseboxAttachmentButtonType.SUGGESTED_TAB);
+        mMetrics.notifyAttachmentButtonUsed(FuseboxAttachmentButtonType.CAMERA);
+        mMetrics.notifyAttachmentButtonUsed(FuseboxAttachmentButtonType.TAB_PICKER);
+        mMetrics.notifyAttachmentButtonShown(FuseboxAttachmentButtonType.SUGGESTED_TAB);
+        mMetrics.notifyAttachmentButtonUsed(FuseboxAttachmentButtonType.SUGGESTED_TAB);
 
         mMetrics.notifyOmniboxSessionEnded(
-                false, AutocompleteRequestType.AI_MODE, ModelMode.MODEL_MODE_GEMINI_PRO);
+                false,
+                PageClassification.SEARCH_RESULT_PAGE_NO_SEARCH_TERM_REPLACEMENT,
+                AutocompleteRequestType.AI_MODE,
+                ModelMode.MODEL_MODE_GEMINI_PRO,
+                /* modelList= */ null);
 
         histogramWatcher.assertExpected();
     }
@@ -541,7 +591,11 @@ public class FuseboxMetricsUnitTest {
                         .build();
 
         mMetrics.notifyOmniboxSessionEnded(
-                true, AutocompleteRequestType.SEARCH, ModelMode.MODEL_MODE_GEMINI_REGULAR);
+                true,
+                PageClassification.OTHER,
+                AutocompleteRequestType.SEARCH,
+                ModelMode.MODEL_MODE_GEMINI_REGULAR,
+                /* modelList= */ null);
         watcher.assertExpected();
     }
 
@@ -561,7 +615,11 @@ public class FuseboxMetricsUnitTest {
                         .build();
 
         mMetrics.notifyOmniboxSessionEnded(
-                true, AutocompleteRequestType.SEARCH, ModelMode.MODEL_MODE_GEMINI_REGULAR);
+                true,
+                PageClassification.OTHER,
+                AutocompleteRequestType.SEARCH,
+                ModelMode.MODEL_MODE_GEMINI_REGULAR,
+                /* modelList= */ null);
         watcher.assertExpected();
     }
 
@@ -579,7 +637,11 @@ public class FuseboxMetricsUnitTest {
                         .build();
 
         mMetrics.notifyOmniboxSessionEnded(
-                true, AutocompleteRequestType.SEARCH, ModelMode.MODEL_MODE_GEMINI_REGULAR);
+                true,
+                PageClassification.OTHER,
+                AutocompleteRequestType.SEARCH,
+                ModelMode.MODEL_MODE_GEMINI_REGULAR,
+                /* modelList= */ null);
         watcher.assertExpected();
     }
 
@@ -598,7 +660,100 @@ public class FuseboxMetricsUnitTest {
                         .build();
 
         mMetrics.notifyOmniboxSessionEnded(
-                true, AutocompleteRequestType.SEARCH, ModelMode.MODEL_MODE_GEMINI_REGULAR);
+                true,
+                PageClassification.OTHER,
+                AutocompleteRequestType.SEARCH,
+                ModelMode.MODEL_MODE_GEMINI_REGULAR,
+                /* modelList= */ null);
         watcher.assertExpected();
+    }
+
+    @Test
+    public void testRecordTabAttachmentEffectiveDuration_SingleTab() {
+        var watcher =
+                HistogramWatcher.newBuilder()
+                        .expectIntRecord(
+                                FuseboxMetrics.TAB_ATTACHMENT_EFFECTIVE_DURATION_HISTOGRAM
+                                        + ".SingleTab",
+                                1500)
+                        .expectNoRecords(
+                                FuseboxMetrics.TAB_ATTACHMENT_EFFECTIVE_DURATION_HISTOGRAM
+                                        + ".MultipleTabs")
+                        .build();
+
+        long startTime = TimeUtils.elapsedRealtimeMillis() - 500;
+        FuseboxMetrics.recordTabAttachmentEffectiveDuration(
+                startTime, /* loadDurationMs= */ 1000, /* isPartOfMultiTabSelection= */ false);
+        watcher.assertExpected();
+    }
+
+    @Test
+    public void testRecordTabAttachmentEffectiveDuration_MultipleTabs() {
+        var watcher =
+                HistogramWatcher.newBuilder()
+                        .expectIntRecord(
+                                FuseboxMetrics.TAB_ATTACHMENT_EFFECTIVE_DURATION_HISTOGRAM
+                                        + ".MultipleTabs",
+                                2500)
+                        .expectNoRecords(
+                                FuseboxMetrics.TAB_ATTACHMENT_EFFECTIVE_DURATION_HISTOGRAM
+                                        + ".SingleTab")
+                        .build();
+
+        long startTime = TimeUtils.elapsedRealtimeMillis() - 1000;
+        FuseboxMetrics.recordTabAttachmentEffectiveDuration(
+                startTime, /* loadDurationMs= */ 1500, /* isPartOfMultiTabSelection= */ true);
+        watcher.assertExpected();
+    }
+
+    @Test
+    public void testRecordDrivePickerOutcome() {
+        var watcher =
+                HistogramWatcher.newBuilder()
+                        .expectIntRecord(
+                                "Omnibox.MobileFusebox.PickerOutcome",
+                                MobileFuseboxPickerOutcome.PERMISSION_DENIED)
+                        .expectIntRecord(
+                                "Omnibox.MobileFusebox.PickerOutcome.Drive",
+                                MobileFuseboxPickerOutcome.PERMISSION_DENIED)
+                        .build();
+
+        FuseboxMetrics.recordDrivePickerOutcome(MobileFuseboxPickerOutcome.PERMISSION_DENIED);
+        watcher.assertExpected();
+    }
+
+    @Test
+    public void testNotifyOmniboxSessionEnded_Navigated_RecordsAttachmentTypes() {
+        mMetrics.notifyOmniboxSessionStarted();
+        List<FuseboxAttachment> attachments =
+                List.of(
+                        createAttachment(FuseboxAttachmentButtonType.FILES),
+                        createAttachment(FuseboxAttachmentButtonType.DRIVE_FILES));
+        doReturn(attachments.iterator()).when(mModelList).iterator();
+
+        var watcher =
+                HistogramWatcher.newBuilder()
+                        .expectIntRecords(
+                                "Omnibox.MobileFusebox.AttachmentTypeAtSubmission",
+                                FuseboxAttachmentButtonType.FILES,
+                                FuseboxAttachmentButtonType.DRIVE_FILES)
+                        .expectIntRecords(
+                                "Omnibox.MobileFusebox.AttachmentTypeAtSubmission.NTP",
+                                FuseboxAttachmentButtonType.FILES,
+                                FuseboxAttachmentButtonType.DRIVE_FILES)
+                        .build();
+
+        mMetrics.notifyOmniboxSessionEnded(
+                true,
+                PageClassification.INSTANT_NTP_WITH_OMNIBOX_AS_STARTING_FOCUS,
+                AutocompleteRequestType.SEARCH,
+                ModelMode.MODEL_MODE_GEMINI_REGULAR,
+                mModelList);
+        watcher.assertExpected();
+    }
+
+    private static FuseboxAttachment createAttachment(@FuseboxAttachmentButtonType int buttonType) {
+        return FuseboxAttachment.forFile(
+                /* thumbnail= */ null, "title", "text/plain", new byte[0], 0L, buttonType);
     }
 }

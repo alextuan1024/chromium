@@ -42,11 +42,9 @@ source_set("interactive_ui_tests") {
 
   deps = [
     "//base",
-    "//chrome/browser/ui",
     "//chrome/browser/ui:browser_window_header",
     "//chrome/browser/ui/aura/accessibility",
     "//chrome/test:test_support",
-    "//chrome/test:test_support_ui",
     "//content/public/browser",
     "//content/test:test_support",
     "//extensions/browser/api/automation_internal",

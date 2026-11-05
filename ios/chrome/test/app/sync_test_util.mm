@@ -13,6 +13,7 @@
 #import "base/functional/bind.h"
 #import "base/memory/ptr_util.h"
 #import "base/path_service.h"
+#import "base/scoped_observation.h"
 #import "base/strings/string_number_conversions.h"
 #import "base/strings/sys_string_conversions.h"
 #import "base/strings/utf_string_conversions.h"
@@ -25,7 +26,6 @@
 #import "components/gcm_driver/gcm_profile_service.h"
 #import "components/gcm_driver/instance_id/fake_gcm_driver_for_instance_id.h"
 #import "components/history/core/browser/history_service.h"
-#import "components/keyed_service/core/service_access_type.h"
 #import "components/metrics/demographics/demographic_metrics_test_utils.h"
 #import "components/saved_tab_groups/internal/saved_tab_group_sync_bridge.h"
 #import "components/saved_tab_groups/internal/shared_tab_group_data_sync_bridge.h"
@@ -33,6 +33,7 @@
 #import "components/saved_tab_groups/public/saved_tab_group_tab.h"
 #import "components/send_tab_to_self/page_context.h"
 #import "components/send_tab_to_self/proto_conversions.h"
+#import "components/send_tab_to_self/test_send_tab_to_self_entity_builder.h"
 #import "components/shared_highlighting/core/common/text_fragment.h"
 #import "components/sync/base/data_type.h"
 #import "components/sync/base/pref_names.h"
@@ -63,8 +64,11 @@
 #import "ios/chrome/browser/autofill/model/personal_data_manager_factory.h"
 #import "ios/chrome/browser/gcm/model/ios_chrome_gcm_profile_service_factory.h"
 #import "ios/chrome/browser/history/model/history_service_factory.h"
+#import "ios/chrome/browser/shared/model/application_context/application_context.h"
 #import "ios/chrome/browser/shared/model/paths/paths.h"
 #import "ios/chrome/browser/shared/model/profile/profile_ios.h"
+#import "ios/chrome/browser/shared/model/profile/profile_manager_ios.h"
+#import "ios/chrome/browser/shared/model/profile/profile_manager_observer_ios.h"
 #import "ios/chrome/browser/signin/model/fake_system_identity.h"
 #import "ios/chrome/browser/sync/model/device_info_sync_service_factory.h"
 #import "ios/chrome/browser/sync/model/sync_service_factory.h"
@@ -75,11 +79,8 @@
 
 namespace {
 
-instance_id::FakeGCMDriverForInstanceID* GetFakeGCMDriver() {
-  ProfileIOS* profile = chrome_test_util::GetOriginalProfile();
-  if (!profile) {
-    return nullptr;
-  }
+instance_id::FakeGCMDriverForInstanceID* GetFakeGCMDriver(ProfileIOS* profile) {
+  CHECK(profile);
   gcm::GCMProfileService* gcm_service =
       IOSChromeGCMProfileServiceFactory::GetForProfile(profile);
   if (!gcm_service) {
@@ -89,24 +90,44 @@ instance_id::FakeGCMDriverForInstanceID* GetFakeGCMDriver() {
       gcm_service->driver());
 }
 
+// Overrides the network callback of `profile`'s SyncServiceImpl with
+// `create_http_post_provider_factory_cb`.
+void OverrideSyncNetwork(ProfileIOS* profile,
+                         const syncer::CreateHttpPostProviderFactory&
+                             create_http_post_provider_factory_cb) {
+  CHECK(profile);
+  if (syncer::SyncServiceImpl* service =
+          SyncServiceFactory::GetForProfileAsSyncServiceImplForTesting(
+              profile)) {
+    service->OverrideNetworkForTest(create_http_post_provider_factory_cb);
+  }
+}
+
 // Encapsulates the fake sync server and its test invalidation infrastructure.
-class FakeSyncServerContext {
+class FakeSyncServerContext : public ProfileManagerObserverIOS {
  public:
   explicit FakeSyncServerContext(const base::FilePath& base_path)
       : server_(std::make_unique<fake_server::FakeServer>(base_path)),
         invalidation_sender_(
             std::make_unique<fake_server::FakeServerSyncInvalidationSender>(
-                server_.get())) {
-    if (instance_id::FakeGCMDriverForInstanceID* fake_gcm_driver =
-            GetFakeGCMDriver()) {
-      invalidation_sender_->AddFakeGCMDriver(fake_gcm_driver);
-    }
+                server_.get(),
+                base_path)) {
+    // Ensure the active scene's initial profile has finished loading before
+    // attaching the observer and overriding sync network.
+    CHECK(chrome_test_util::GetOriginalProfile());
+    profile_manager_observation_.Observe(
+        GetApplicationContext()->GetProfileManager());
   }
 
-  ~FakeSyncServerContext() {
-    if (instance_id::FakeGCMDriverForInstanceID* fake_gcm_driver =
-            GetFakeGCMDriver()) {
-      invalidation_sender_->RemoveFakeGCMDriver(fake_gcm_driver);
+  ~FakeSyncServerContext() override {
+    ProfileManagerIOS* manager = profile_manager_observation_.GetSource();
+    if (!manager) {
+      return;
+    }
+    profile_manager_observation_.Reset();
+    for (ProfileIOS* profile : manager->GetLoadedProfiles()) {
+      OnProfileUnloaded(manager, profile);
+      OverrideSyncNetwork(profile, syncer::CreateHttpPostProviderFactory());
     }
   }
 
@@ -115,10 +136,44 @@ class FakeSyncServerContext {
 
   fake_server::FakeServer* server() const { return server_.get(); }
 
+  // ProfileManagerObserverIOS implementation.
+  void OnProfileManagerWillBeDestroyed(ProfileManagerIOS* manager) override {}
+
+  void OnProfileManagerDestroyed(ProfileManagerIOS* manager) override {
+    profile_manager_observation_.Reset();
+  }
+
+  void OnProfileCreated(ProfileManagerIOS* manager,
+                        ProfileIOS* profile) override {}
+
+  void OnProfileLoaded(ProfileManagerIOS* manager,
+                       ProfileIOS* profile) override {
+    if (instance_id::FakeGCMDriverForInstanceID* fake_gcm_driver =
+            GetFakeGCMDriver(profile)) {
+      invalidation_sender_->AddFakeGCMDriver(fake_gcm_driver);
+    }
+    OverrideSyncNetwork(profile,
+                        fake_server::CreateFakeServerHttpPostProviderFactory(
+                            server_->AsWeakPtr()));
+  }
+
+  void OnProfileUnloaded(ProfileManagerIOS* manager,
+                         ProfileIOS* profile) override {
+    if (instance_id::FakeGCMDriverForInstanceID* fake_gcm_driver =
+            GetFakeGCMDriver(profile)) {
+      invalidation_sender_->RemoveFakeGCMDriver(fake_gcm_driver);
+    }
+  }
+
+  void OnProfileMarkedForPermanentDeletion(ProfileManagerIOS* manager,
+                                           ProfileIOS* profile) override {}
+
  private:
   std::unique_ptr<fake_server::FakeServer> server_;
   std::unique_ptr<fake_server::FakeServerSyncInvalidationSender>
       invalidation_sender_;
+  base::ScopedObservation<ProfileManagerIOS, ProfileManagerObserverIOS>
+      profile_manager_observation_{this};
 };
 
 std::unique_ptr<FakeSyncServerContext> gSyncServerContext;
@@ -128,18 +183,25 @@ fake_server::FakeServer* GetFakeServer() {
   return gSyncServerContext ? gSyncServerContext->server() : nullptr;
 }
 
-NSString* const kSyncTestErrorDomain = @"SyncTestDomain";
+}  // namespace
 
-// Overrides the network callback of the current SyncServiceImpl with
-// `create_http_post_provider_factory_cb`.
-void OverrideSyncNetwork(const syncer::CreateHttpPostProviderFactory&
-                             create_http_post_provider_factory_cb) {
-  ProfileIOS* profile = chrome_test_util::GetOriginalProfile();
-  DCHECK(profile);
-  syncer::SyncServiceImpl* service =
-      SyncServiceFactory::GetForProfileAsSyncServiceImplForTesting(profile);
-  service->OverrideNetworkForTest(create_http_post_provider_factory_cb);
+namespace chrome_test_util {
+
+fake_server::FakeServer* GetFakeSyncServer() {
+  return GetFakeServer();
 }
+
+void InjectFakeSyncServerEntity(
+    std::unique_ptr<syncer::LoopbackServerEntity> entity) {
+  CHECK(GetFakeServer());
+  GetFakeServer()->InjectEntity(std::move(entity));
+}
+
+}  // namespace chrome_test_util
+
+namespace {
+
+NSString* const kSyncTestErrorDomain = @"SyncTestDomain";
 
 // Returns a bookmark server entity based on `title` and `url`.
 std::unique_ptr<syncer::LoopbackServerEntity> CreateBookmarkServerEntity(
@@ -221,6 +283,27 @@ void AddSharedTabGroupDataToFakeServer(
           /*last_modified_time=*/update_time, metadata));
 }
 
+// Retrieves the local device cache GUID from the active profile. Returns an
+// empty string if not available.
+std::string GetLocalDeviceCacheGuid() {
+  ProfileIOS* profile = chrome_test_util::GetOriginalProfile();
+  syncer::DeviceInfoSyncService* device_info_service =
+      DeviceInfoSyncServiceFactory::GetForProfile(profile);
+  if (!device_info_service) {
+    return "";
+  }
+  const syncer::LocalDeviceInfoProvider* provider =
+      device_info_service->GetLocalDeviceInfoProvider();
+  if (!provider) {
+    return "";
+  }
+  const syncer::DeviceInfo* info = provider->GetLocalDeviceInfo();
+  if (!info) {
+    return "";
+  }
+  return info->guid();
+}
+
 }  // namespace
 
 namespace chrome_test_util {
@@ -235,14 +318,11 @@ void SetUpFakeSyncServer() {
   base::PathService::Get(ios::DIR_USER_DATA, &user_data_dir);
   gSyncServerContext = std::make_unique<FakeSyncServerContext>(
       user_data_dir.AppendASCII("FakeServer"));
-  OverrideSyncNetwork(fake_server::CreateFakeServerHttpPostProviderFactory(
-      GetFakeServer()->AsWeakPtr()));
 }
 
 void TearDownFakeSyncServer() {
   DCHECK(gSyncServerContext);
   gSyncServerContext.reset();
-  OverrideSyncNetwork(syncer::CreateHttpPostProviderFactory());
 }
 
 // TODO(crbug.com/556562996): Consider checking if the fake server is available
@@ -484,8 +564,7 @@ BOOL VerifyHistoryOnSyncServer(const std::multiset<GURL>& expected_urls,
 void AddTypedURLToClient(const GURL& url, base::Time visitTimestamp) {
   ProfileIOS* profile = chrome_test_util::GetOriginalProfile();
   history::HistoryService* historyService =
-      ios::HistoryServiceFactory::GetForProfile(
-          profile, ServiceAccessType::EXPLICIT_ACCESS);
+      ios::HistoryServiceFactory::GetForProfile(profile);
 
   historyService->AddPage(url, visitTimestamp, 0, 1, GURL(),
                           history::RedirectList(), ui::PAGE_TRANSITION_TYPED,
@@ -496,8 +575,7 @@ void AddTypedURLToClient(const GURL& url, base::Time visitTimestamp) {
 void SetPageTitle(const GURL& url, const std::u16string& title) {
   ProfileIOS* profile = chrome_test_util::GetOriginalProfile();
   history::HistoryService* historyService =
-      ios::HistoryServiceFactory::GetForProfile(
-          profile, ServiceAccessType::EXPLICIT_ACCESS);
+      ios::HistoryServiceFactory::GetForProfile(profile);
   historyService->SetPageTitle(url, title);
 }
 
@@ -532,8 +610,6 @@ void AddDeviceInfoToFakeSyncServer(const std::string& device_name,
   device_info.set_signin_scoped_device_id("Id");
   int64_t mtime = syncer::TimeToProtoTime(last_updated_timestamp);
   device_info.set_last_updated_timestamp(mtime);
-  device_info.mutable_feature_fields()->set_send_tab_to_self_receiving_enabled(
-      true);
   device_info.mutable_feature_fields()->set_send_tab_to_self_receiving_type(
       sync_pb::
           SyncEnums_SendTabReceivingType_SEND_TAB_RECEIVING_TYPE_CHROME_OR_UNSPECIFIED);
@@ -552,82 +628,26 @@ std::string AddSendTabToSelfEntryToFakeSyncServer(
     const std::string& target_device_cache_guid,
     const std::map<std::string, std::string>& form_fields,
     const std::string& text_fragment) {
-  DCHECK(IsFakeSyncServerSetUp());
+  CHECK(IsFakeSyncServerSetUp());
 
-  sync_pb::EntitySpecifics specifics;
-  sync_pb::SendTabToSelfSpecifics* stts_specifics =
-      specifics.mutable_send_tab_to_self();
-  stts_specifics->set_url(url.spec());
-  stts_specifics->set_title(title);
-
-  std::string guid = base::Uuid::GenerateRandomV4().AsLowercaseString();
-  stts_specifics->set_guid(guid);
+  send_tab_to_self::TestSendTabToSelfEntityBuilder builder(url, title);
+  builder.SetDeviceName(device_name);
 
   std::string target_guid = target_device_cache_guid;
   if (target_guid.empty()) {
-    syncer::DeviceInfoSyncService* device_info_service =
-        DeviceInfoSyncServiceFactory::GetForProfile(
-            chrome_test_util::GetOriginalProfile());
-    target_guid = device_info_service->GetLocalDeviceInfoProvider()
-                      ->GetLocalDeviceInfo()
-                      ->guid();
+    target_guid = GetLocalDeviceCacheGuid();
+  }
+  builder.SetTargetDeviceCacheGuid(std::move(target_guid));
+
+  for (const auto& [name, value] : form_fields) {
+    builder.AddFormField(name, value, name);
+  }
+  if (!text_fragment.empty()) {
+    builder.SetTextFragment(text_fragment);
   }
 
-  int64_t now_usec =
-      base::Time::Now().ToDeltaSinceWindowsEpoch().InMicroseconds();
-  stts_specifics->set_shared_time_usec(now_usec);
-  stts_specifics->set_device_name(device_name);
-  stts_specifics->set_target_device_sync_cache_guid(target_guid);
-  stts_specifics->set_opened(false);
-  stts_specifics->set_notification_dismissed(false);
-
-  if (!form_fields.empty() || !text_fragment.empty()) {
-    send_tab_to_self::PageContext context;
-
-    if (!form_fields.empty()) {
-      for (const auto& [name, value] : form_fields) {
-        send_tab_to_self::PageContext::FormField form_field;
-        form_field.id_attribute = base::UTF8ToUTF16(name);
-        form_field.name_attribute = base::UTF8ToUTF16(name);
-        form_field.value = base::UTF8ToUTF16(value);
-        form_field.form_control_type = autofill::FormControlType::kInputText;
-        context.form_field_info.fields.push_back(form_field);
-      }
-    }
-
-    if (!text_fragment.empty()) {
-      std::optional<shared_highlighting::TextFragment> parsed_fragment =
-          shared_highlighting::TextFragment::FromEscapedString(text_fragment);
-      if (parsed_fragment) {
-        context.scroll_position.text_fragment =
-            send_tab_to_self::TextFragmentData(*parsed_fragment);
-      }
-    }
-
-    *stts_specifics->mutable_page_context() =
-        send_tab_to_self::PageContextToProto(context);
-
-    std::vector<std::vector<uint8_t>> keystore_keys =
-        GetFakeServer()->GetKeystoreKeys();
-    if (!keystore_keys.empty()) {
-      std::string key_base64 = base::Base64Encode(keystore_keys.back());
-      std::unique_ptr<syncer::CryptographerImpl> cryptographer =
-          syncer::CryptographerImpl::FromSingleKeyForTesting(
-              key_base64, syncer::KeyDerivationParams::CreateForPbkdf2());
-      if (cryptographer &&
-          cryptographer->Encrypt(
-              stts_specifics->page_context(),
-              stts_specifics->mutable_encrypted_page_context())) {
-        stts_specifics->clear_page_context();
-      }
-    }
-  }
-
-  GetFakeServer()->InjectEntity(
-      syncer::PersistentUniqueClientEntity::CreateFromSpecificsForTesting(
-          /*non_unique_name=*/title, /*client_tag=*/guid, specifics,
-          /*creation_time=*/now_usec, /*last_modified_time=*/now_usec));
-
+  std::string guid = builder.guid();
+  GetFakeServer()->InjectEntity(builder.Build(*GetFakeServer()));
   return guid;
 }
 
@@ -637,8 +657,7 @@ BOOL IsUrlPresentOnClient(const GURL& url,
   // Call the history service.
   ProfileIOS* profile = chrome_test_util::GetOriginalProfile();
   history::HistoryService* history_service =
-      ios::HistoryServiceFactory::GetForProfile(
-          profile, ServiceAccessType::EXPLICIT_ACCESS);
+      ios::HistoryServiceFactory::GetForProfile(profile);
 
   const GURL block_safe_url(url);
   std::set<GURL> origins;
@@ -684,8 +703,7 @@ BOOL IsUrlPresentOnClient(const GURL& url,
 void DeleteTypedUrlFromClient(const GURL& url) {
   ProfileIOS* profile = chrome_test_util::GetOriginalProfile();
   history::HistoryService* history_service =
-      ios::HistoryServiceFactory::GetForProfile(
-          profile, ServiceAccessType::EXPLICIT_ACCESS);
+      ios::HistoryServiceFactory::GetForProfile(profile);
 
   history_service->DeleteURLs({url});
 }

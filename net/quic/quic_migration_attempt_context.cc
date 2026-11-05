@@ -11,69 +11,12 @@
 #include "base/strings/strcat.h"
 #include "net/quic/quic_chromium_packet_reader.h"
 #include "net/quic/quic_chromium_packet_writer.h"
+#include "net/quic/quic_socket_config_step.h"
 
 namespace net {
 
-std::string MigrationCauseToString(MigrationCause cause) {
-  switch (cause) {
-    case UNKNOWN_CAUSE:
-      return "Unknown";
-    case ON_NETWORK_CONNECTED:
-      return "OnNetworkConnected";
-    case ON_NETWORK_DISCONNECTED:
-      return "OnNetworkDisconnected";
-    case ON_WRITE_ERROR:
-      return "OnWriteError";
-    case ON_NETWORK_MADE_DEFAULT:
-      return "OnNetworkMadeDefault";
-    case ON_MIGRATE_BACK_TO_DEFAULT_NETWORK:
-      return "OnMigrateBackToDefaultNetwork";
-    case CHANGE_NETWORK_ON_PATH_DEGRADING:
-      return "OnPathDegrading";
-    case CHANGE_PORT_ON_PATH_DEGRADING:
-      return "ChangePortOnPathDegrading";
-    case NEW_NETWORK_CONNECTED_POST_PATH_DEGRADING:
-      return "NewNetworkConnectedPostPathDegrading";
-    case ON_SERVER_PREFERRED_ADDRESS_AVAILABLE:
-      return "OnServerPreferredAddressAvailable";
-    case MULTI_PORT_PATH:
-      return "MultiPortPath";
-    case MIGRATION_CAUSE_MAX:
-      return "InvalidCause";
-  }
-}
-
-QuicMigrationAttemptCause ToQuicMigrationAttemptCause(MigrationCause cause) {
-  switch (cause) {
-    case UNKNOWN_CAUSE:
-    case ON_NETWORK_CONNECTED:
-      // ON_NETWORK_CONNECTED has been deprecated and is never reported. Handle
-      // it as an unknown cause until we completely remove `MigrationCause`.
-      return QuicMigrationAttemptCause::kUnknown;
-    case ON_NETWORK_DISCONNECTED:
-      return QuicMigrationAttemptCause::kOnNetworkDisconnected;
-    case ON_WRITE_ERROR:
-      return QuicMigrationAttemptCause::kOnWriteError;
-    case ON_NETWORK_MADE_DEFAULT:
-      return QuicMigrationAttemptCause::kOnNetworkMadeDefault;
-    case ON_MIGRATE_BACK_TO_DEFAULT_NETWORK:
-      return QuicMigrationAttemptCause::kOnMigrateBackToDefaultNetwork;
-    case CHANGE_NETWORK_ON_PATH_DEGRADING:
-      return QuicMigrationAttemptCause::kChangeNetworkOnPathDegrading;
-    case CHANGE_PORT_ON_PATH_DEGRADING:
-      return QuicMigrationAttemptCause::kChangePortOnPathDegrading;
-    case NEW_NETWORK_CONNECTED_POST_PATH_DEGRADING:
-      return QuicMigrationAttemptCause::kNewNetworkConnectedPostPathDegrading;
-    case ON_SERVER_PREFERRED_ADDRESS_AVAILABLE:
-      return QuicMigrationAttemptCause::kOnServerPreferredAddressAvailable;
-    case MULTI_PORT_PATH:
-      return QuicMigrationAttemptCause::kMultiPortPath;
-    case MIGRATION_CAUSE_MAX:
-      return QuicMigrationAttemptCause::kUnknown;
-  }
-}
-
-std::string QuicMigrationAttemptCauseToString(QuicMigrationAttemptCause cause) {
+std::string_view QuicMigrationAttemptCauseToString(
+    QuicMigrationAttemptCause cause) {
   switch (cause) {
     case QuicMigrationAttemptCause::kUnknown:
       return "Unknown";
@@ -95,37 +38,71 @@ std::string QuicMigrationAttemptCauseToString(QuicMigrationAttemptCause cause) {
       return "OnServerPreferredAddressAvailable";
     case QuicMigrationAttemptCause::kMultiPortPath:
       return "MultiPortPath";
+    case QuicMigrationAttemptCause::kWaitForNewNetworkPostNetworkDisconnected:
+      return "WaitForNewNetworkPostNetworkDisconnected";
+    case QuicMigrationAttemptCause::kWaitForNewNetworkPostWriteError:
+      return "WaitForNewNetworkPostWriteError";
   }
 }
 
 // static
 void QuicMigrationAttemptContext::RecordIneligible(
-    MigrationCause cause,
+    QuicMigrationAttemptCause cause,
     QuicMigrationAttemptIneligibleReason reason) {
   base::UmaHistogramEnumeration("Net.Quic.Migration.Attempt.Ineligible",
                                 reason);
   base::UmaHistogramEnumeration(
       base::StrCat({"Net.Quic.Migration.Attempt.Ineligible.ByTrigger.",
-                    QuicMigrationAttemptCauseToString(
-                        ToQuicMigrationAttemptCause(cause))}),
+                    QuicMigrationAttemptCauseToString(cause)}),
       reason);
 }
 
+// static
+void QuicMigrationAttemptContext::RecordSuperseded(
+    QuicMigrationAttemptCause cause,
+    QuicMigrationAttemptCause superseded_by_cause) {
+  base::UmaHistogramEnumeration("Net.Quic.Migration.Attempt.Superseded",
+                                superseded_by_cause);
+  base::UmaHistogramEnumeration(
+      base::StrCat({"Net.Quic.Migration.Attempt.Superseded.ByTrigger.",
+                    QuicMigrationAttemptCauseToString(cause)}),
+      superseded_by_cause);
+}
+
+// static
+void QuicMigrationAttemptContext::RecordWaitForNewNetworkDuration(
+    QuicMigrationAttemptCause cause,
+    base::TimeDelta duration) {
+  CHECK(cause == QuicMigrationAttemptCause::
+                     kWaitForNewNetworkPostNetworkDisconnected ||
+        cause == QuicMigrationAttemptCause::kWaitForNewNetworkPostWriteError);
+  base::UmaHistogramCustomTimes(
+      "Net.Quic.Migration.Attempt.WaitForNewNetwork.Duration", duration,
+      base::Milliseconds(1), base::Minutes(1), 50);
+  base::UmaHistogramCustomTimes(
+      base::StrCat({"Net.Quic.Migration.Attempt.WaitForNewNetwork.Duration."
+                    "ByTrigger.",
+                    QuicMigrationAttemptCauseToString(cause)}),
+      duration, base::Milliseconds(1), base::Minutes(1), 50);
+}
+
 QuicMigrationAttemptContext::QuicMigrationAttemptContext(
-    MigrationCause cause,
+    QuicMigrationAttemptCause cause,
     handles::NetworkHandle from_network,
     handles::NetworkHandle target_network,
     const quic::QuicSocketAddress& target_peer_address,
     std::unique_ptr<QuicChromiumPacketReader> reader,
     std::unique_ptr<QuicChromiumPacketWriter> writer,
-    base::RepeatingCallback<bool()> is_session_alive)
+    base::RepeatingCallback<bool()> is_session_alive,
+    bool is_google_host)
     : cause_(cause),
       from_network_(from_network),
       target_network_(target_network),
       target_peer_address_(target_peer_address),
       reader_(std::move(reader)),
       writer_(std::move(writer)),
-      is_session_alive_(std::move(is_session_alive)) {
+      is_session_alive_(std::move(is_session_alive)),
+      is_google_host_(is_google_host) {
   CHECK(reader_);
   CHECK(writer_);
   CHECK(is_session_alive_);
@@ -134,7 +111,7 @@ QuicMigrationAttemptContext::QuicMigrationAttemptContext(
 QuicMigrationAttemptContext::~QuicMigrationAttemptContext() {
   // TODO(crbug.com/557126867): Handle logging of multi-port path migrations via
   // QuicMigrationAttemptContext, like other migration attempts causes.
-  if (cause_ == MULTI_PORT_PATH) {
+  if (cause_ == QuicMigrationAttemptCause::kMultiPortPath) {
     return;
   }
 
@@ -145,8 +122,7 @@ QuicMigrationAttemptContext::~QuicMigrationAttemptContext() {
     outcome_details_ = QuicMigrationAttemptIneligibleReason::kSessionDestroyed;
   }
 
-  std::string trigger_str =
-      QuicMigrationAttemptCauseToString(ToQuicMigrationAttemptCause(cause_));
+  std::string_view trigger_str = QuicMigrationAttemptCauseToString(cause_);
 
   switch (outcome_) {
     case Outcome::kSuccess:
@@ -162,14 +138,54 @@ QuicMigrationAttemptContext::~QuicMigrationAttemptContext() {
           base::StrCat(
               {"Net.Quic.Migration.Attempt.Eligible.ByTrigger.", trigger_str}),
           false);
-      auto failure_reason =
-          std::get<QuicMigrationAttemptFailureReason>(outcome_details_);
+      QuicMigrationAttemptFailureReason failure_reason;
+      if (const auto* socket_details =
+              std::get_if<SocketConfigFailureDetails>(&outcome_details_)) {
+        // General failure reason logging.
+        failure_reason = QuicMigrationAttemptFailureReason::kSocketConfigFailed;
+
+        // Detailed, socket specific, failure logging.
+        base::UmaHistogramEnumeration(
+            "Net.Quic.Migration.Attempt.SocketConfigError.Step",
+            socket_details->step);
+        base::UmaHistogramEnumeration(
+            base::StrCat({"Net.Quic.Migration.Attempt.SocketConfigError.Step."
+                          "ByTrigger.",
+                          trigger_str}),
+            socket_details->step);
+        base::UmaHistogramSparse(
+            "Net.Quic.Migration.Attempt.SocketConfigError.NetError",
+            -socket_details->net_error);
+        base::UmaHistogramSparse(
+            base::StrCat({"Net.Quic.Migration.Attempt.SocketConfigError."
+                          "NetError.ByStep.",
+                          QuicSocketConfigStepToString(socket_details->step)}),
+            -socket_details->net_error);
+        base::UmaHistogramSparse(
+            base::StrCat({"Net.Quic.Migration.Attempt.SocketConfigError."
+                          "NetError.ByTrigger.",
+                          trigger_str}),
+            -socket_details->net_error);
+      } else {
+        failure_reason =
+            std::get<QuicMigrationAttemptFailureReason>(outcome_details_);
+      }
+
       base::UmaHistogramEnumeration("Net.Quic.Migration.Attempt.FailureReason",
                                     failure_reason);
       base::UmaHistogramEnumeration(
           base::StrCat({"Net.Quic.Migration.Attempt.FailureReason.ByTrigger.",
                         trigger_str}),
           failure_reason);
+      if (is_google_host_) {
+        base::UmaHistogramEnumeration(
+            "Net.Quic.Migration.Attempt.FailureReason.GoogleHost",
+            failure_reason);
+        base::UmaHistogramEnumeration(
+            base::StrCat({"Net.Quic.Migration.Attempt.FailureReason.ByTrigger.",
+                          trigger_str, ".GoogleHost"}),
+            failure_reason);
+      }
       break;
     }
     case Outcome::kIneligible:
@@ -177,9 +193,8 @@ QuicMigrationAttemptContext::~QuicMigrationAttemptContext() {
                                    outcome_details_));
       break;
     case Outcome::kSuperseded:
-      base::UmaHistogramEnumeration(
-          "Net.Quic.Migration.Attempt.Superseded",
-          std::get<QuicMigrationAttemptCause>(outcome_details_));
+      RecordSuperseded(cause_,
+                       std::get<QuicMigrationAttemptCause>(outcome_details_));
       break;
     case Outcome::kUnknown:
       base::UmaHistogramBoolean(
@@ -203,6 +218,7 @@ void QuicMigrationAttemptContext::SetSuccess() {
 
 void QuicMigrationAttemptContext::SetFailure(
     QuicMigrationAttemptFailureReason reason) {
+  CHECK_NE(reason, QuicMigrationAttemptFailureReason::kSocketConfigFailed);
   // Since the connection migration code predates this class, err on the safe
   // side and record spurious outcomes for now.
   // TODO(crbug.com/557126867): Replace this UMA with a CHECK once we have
@@ -214,6 +230,23 @@ void QuicMigrationAttemptContext::SetFailure(
   }
   outcome_ = Outcome::kFailure;
   outcome_details_ = reason;
+}
+
+void QuicMigrationAttemptContext::SetSocketConfigFailure(
+    QuicSocketConfigStep step,
+    int net_error) {
+  CHECK_LT(net_error, 0);
+  // Since the connection migration code predates this class, err on the safe
+  // side and record spurious outcomes for now.
+  // TODO(crbug.com/557126867): Replace this UMA with a CHECK once we have
+  // confirmed that outcomes are never set more than once.
+  if (outcome_ != Outcome::kUnknown) {
+    base::UmaHistogramBoolean("Net.Quic.Migration.Attempt.SpuriousOutcome",
+                              true);
+    return;
+  }
+  outcome_ = Outcome::kFailure;
+  outcome_details_ = SocketConfigFailureDetails{step, net_error};
 }
 
 void QuicMigrationAttemptContext::SetIneligible(

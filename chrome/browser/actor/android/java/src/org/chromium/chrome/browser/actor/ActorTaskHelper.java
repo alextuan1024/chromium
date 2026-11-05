@@ -11,15 +11,18 @@ import androidx.annotation.VisibleForTesting;
 
 import org.chromium.base.ApplicationStatus;
 import org.chromium.base.Callback;
+import org.chromium.base.DeviceInfo;
 import org.chromium.base.supplier.MonotonicObservableSupplier;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
+import org.chromium.chrome.browser.actor.background_tabs.OffscreenRenderingManager;
+import org.chromium.chrome.browser.actor.foreground_service.ActorForegroundServiceController;
+import org.chromium.chrome.browser.actor.foreground_service.ActorForegroundServiceManager;
 import org.chromium.chrome.browser.lifecycle.ActivityLifecycleDispatcher;
 import org.chromium.chrome.browser.lifecycle.StartStopWithNativeObserver;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.tabmodel.TabModelSelector;
-import org.chromium.ui.base.DeviceFormFactor;
 
 import java.util.List;
 import java.util.Set;
@@ -103,7 +106,7 @@ public class ActorTaskHelper implements ActorKeyedService.Observer, StartStopWit
                     manager.resendWorkingNotifications();
                 }
             }
-        } else if (DeviceFormFactor.isNonMultiDisplayContextOnTablet(mActivity)) {
+        } else if (DeviceInfo.isDesktop()) {
             // TODO(b/537362347): Update method to remove usage of getCurrentActingTab() when
             // refactoring for multi-task.
             mActingTab = getCurrentActingTab();

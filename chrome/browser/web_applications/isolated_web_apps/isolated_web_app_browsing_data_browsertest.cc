@@ -13,6 +13,7 @@
 #include "base/strings/strcat.h"
 #include "base/strings/to_string.h"
 #include "base/test/bind.h"
+#include "base/test/run_until.h"
 #include "base/test/test_future.h"
 #include "base/time/time.h"
 #include "base/values.h"
@@ -152,7 +153,7 @@ class IsolatedWebAppBrowsingDataTest : public IsolatedWebAppBrowserTestHarness {
   [[nodiscard]] bool CreateControlledFrame(content::WebContents* web_contents,
                                            const GURL& src,
                                            const std::string& partition) {
-    static std::string kCreateControlledFrame = R"(
+    static constexpr char kCreateControlledFrame[] = R"(
       (async function() {
         const controlledframe = document.createElement('controlledframe');
         controlledframe.setAttribute('src', $1);
@@ -183,6 +184,26 @@ class IsolatedWebAppBrowsingDataTest : public IsolatedWebAppBrowserTestHarness {
               return content::RenderFrameHost::FrameIterationAction::kContinue;
             });
     return web_view_guests;
+  }
+
+  // Waits until onload has run in every Controlled Frame embedded in
+  // `embedder_web_contents`. `CreateControlledFrame()` only waits for
+  // `loadcommit`, at which point the response body (and its HTTP cache entry)
+  // may still be in flight. The HTTP cache writes each chunk of the body
+  // before handing it to the renderer, so once onload has run, the cache
+  // entries for these loads are fully written.
+  [[nodiscard]] bool WaitForControlledFramesToFinishLoading(
+      content::WebContents* embedder_web_contents) {
+    return base::test::RunUntil([&]() {
+      for (extensions::WebViewGuest* guest :
+           GetWebViewGuests(embedder_web_contents)) {
+        if (!guest->GetGuestMainFrame()
+                 ->IsDocumentOnLoadCompletedInMainFrame()) {
+          return false;
+        }
+      }
+      return true;
+    });
   }
 
  private:
@@ -461,6 +482,7 @@ IN_PROC_BROWSER_TEST_F(IsolatedWebAppBrowsingDataClearingTest, CacheCleared) {
                                     "persist:partition_name_0"));
   ASSERT_TRUE(
       CreateControlledFrame(web_contents, cache_url, "partition_name_1"));
+  ASSERT_TRUE(WaitForControlledFramesToFinishLoading(web_contents));
 
   std::vector<content::StoragePartitionConfig> storage_partition_configs{
       url_info.storage_partition_config(profile()),
@@ -514,7 +536,8 @@ IN_PROC_BROWSER_TEST_F(IsolatedWebAppBrowsingDataClearingTest, CookieCleared) {
       url_info.GetStoragePartitionConfigForControlledFrame(
           profile(), "partition_name_1", /*in_memory=*/true)};
 
-  // Set a partitioned and an unpartitioned cookie for each storage partition.
+  // Set a partitioned and an unpartitioned cookie for each storage partition
+  // and verify initial cookie state.
   for (const auto& config : storage_partition_configs) {
     SCOPED_TRACE("partition_name: " + config.partition_name());
     content::StoragePartition* partition =
@@ -528,13 +551,6 @@ IN_PROC_BROWSER_TEST_F(IsolatedWebAppBrowsingDataClearingTest, CookieCleared) {
         partition, GURL("https://c.com"), base::Time::Now(),
         "A=0; secure; partitioned",
         net::CookiePartitionKey::FromURLForTesting(GURL("https://d.com"))));
-  }
-
-  for (const auto& config : storage_partition_configs) {
-    SCOPED_TRACE("partition_name: " + config.partition_name());
-    content::StoragePartition* partition =
-        profile()->GetStoragePartition(config, false);
-    ASSERT_TRUE(partition);
     ASSERT_EQ(GetAllCookies(partition).size(), 2UL);
   }
 
@@ -602,7 +618,8 @@ IN_PROC_BROWSER_TEST_F(IsolatedWebAppBrowsingDataClearingTest,
       url_info.GetStoragePartitionConfigForControlledFrame(
           profile(), "partition_name_1", /*in_memory=*/true)};
 
-  // Set a partitioned and an unpartitioned cookie for each storage partition.
+  // Set a partitioned and an unpartitioned cookie for each storage partition
+  // and verify initial cookie state.
   for (const auto& config : storage_partition_configs) {
     SCOPED_TRACE("partition_name: " + config.partition_name());
     content::StoragePartition* partition =
@@ -616,13 +633,6 @@ IN_PROC_BROWSER_TEST_F(IsolatedWebAppBrowsingDataClearingTest,
         partition, GURL("https://c.com"), base::Time::Now(),
         "A=0; secure; partitioned",
         net::CookiePartitionKey::FromURLForTesting(GURL("https://d.com"))));
-  }
-
-  for (const auto& config : storage_partition_configs) {
-    SCOPED_TRACE("partition_name: " + config.partition_name());
-    content::StoragePartition* partition =
-        profile()->GetStoragePartition(config, false);
-    ASSERT_TRUE(partition);
     ASSERT_EQ(GetAllCookies(partition).size(), 2UL);
   }
 
@@ -662,6 +672,7 @@ IN_PROC_BROWSER_TEST_F(IsolatedWebAppBrowsingDataClearingTest,
                                     "persist:partition_name_0"));
   ASSERT_TRUE(
       CreateControlledFrame(web_contents, cache_url, "partition_name_1"));
+  ASSERT_TRUE(WaitForControlledFramesToFinishLoading(web_contents));
 
   std::vector<content::StoragePartitionConfig> storage_partition_configs{
       url_info.storage_partition_config(profile()),
@@ -681,7 +692,8 @@ IN_PROC_BROWSER_TEST_F(IsolatedWebAppBrowsingDataClearingTest,
   // 2000 because non-persistent partitions are not counted toward usage.
   ASSERT_THAT(GetIwaUsage(url_info), IsApproximately(2000));
 
-  // Set a partitioned and an unpartitioned cookie for each storage partition.
+  // Set a partitioned and an unpartitioned cookie for each storage partition
+  // and verify initial cookie and cache state.
   for (const auto& config : storage_partition_configs) {
     SCOPED_TRACE("partition_name: " + config.partition_name());
     content::StoragePartition* partition =
@@ -695,17 +707,9 @@ IN_PROC_BROWSER_TEST_F(IsolatedWebAppBrowsingDataClearingTest,
         partition, GURL("https://c.com"), base::Time::Now(),
         "A=0; secure; partitioned",
         net::CookiePartitionKey::FromURLForTesting(GURL("https://d.com"))));
-  }
-
-  for (const auto& config : storage_partition_configs) {
-    SCOPED_TRACE("partition_name: " + config.partition_name());
-    content::StoragePartition* partition =
-        profile()->GetStoragePartition(config, false);
-    ASSERT_TRUE(partition);
     // Each partition should have 2 cookies.
     ASSERT_EQ(GetAllCookies(partition).size(), 2UL);
     // Each partition should have cache.
-
     ASSERT_GT(GetCacheSize(partition), 0);
   }
 
@@ -749,6 +753,7 @@ IN_PROC_BROWSER_TEST_F(IsolatedWebAppBrowsingDataClearingTest,
                                     "persist:partition_name_0"));
   ASSERT_TRUE(
       CreateControlledFrame(web_contents, cache_url, "partition_name_1"));
+  ASSERT_TRUE(WaitForControlledFramesToFinishLoading(web_contents));
   // Put the IWA in the uninstalling stage.
   {
     ScopedRegistryUpdate update =
@@ -767,31 +772,20 @@ IN_PROC_BROWSER_TEST_F(IsolatedWebAppBrowsingDataClearingTest,
       url_info.GetStoragePartitionConfigForControlledFrame(
           profile(), "partition_name_1", /*in_memory=*/true)};
 
-  // Set a partitioned and an unpartitioned cookie for each storage partition.
+  // Set a partitioned and an unpartitioned cookie for each storage partition
+  // and verify initial cookie and cache state.
   for (const auto& config : storage_partition_configs) {
     SCOPED_TRACE("partition_name: " + config.partition_name());
     content::StoragePartition* partition =
         profile()->GetStoragePartition(config, false);
     ASSERT_TRUE(partition);
-    // Unpartitioned Cookie
     ASSERT_TRUE(SetCookie(partition, GURL("http://a.com"), base::Time::Now(),
                           "A=0", std::nullopt));
-    // Partitioned Cookie
     ASSERT_TRUE(SetCookie(
         partition, GURL("https://c.com"), base::Time::Now(),
         "A=0; secure; partitioned",
         net::CookiePartitionKey::FromURLForTesting(GURL("https://d.com"))));
-  }
-
-  for (const auto& config : storage_partition_configs) {
-    SCOPED_TRACE("partition_name: " + config.partition_name());
-    content::StoragePartition* partition =
-        profile()->GetStoragePartition(config, false);
-    ASSERT_TRUE(partition);
-    // Each partition should have 2 cookies.
     ASSERT_EQ(GetAllCookies(partition).size(), 2UL);
-    // Each partition should have cache.
-
     ASSERT_GT(GetCacheSize(partition), 0);
   }
 
@@ -981,6 +975,7 @@ IN_PROC_BROWSER_TEST_F(IsolatedWebAppBrowsingDataClearingTest,
     ASSERT_EQ(GetLocalStorageCount(controlled_frame_rfh), 1);
     ASSERT_EQ(GetLocalStorageValue(controlled_frame_rfh, "foo"), "bar");
 
+    ASSERT_TRUE(WaitForControlledFramesToFinishLoading(web_contents));
     int64_t old_cache_size = GetCacheSize(controlled_frame_partition);
 
     GURL clear_site_data_url = embedded_https_test_server().GetURL(

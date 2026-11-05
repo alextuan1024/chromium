@@ -8,10 +8,12 @@
 #include <string>
 #include <vector>
 
+#include "chrome/app/vector_icons/vector_icons.h"
 #include "chrome/browser/ui/actions/chrome_action_id.h"
 #include "chrome/browser/ui/fuzzy_search/fuzzy_finder.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/actions/actions.h"
+#include "ui/base/models/image_model.h"
 
 namespace {
 
@@ -22,12 +24,15 @@ TEST(AppMenuSearchItemTest, BasicProperties) {
                          .SetActionId(kActionNewTab)
                          .AddSynonyms({u"tab", u"create"})
                          .Build();
+  const ui::ImageModel icon = ui::ImageModel::FromVectorIcon(kTabIcon);
 
   auto search_item = AppMenuSearchItem::Builder()
                          .SetType(AppMenuSearchItem::Type::kAction)
                          .SetAction(action_item.get())
                          .SetTitle(u"New Tab")
                          .SetSecondaryText(u"Tools")
+                         .SetIconOverride(icon)
+                         .SetIsCheckable(true)
                          .Build();
 
   EXPECT_EQ(search_item->GetType(), AppMenuSearchItem::Type::kAction);
@@ -35,6 +40,8 @@ TEST(AppMenuSearchItemTest, BasicProperties) {
   EXPECT_EQ(search_item->GetSecondaryText(), u"Tools");
   EXPECT_EQ(search_item->GetSynonyms(), synonyms);
   EXPECT_EQ(search_item->GetActionItem(), action_item.get());
+  EXPECT_EQ(search_item->GetIconOverride(), icon);
+  EXPECT_TRUE(search_item->IsCheckable());
 }
 
 TEST(AppMenuSearchItemTest, DefaultSecondaryTextAndSynonyms) {
@@ -54,6 +61,8 @@ TEST(AppMenuSearchItemTest, DefaultSecondaryTextAndSynonyms) {
   EXPECT_TRUE(search_item->GetSecondaryText().empty());
   EXPECT_TRUE(search_item->GetSynonyms().empty());
   EXPECT_EQ(search_item->GetActionItem(), action_item.get());
+  EXPECT_FALSE(search_item->GetIconOverride().has_value());
+  EXPECT_FALSE(search_item->IsCheckable());
 }
 
 TEST(AppMenuSearchItemTest, Types) {
@@ -180,7 +189,7 @@ TEST(AppMenuSearchItemTest, IntegratesWithFuzzyFinder) {
                          .SetSecondaryText(u"File")
                          .Build();
 
-  std::vector<FuzzySearchItem*> searchable_items = {search_item.get()};
+  std::vector<raw_ptr<FuzzySearchItem>> searchable_items = {search_item.get()};
   FuzzyFinder finder(std::move(searchable_items));
 
   auto title_results = finder.Find(u"Window", /*max_results=*/5);

@@ -4,11 +4,18 @@
 
 #include "chrome/browser/ui/views/webid/account_selection_modal_view.h"
 
+#include <array>
 #include <string>
+#include <tuple>
+#include <vector>
 
 #include "base/strings/utf_string_conversions.h"
+#include "base/test/metrics/histogram_tester.h"
+#include "base/test/scoped_feature_list.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/test/test_browser_dialog.h"
+#include "chrome/browser/ui/ui_features.h"
 #include "chrome/browser/ui/views/controls/hover_button.h"
 #include "chrome/browser/ui/views/webid/account_selection_view_base.h"
 #include "chrome/browser/ui/views/webid/account_selection_view_test_base.h"
@@ -16,25 +23,39 @@
 #include "chrome/browser/ui/views/webid/fedcm_account_selection_view_desktop.h"
 #include "chrome/grit/generated_resources.h"
 #include "components/strings/grit/components_strings.h"
+#include "content/public/browser/web_contents.h"
 #include "content/public/browser/webid/identity_request_dialog_controller.h"
 #include "content/public/test/browser_test.h"
 #include "services/network/public/cpp/shared_url_loader_factory.h"
 #include "services/network/public/cpp/weak_wrapper_shared_url_loader_factory.h"
 #include "services/network/test/test_url_loader_factory.h"
 #include "testing/gmock/include/gmock/gmock-matchers.h"
+#include "testing/gmock/include/gmock/gmock.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/models/image_model.h"
 #include "ui/events/base_event_utils.h"
+#include "ui/events/event.h"
+#include "ui/events/keycodes/keyboard_codes.h"
 #include "ui/gfx/image/image_unittest_util.h"
+#include "ui/views/accessibility/view_accessibility.h"
 #include "ui/views/controls/button/md_text_button.h"
+#include "ui/views/controls/link_fragment.h"
 #include "ui/views/controls/scroll_view.h"
 #include "ui/views/controls/styled_label.h"
 #include "ui/views/controls/throbber.h"
 #include "ui/views/layout/box_layout.h"
+#include "ui/views/test/button_test_api.h"
+#include "ui/views/test/mock_input_event_activation_protector.h"
+#include "ui/views/test/views_test_utils.h"
+#include "ui/views/view_utils.h"
 #include "ui/views/window/dialog_delegate.h"
 
 namespace webid {
 namespace {
+constexpr char kIdpAccountManagementUrl[] = "https://idp-example.com/account";
+constexpr char kIdpPrivacyPolicyUrl[] = "https://idp-example.com/privacy";
+constexpr char kIdpTermsOfServiceUrl[] = "https://idp-example.com/terms";
+
 class FakeFedCmAccountSelectionView : public FedCmAccountSelectionView {
  public:
   FakeFedCmAccountSelectionView(
@@ -54,8 +75,13 @@ class FakeFedCmAccountSelectionView : public FedCmAccountSelectionView {
 };
 }  // namespace
 
-class AccountSelectionModalViewTest : public DialogBrowserTest,
-                                      public AccountSelectionViewTestBase {
+// Parameterized on whether `kFedCmPermissionUiWithContainer` and
+// `kFedCmIdpLinks` are enabled. With `kFedCmIdpLinks`, the identity provider
+// has links, so that the request permission tests also check them.
+class AccountSelectionModalViewTest
+    : public DialogBrowserTest,
+      public AccountSelectionViewTestBase,
+      public testing::WithParamInterface<std::tuple<bool, bool>> {
  public:
   AccountSelectionModalViewTest()
       : idp_data_(base::MakeRefCounted<content::IdentityProviderData>(
@@ -66,6 +92,16 @@ class AccountSelectionModalViewTest : public DialogBrowserTest,
             /*format=*/std::nullopt,
             kDefaultDisclosureFields,
             /*has_login_status_mismatch=*/false)) {
+    scoped_feature_list_.InitWithFeatureStates(
+        {{features::kFedCmPermissionUiWithContainer, IsContainerFlagEnabled()},
+         {features::kFedCmIdpLinks, IsIdpLinksFlagEnabled()}});
+    if (IsIdpLinksFlagEnabled()) {
+      idp_data_->idp_metadata.account_management_url =
+          GURL(kIdpAccountManagementUrl);
+      idp_data_->idp_metadata.privacy_policy_url = GURL(kIdpPrivacyPolicyUrl);
+      idp_data_->idp_metadata.terms_of_service_url =
+          GURL(kIdpTermsOfServiceUrl);
+    }
     test_shared_url_loader_factory_ =
         base::MakeRefCounted<network::WeakWrapperSharedURLLoaderFactory>(
             &test_url_loader_factory_);
@@ -137,6 +173,48 @@ class AccountSelectionModalViewTest : public DialogBrowserTest,
     account_selection_view_->UpdateDialogPosition();
   }
 
+  // Sets the given links on the identity provider, then shows the request
+  // permission sheet for a new account. Returns the view of the disclosure
+  // text: its container with the container UI, or else its label.
+  views::View* ShowRequestPermissionWithIdpLinks(
+      const std::string& account_management_url,
+      const std::string& privacy_policy_url,
+      const std::string& terms_of_service_url) {
+    idp_data_->idp_metadata.account_management_url =
+        GURL(account_management_url);
+    idp_data_->idp_metadata.privacy_policy_url = GURL(privacy_policy_url);
+    idp_data_->idp_metadata.terms_of_service_url = GURL(terms_of_service_url);
+    IdentityRequestAccountPtr account =
+        CreateTestIdentityRequestAccount("suffix", idp_data_);
+    CreateAndShowRequestPermissionDialog(*account);
+    // Dialog order: Header, single account chooser, button row.
+    // Account chooser order: Account row, disclosure text.
+    return dialog()->children()[1]->children()[1];
+  }
+
+  // Makes the dialog accept clicks right after it is shown, which the input
+  // protector would otherwise ignore.
+  void AcceptAllInput() {
+    auto input_protector =
+        std::make_unique<views::MockInputEventActivationProtector>();
+    ON_CALL(*input_protector, IsPossiblyUnintendedInteraction)
+        .WillByDefault(testing::Return(false));
+    account_selection_view_->SetInputEventActivationProtectorForTesting(
+        std::move(input_protector));
+  }
+
+  // Returns whether `kFedCmPermissionUiWithContainer` is enabled.
+  bool IsContainerFlagEnabled() const { return std::get<0>(GetParam()); }
+
+  // Returns whether `kFedCmIdpLinks` is enabled.
+  bool IsIdpLinksFlagEnabled() const { return std::get<1>(GetParam()); }
+
+  // Returns whether the request permission sheet uses the container UI, which
+  // `kFedCmIdpLinks` also enables.
+  bool IsContainerUIExpected() const {
+    return IsContainerFlagEnabled() || IsIdpLinksFlagEnabled();
+  }
+
   void CreateAndShowVerifyingSheet() {
     CreateAccountSelectionModal();
     ShowVerifyingSheet();
@@ -165,6 +243,11 @@ class AccountSelectionModalViewTest : public DialogBrowserTest,
                            bool expect_visible_idp_icon = true,
                            bool expect_visible_combined_icons = false,
                            bool is_multi_idp = false) {
+    // The checks below include the sizes of icons that may have only just
+    // become visible, so lay out the dialog first rather than relying on a
+    // resize of the dialog having done so.
+    views::test::RunScheduledLayout(dialog());
+
     // Perform some basic dialog checks.
     auto* delegate = dialog_delegate();
     ASSERT_TRUE(delegate);
@@ -355,6 +438,9 @@ class AccountSelectionModalViewTest : public DialogBrowserTest,
           static_cast<views::MdTextButton*>(button_row_children[button_index]);
       ASSERT_TRUE(continue_button);
       EXPECT_EQ(continue_button->GetText(), u"Continue");
+      EXPECT_EQ(continue_button->GetStyle(), IsContainerUIExpected()
+                                                 ? ui::ButtonStyle::kTonal
+                                                 : ui::ButtonStyle::kProminent);
       EXPECT_EQ(dialog()->GetInitiallyFocusedView(), continue_button);
       CheckReplaceButtonWithSpinner(continue_button);
     }
@@ -480,8 +566,9 @@ class AccountSelectionModalViewTest : public DialogBrowserTest,
                               /*expect_idp=*/true, /*is_modal_dialog=*/true);
     ASSERT_EQ("Separator", accounts[accounts_index++]->GetClassName());
     EXPECT_EQ(accounts_index, 5u);
+    // The "Use a different account" button opens the IDP picker.
     CheckButtonRow(children[2], /*expect_continue_button=*/false,
-                   /*expect_add_account_button=*/false,
+                   /*expect_add_account_button=*/true,
                    /*expect_back_button=*/false);
   }
 
@@ -515,9 +602,84 @@ class AccountSelectionModalViewTest : public DialogBrowserTest,
                               /*expect_idp=*/true, /*is_modal_dialog=*/true);
     ASSERT_EQ("Separator", accounts[accounts_index++]->GetClassName());
     EXPECT_EQ(accounts_index, 3u);
+    // The "Use a different account" button opens the IDP picker.
+    CheckButtonRow(children[2], /*expect_continue_button=*/false,
+                   /*expect_add_account_button=*/true,
+                   /*expect_back_button=*/false);
+  }
+
+  void TestIdpPicker() {
+    IdentityProviderDataPtr idp_data_2 =
+        base::MakeRefCounted<content::IdentityProviderData>(
+            kSecondIdpForDisplay, content::IdentityProviderMetadata(),
+            CreateTestClientMetadata(), blink::mojom::RpContext::kSignIn,
+            /*format=*/std::nullopt, kDefaultDisclosureFields,
+            /*has_login_status_mismatch=*/false);
+    std::vector<IdentityProviderDataPtr> idp_list = {idp_data_, idp_data_2};
+
+    if (!dialog_) {
+      CreateAccountSelectionModal();
+    }
+    dialog_->ShowIdpPicker(idp_list, /*rp_icon=*/gfx::Image(),
+                           /*show_back_button=*/true);
+    account_selection_view_->UpdateDialogPosition();
+
+    std::vector<raw_ptr<views::View, VectorExperimental>> children =
+        dialog()->children();
+    ASSERT_EQ(children.size(), 3u);
+
+    // The standard header is shown, with the multi-IDP title and a prompt to
+    // pick an IDP.
+    std::vector<raw_ptr<views::View, VectorExperimental>> header_children =
+        children[0]->children();
+    ASSERT_EQ(header_children.size(), 3u);
+    views::Label* title_view = static_cast<views::Label*>(header_children[1]);
+    views::Label* body_view = static_cast<views::Label*>(header_children[2]);
+    EXPECT_TRUE(body_view->GetVisible());
+    if (iframe_for_display_.empty()) {
+      EXPECT_EQ(title_view->GetText(), kTitleSignInWithoutIdp);
+      EXPECT_EQ(
+          body_view->GetText(),
+          l10n_util::GetStringUTF16(IDS_ACCOUNT_SELECTION_IDP_PICKER_BODY));
+    } else {
+      EXPECT_EQ(title_view->GetText(), kTitleIframeSignInWithoutIdp);
+      EXPECT_EQ(body_view->GetText(), kSubtitleIframeSignIn);
+    }
+
+    // One row per IDP, between a leading and a trailing separator.
+    std::vector<raw_ptr<views::View, VectorExperimental>> rows =
+        TestStructureAndGetAccounts(children[1]);
+    ASSERT_EQ(rows.size(), idp_list.size() + 2u);
+    EXPECT_EQ("Separator", rows[0]->GetClassName());
+    EXPECT_EQ("Separator", rows.back()->GetClassName());
+
+    // Each IDP row shows just the IDP domain, with no subtitle.
+    for (size_t i = 0; i < idp_list.size(); ++i) {
+      IdpHoverButton* idp_row = views::AsViewClass<IdpHoverButton>(rows[i + 1]);
+      ASSERT_TRUE(idp_row);
+      EXPECT_EQ(idp_row->title()->GetText(),
+                base::UTF8ToUTF16(idp_list[i]->idp_for_display));
+      EXPECT_FALSE(GetHoverButtonSubtitle(idp_row));
+    }
+
+    // A back button and a cancel button.
     CheckButtonRow(children[2], /*expect_continue_button=*/false,
                    /*expect_add_account_button=*/false,
-                   /*expect_back_button=*/false);
+                   /*expect_back_button=*/true);
+  }
+
+  void TestIdpRowCanBeClickedMoreThanOnce() {
+    int num_clicks = 0;
+    IdpHoverButton row(
+        base::BindRepeating([](int* num_clicks) { ++*num_clicks; },
+                            base::Unretained(&num_clicks)),
+        *idp_data_);
+    ui::MouseEvent event(ui::EventType::kMousePressed, gfx::Point(),
+                         gfx::Point(), ui::EventTimeForNow(),
+                         ui::EF_LEFT_MOUSE_BUTTON, 0);
+    views::test::ButtonTestApi(&row).NotifyClick(event);
+    views::test::ButtonTestApi(&row).NotifyClick(event);
+    EXPECT_EQ(num_clicks, 2);
   }
 
   std::vector<raw_ptr<views::View, VectorExperimental>>
@@ -577,10 +739,13 @@ class AccountSelectionModalViewTest : public DialogBrowserTest,
     std::vector<std::string> expected_class_names = {"View"};
     bool is_returning_user =
         login_state == content::IdentityRequestAccount::LoginState::kSignIn;
+    const bool expect_disclosure_container = IsContainerUIExpected();
     // For non-returning users, we expect a StyledLabel which contains the
-    // disclosure text to obtain user permission.
+    // disclosure text to obtain user permission. With the container UI, it is
+    // wrapped in a container.
     if (!is_returning_user) {
-      expected_class_names.emplace_back("StyledLabel");
+      expected_class_names.emplace_back(
+          expect_disclosure_container ? "BoxLayoutView" : "StyledLabel");
     }
     EXPECT_THAT(GetChildClassNames(single_account_chooser),
                 testing::ElementsAreArray(expected_class_names));
@@ -589,6 +754,27 @@ class AccountSelectionModalViewTest : public DialogBrowserTest,
                                 kAccountSuffix, has_display_identifier);
     if (!is_returning_user) {
       views::View* disclosure_text_view = single_account_chooser->children()[1];
+      if (expect_disclosure_container) {
+        views::View* container = disclosure_text_view;
+        // Order: Disclosure row, and with `kFedCmIdpLinks`, the identity
+        // provider's links row.
+        std::vector<std::string> expected_rows = {"BoxLayoutView"};
+        if (IsIdpLinksFlagEnabled()) {
+          expected_rows.emplace_back("BoxLayoutView");
+        }
+        ASSERT_THAT(GetChildClassNames(container),
+                    testing::ElementsAreArray(expected_rows));
+        views::View* row = container->children()[0];
+        // Order: Person icon, disclosure text
+        ASSERT_THAT(GetChildClassNames(row),
+                    testing::ElementsAre("ImageView", "StyledLabel"));
+        // The container should only be as tall as its content, so that it
+        // doesn't take height away from the button row.
+        views::test::RunScheduledLayout(dialog());
+        EXPECT_EQ(container->height(),
+                  container->GetHeightForWidth(container->width()));
+        disclosure_text_view = row->children()[1];
+      }
       CheckDisclosureText(disclosure_text_view,
                           /*expect_terms_of_service=*/true,
                           /*expect_privacy_policy=*/true);
@@ -826,6 +1012,7 @@ class AccountSelectionModalViewTest : public DialogBrowserTest,
   std::u16string iframe_for_display_;
 
  private:
+  base::test::ScopedFeatureList scoped_feature_list_;
   bool expect_visible_body_label_{true};
   ui::ImageModel idp_brand_icon_;
   scoped_refptr<network::SharedURLLoaderFactory>
@@ -838,19 +1025,25 @@ class AccountSelectionModalViewTest : public DialogBrowserTest,
   IdentityProviderDataPtr idp_data_;
 };
 
+// Runs all tests with `kFedCmPermissionUiWithContainer` and `kFedCmIdpLinks`
+// each disabled and enabled.
+INSTANTIATE_TEST_SUITE_P(All,
+                         AccountSelectionModalViewTest,
+                         testing::Combine(testing::Bool(), testing::Bool()));
+
 // Tests that the single account dialog is rendered correctly.
-IN_PROC_BROWSER_TEST_F(AccountSelectionModalViewTest, SingleAccount) {
+IN_PROC_BROWSER_TEST_P(AccountSelectionModalViewTest, SingleAccount) {
   TestSingleAccount();
 }
 
 // Tests that the multiple accounts dialog is rendered correctly.
-IN_PROC_BROWSER_TEST_F(AccountSelectionModalViewTest, MultipleAccounts) {
+IN_PROC_BROWSER_TEST_P(AccountSelectionModalViewTest, MultipleAccounts) {
   TestMultipleAccounts();
 }
 
 // Tests that the request permission dialog is rendered correctly, when it is
 // shown after the single account dialog.
-IN_PROC_BROWSER_TEST_F(AccountSelectionModalViewTest,
+IN_PROC_BROWSER_TEST_P(AccountSelectionModalViewTest,
                        RequestPermissionAfterSingleAccount) {
   TestSingleAccount();
   TestRequestPermission(/*has_display_identifier=*/true);
@@ -858,7 +1051,7 @@ IN_PROC_BROWSER_TEST_F(AccountSelectionModalViewTest,
 
 // Tests that the request permission dialog is rendered correctly, when it is
 // shown after the multiple accounts dialog.
-IN_PROC_BROWSER_TEST_F(AccountSelectionModalViewTest,
+IN_PROC_BROWSER_TEST_P(AccountSelectionModalViewTest,
                        RequestPermissionAfterMultipleAccounts) {
   TestMultipleAccounts();
   TestRequestPermission(/*has_display_identifier=*/true);
@@ -867,7 +1060,7 @@ IN_PROC_BROWSER_TEST_F(AccountSelectionModalViewTest,
 // Tests that the single account dialog is rendered correctly, when it is
 // shown after the request permission dialog. This can happen when user clicks
 // on the "back" button.
-IN_PROC_BROWSER_TEST_F(AccountSelectionModalViewTest,
+IN_PROC_BROWSER_TEST_P(AccountSelectionModalViewTest,
                        SingleAccountAfterRequestPermission) {
   TestRequestPermission(/*has_display_identifier=*/true);
   TestSingleAccount();
@@ -876,21 +1069,21 @@ IN_PROC_BROWSER_TEST_F(AccountSelectionModalViewTest,
 // Tests that the multiple accounts dialog is rendered correctly, when it is
 // shown after the request permission dialog. This can happen when user clicks
 // on the "back" button.
-IN_PROC_BROWSER_TEST_F(AccountSelectionModalViewTest,
+IN_PROC_BROWSER_TEST_P(AccountSelectionModalViewTest,
                        MultipleAccountsAfterRequestPermission) {
   TestRequestPermission(/*has_display_identifier=*/true);
   TestMultipleAccounts();
 }
 
 // Tests that the loading dialog is rendered correctly.
-IN_PROC_BROWSER_TEST_F(AccountSelectionModalViewTest, Loading) {
+IN_PROC_BROWSER_TEST_P(AccountSelectionModalViewTest, Loading) {
   // We always show the loading dialog at the creation of the modal.
   CreateAccountSelectionModal();
 }
 
 // Tests that the verifying sheet is rendered correctly, when it is shown after
 // the single account dialog.
-IN_PROC_BROWSER_TEST_F(AccountSelectionModalViewTest,
+IN_PROC_BROWSER_TEST_P(AccountSelectionModalViewTest,
                        VerifyingAfterSingleAccount) {
   TestSingleAccount();
   TestVerifyingSheet();
@@ -898,7 +1091,7 @@ IN_PROC_BROWSER_TEST_F(AccountSelectionModalViewTest,
 
 // Tests that the verifying sheet is rendered correctly, when it is shown after
 // the multiple accounts dialog.
-IN_PROC_BROWSER_TEST_F(AccountSelectionModalViewTest,
+IN_PROC_BROWSER_TEST_P(AccountSelectionModalViewTest,
                        VerifyingAfterMultipleAccounts) {
   TestMultipleAccounts();
   TestVerifyingSheet(/*has_multiple_accounts=*/true);
@@ -906,7 +1099,7 @@ IN_PROC_BROWSER_TEST_F(AccountSelectionModalViewTest,
 
 // Tests that the verifying sheet is rendered correctly, for the single account
 // flow.
-IN_PROC_BROWSER_TEST_F(AccountSelectionModalViewTest,
+IN_PROC_BROWSER_TEST_P(AccountSelectionModalViewTest,
                        VerifyingForSingleAccountFlow) {
   TestSingleAccount();
   TestRequestPermission(/*has_display_identifier=*/true);
@@ -917,7 +1110,7 @@ IN_PROC_BROWSER_TEST_F(AccountSelectionModalViewTest,
 
 // Tests that the verifying sheet is rendered correctly, for the multiple
 // account flow.
-IN_PROC_BROWSER_TEST_F(AccountSelectionModalViewTest,
+IN_PROC_BROWSER_TEST_P(AccountSelectionModalViewTest,
                        VerifyingForMultipleAccountFlow) {
   TestMultipleAccounts();
   TestRequestPermission(/*has_display_identifier=*/true);
@@ -928,21 +1121,21 @@ IN_PROC_BROWSER_TEST_F(AccountSelectionModalViewTest,
 
 // Tests that the single account dialog is rendered correctly when IDP supports
 // use other account.
-IN_PROC_BROWSER_TEST_F(AccountSelectionModalViewTest,
+IN_PROC_BROWSER_TEST_P(AccountSelectionModalViewTest,
                        SingleAccountUseOtherAccount) {
   TestSingleAccount(/*supports_add_account=*/true);
 }
 
 // Tests that the multiple accounts dialog is rendered correctly when IDP
 // supports use other account.
-IN_PROC_BROWSER_TEST_F(AccountSelectionModalViewTest,
+IN_PROC_BROWSER_TEST_P(AccountSelectionModalViewTest,
                        MultipleAccountsUseOtherAccount) {
   TestMultipleAccounts(/*supports_add_account=*/true);
 }
 
 // Tests that the request permission dialog is rendered correctly, when it is
 // shown after the loading dialog for a non-returning user.
-IN_PROC_BROWSER_TEST_F(AccountSelectionModalViewTest,
+IN_PROC_BROWSER_TEST_P(AccountSelectionModalViewTest,
                        RequestPermissionNonReturningUser) {
   TestRequestPermission(/*has_display_identifier=*/true,
                         content::IdentityRequestAccount::LoginState::kSignUp);
@@ -950,7 +1143,7 @@ IN_PROC_BROWSER_TEST_F(AccountSelectionModalViewTest,
 
 // Tests that the request permission dialog is rendered correctly, when it is
 // shown after the loading dialog for a returning user.
-IN_PROC_BROWSER_TEST_F(AccountSelectionModalViewTest,
+IN_PROC_BROWSER_TEST_P(AccountSelectionModalViewTest,
                        RequestPermissionReturningUser) {
   TestRequestPermission(/*has_display_identifier=*/true,
                         content::IdentityRequestAccount::LoginState::kSignIn);
@@ -958,7 +1151,7 @@ IN_PROC_BROWSER_TEST_F(AccountSelectionModalViewTest,
 
 // Tests that the brand icon view does not hide the brand icon like it does on
 // bubble. This is because we show a placeholder globe icon on modal.
-IN_PROC_BROWSER_TEST_F(AccountSelectionModalViewTest,
+IN_PROC_BROWSER_TEST_P(AccountSelectionModalViewTest,
                        InvalidBrandIconUrlDoesNotHideBrandIcon) {
   SetIdpBrandIcon("invalid url");
   const std::string kAccountSuffix = "suffix";
@@ -974,7 +1167,7 @@ IN_PROC_BROWSER_TEST_F(AccountSelectionModalViewTest,
 
 // Tests that the request permission dialog is rendered correctly, when only IDP
 // icon is available.
-IN_PROC_BROWSER_TEST_F(AccountSelectionModalViewTest,
+IN_PROC_BROWSER_TEST_P(AccountSelectionModalViewTest,
                        RequestPermissionOnlyIdpIconAvailable) {
   TestRequestPermission(/*has_display_identifier=*/true,
                         content::IdentityRequestAccount::LoginState::kSignIn,
@@ -984,7 +1177,7 @@ IN_PROC_BROWSER_TEST_F(AccountSelectionModalViewTest,
 
 // Tests that the request permission dialog is rendered correctly, when only RP
 // icon is available.
-IN_PROC_BROWSER_TEST_F(AccountSelectionModalViewTest,
+IN_PROC_BROWSER_TEST_P(AccountSelectionModalViewTest,
                        RequestPermissionOnlyRpIconAvailable) {
   TestRequestPermission(/*has_display_identifier=*/true,
                         content::IdentityRequestAccount::LoginState::kSignIn,
@@ -994,7 +1187,7 @@ IN_PROC_BROWSER_TEST_F(AccountSelectionModalViewTest,
 
 // Tests that the request permission dialog is rendered correctly, when neither
 // RP nor IDP icon is available.
-IN_PROC_BROWSER_TEST_F(AccountSelectionModalViewTest,
+IN_PROC_BROWSER_TEST_P(AccountSelectionModalViewTest,
                        RequestPermissionNeitherRpNorIdpIconsAvailable) {
   TestRequestPermission(/*has_display_identifier=*/true,
                         content::IdentityRequestAccount::LoginState::kSignIn,
@@ -1003,7 +1196,7 @@ IN_PROC_BROWSER_TEST_F(AccountSelectionModalViewTest,
 
 // Tests that the request permission dialog is rendered correctly, when both RP
 // and IDP icons are available.
-IN_PROC_BROWSER_TEST_F(AccountSelectionModalViewTest,
+IN_PROC_BROWSER_TEST_P(AccountSelectionModalViewTest,
                        RequestPermissionBothRpAndIdpIconsAvailable) {
   TestRequestPermission(/*has_display_identifier=*/true,
                         content::IdentityRequestAccount::LoginState::kSignIn,
@@ -1013,7 +1206,7 @@ IN_PROC_BROWSER_TEST_F(AccountSelectionModalViewTest,
 
 // Tests that the verifying sheet is rendered correctly, for the single account
 // flow if the user clicks the back button during the flow.
-IN_PROC_BROWSER_TEST_F(AccountSelectionModalViewTest, SingleAccountFlowBack) {
+IN_PROC_BROWSER_TEST_P(AccountSelectionModalViewTest, SingleAccountFlowBack) {
   TestSingleAccount();
   TestRequestPermission(/*has_display_identifier=*/true);
 
@@ -1027,7 +1220,7 @@ IN_PROC_BROWSER_TEST_F(AccountSelectionModalViewTest, SingleAccountFlowBack) {
 
 // Tests that the verifying sheet is rendered correctly, for the multiple
 // account flow if the user clicks the back button during the flow.
-IN_PROC_BROWSER_TEST_F(AccountSelectionModalViewTest, MultipleAccountFlowBack) {
+IN_PROC_BROWSER_TEST_P(AccountSelectionModalViewTest, MultipleAccountFlowBack) {
   TestMultipleAccounts();
   TestRequestPermission(/*has_display_identifier=*/true);
 
@@ -1039,7 +1232,7 @@ IN_PROC_BROWSER_TEST_F(AccountSelectionModalViewTest, MultipleAccountFlowBack) {
                      /*expect_visible_combined_icons=*/true);
 }
 
-IN_PROC_BROWSER_TEST_F(AccountSelectionModalViewTest, ErrorDialogTest) {
+IN_PROC_BROWSER_TEST_P(AccountSelectionModalViewTest, ErrorDialogTest) {
   // Generic error without error URL
   TestErrorDialog(u"Can't continue with idp-example.com",
                   u"Something went wrong",
@@ -1139,25 +1332,25 @@ IN_PROC_BROWSER_TEST_F(AccountSelectionModalViewTest, ErrorDialogTest) {
                   GURL(u"https://idp-example.com/more-details"));
 }
 
-IN_PROC_BROWSER_TEST_F(AccountSelectionModalViewTest, OneDisabledAccount) {
+IN_PROC_BROWSER_TEST_P(AccountSelectionModalViewTest, OneDisabledAccount) {
   TestDisabledAccounts(/*account_suffixes=*/{"0"});
 }
 
-IN_PROC_BROWSER_TEST_F(AccountSelectionModalViewTest,
+IN_PROC_BROWSER_TEST_P(AccountSelectionModalViewTest,
                        MultipleDisabledAccounts) {
   TestDisabledAccounts(/*account_suffixes=*/{"0", "1", "2"});
 }
 
-IN_PROC_BROWSER_TEST_F(AccountSelectionModalViewTest,
+IN_PROC_BROWSER_TEST_P(AccountSelectionModalViewTest,
                        OneDisabledAccountAndOneEnabledAccount) {
   TestEnabledAndDisabled(/*has_display_identifier=*/true);
 }
 
-IN_PROC_BROWSER_TEST_F(AccountSelectionModalViewTest, SingleIdentifier) {
+IN_PROC_BROWSER_TEST_P(AccountSelectionModalViewTest, SingleIdentifier) {
   TestEnabledAndDisabled(/*has_display_identifier=*/false);
 }
 
-IN_PROC_BROWSER_TEST_F(AccountSelectionModalViewTest,
+IN_PROC_BROWSER_TEST_P(AccountSelectionModalViewTest,
                        RequestPermissionSingleIdentifier) {
   TestRequestPermission(/*has_display_identifier=*/false,
                         content::IdentityRequestAccount::LoginState::kSignIn,
@@ -1165,43 +1358,303 @@ IN_PROC_BROWSER_TEST_F(AccountSelectionModalViewTest,
                         /*rp_brand_icon_url=*/kRpBrandIconUrl);
 }
 
-IN_PROC_BROWSER_TEST_F(AccountSelectionModalViewTest,
+IN_PROC_BROWSER_TEST_P(AccountSelectionModalViewTest,
                        VerifyingSheetSingleIdentifier) {
   CreateAndShowMultiAccountPicker(/*account_suffixes=*/{"0", "suffix", "2"},
                                   /*has_display_identifier=*/false);
   ShowVerifyingSheet();
 }
 
-IN_PROC_BROWSER_TEST_F(AccountSelectionModalViewTest, IframeTitle) {
+IN_PROC_BROWSER_TEST_P(AccountSelectionModalViewTest, IframeTitle) {
   iframe_for_display_ = kIframeETLDPlusOne;
   // This will also run the header/title tests.
   CreateAccountSelectionModal();
 }
 
-IN_PROC_BROWSER_TEST_F(AccountSelectionModalViewTest, MultipleIdps) {
+IN_PROC_BROWSER_TEST_P(AccountSelectionModalViewTest, MultipleIdps) {
   TestMultipleIdps();
 }
 
-IN_PROC_BROWSER_TEST_F(AccountSelectionModalViewTest,
+IN_PROC_BROWSER_TEST_P(AccountSelectionModalViewTest,
                        MultipleIdpsWithMismatch) {
   TestMultipleIdpsWithMismatch();
 }
 
-IN_PROC_BROWSER_TEST_F(AccountSelectionModalViewTest, MultipleIdpsInIframe) {
+IN_PROC_BROWSER_TEST_P(AccountSelectionModalViewTest, MultipleIdpsInIframe) {
   iframe_for_display_ = kIframeETLDPlusOne;
   TestMultipleIdps();
 }
 
-IN_PROC_BROWSER_TEST_F(AccountSelectionModalViewTest,
+IN_PROC_BROWSER_TEST_P(AccountSelectionModalViewTest,
                        RequestPermissionAfterMultipleIdps) {
   TestMultipleIdps();
   TestRequestPermission(/*has_display_identifier=*/true);
 }
 
-IN_PROC_BROWSER_TEST_F(AccountSelectionModalViewTest,
+IN_PROC_BROWSER_TEST_P(AccountSelectionModalViewTest,
                        MultipleIdpsAfterRequestPermission) {
   TestRequestPermission(/*has_display_identifier=*/true);
   TestMultipleIdps();
+}
+
+IN_PROC_BROWSER_TEST_P(AccountSelectionModalViewTest, IdpPicker) {
+  TestIdpPicker();
+}
+
+IN_PROC_BROWSER_TEST_P(AccountSelectionModalViewTest, IdpPickerInIframe) {
+  iframe_for_display_ = kIframeETLDPlusOne;
+  TestIdpPicker();
+}
+
+IN_PROC_BROWSER_TEST_P(AccountSelectionModalViewTest,
+                       IdpPickerAfterMultipleIdps) {
+  TestMultipleIdps();
+  TestIdpPicker();
+}
+
+// The account chooser must show its own body text again after the IDP picker.
+IN_PROC_BROWSER_TEST_P(AccountSelectionModalViewTest,
+                       MultipleIdpsAfterIdpPicker) {
+  TestIdpPicker();
+  TestMultipleIdps();
+}
+
+// Unlike account rows, an IDP row can be clicked more than once, e.g. to retry
+// after closing the IDP login pop-up.
+IN_PROC_BROWSER_TEST_P(AccountSelectionModalViewTest,
+                       IdpRowCanBeClickedMoreThanOnce) {
+  TestIdpRowCanBeClickedMoreThanOnce();
+}
+
+// Tests that the identity provider's links are only shown with
+// `kFedCmIdpLinks`, even if the identity provider has them.
+IN_PROC_BROWSER_TEST_P(AccountSelectionModalViewTest,
+                       RequestPermissionIdpLinksOnlyWithFlag) {
+  views::View* disclosure_view = ShowRequestPermissionWithIdpLinks(
+      kIdpAccountManagementUrl, kIdpPrivacyPolicyUrl, kIdpTermsOfServiceUrl);
+  if (IsIdpLinksFlagEnabled()) {
+    // Order: Disclosure row, identity provider links row
+    EXPECT_THAT(GetChildClassNames(disclosure_view),
+                testing::ElementsAre("BoxLayoutView", "BoxLayoutView"));
+  } else if (IsContainerFlagEnabled()) {
+    // Order: Disclosure row
+    EXPECT_THAT(GetChildClassNames(disclosure_view),
+                testing::ElementsAre("BoxLayoutView"));
+  } else {
+    EXPECT_EQ(disclosure_view->GetClassName(), "StyledLabel");
+  }
+}
+
+// Runs the request permission sheet with `kFedCmIdpLinks` enabled, with
+// `kFedCmPermissionUiWithContainer` disabled and enabled. The links are shown
+// in the container UI, which `kFedCmIdpLinks` enables either way.
+class AccountSelectionModalViewIdpLinksTest
+    : public AccountSelectionModalViewTest {
+ protected:
+  // Returns the label of a disclosure container `row`, whose children are an
+  // icon and a label, or nullptr if `row` isn't laid out that way.
+  views::StyledLabel* GetRowLabel(views::View* row) {
+    return row->children().size() == 2u
+               ? views::AsViewClass<views::StyledLabel>(row->children()[1])
+               : nullptr;
+  }
+
+  // Returns the first (focusable) fragment of each link in `label`. When a
+  // link wraps across lines, `StyledLabel` marks subsequent fragments as
+  // ignored in accessibility and gives the first fragment the full link text as
+  // its accessible name.
+  std::vector<views::LinkFragment*> GetLinks(views::StyledLabel* label) {
+    views::test::RunScheduledLayout(dialog());
+    std::vector<views::LinkFragment*> links;
+    for (views::View* child : label->children()) {
+      auto* fragment = views::AsViewClass<views::LinkFragment>(child);
+      if (fragment && !fragment->GetViewAccessibility().GetIsIgnored()) {
+        links.push_back(fragment);
+      }
+    }
+    return links;
+  }
+
+  // Returns the text of each link in `label`.
+  std::vector<std::u16string> GetLinkTexts(views::StyledLabel* label) {
+    std::vector<std::u16string> link_texts;
+    for (views::LinkFragment* link : GetLinks(label)) {
+      link_texts.emplace_back(link->GetViewAccessibility().GetCachedName());
+    }
+    return link_texts;
+  }
+
+  // Checks that `container` has a second row with the identity provider's
+  // links, whose text is `expected_text` and whose links have
+  // `expected_link_texts`.
+  void CheckIdpLinksRow(
+      views::View* container,
+      std::u16string_view expected_text,
+      const std::vector<std::u16string>& expected_link_texts) {
+    // Order: Disclosure row, identity provider links row
+    ASSERT_EQ(container->children().size(), 2u);
+    views::StyledLabel* label = GetRowLabel(container->children()[1]);
+    ASSERT_TRUE(label);
+    EXPECT_EQ(label->GetText(), expected_text);
+    EXPECT_EQ(GetLinkTexts(label), expected_link_texts);
+  }
+};
+
+INSTANTIATE_TEST_SUITE_P(All,
+                         AccountSelectionModalViewIdpLinksTest,
+                         testing::Combine(testing::Bool(),
+                                          testing::Values(true)));
+
+// Tests that the identity provider's links are shown in a second row of the
+// container, for whichever of its account management page, privacy policy and
+// terms of service it has.
+IN_PROC_BROWSER_TEST_P(AccountSelectionModalViewIdpLinksTest,
+                       RequestPermissionIdpLinksRow) {
+  views::View* container = ShowRequestPermissionWithIdpLinks(
+      kIdpAccountManagementUrl, kIdpPrivacyPolicyUrl, kIdpTermsOfServiceUrl);
+  // Order: Disclosure row, identity provider links row
+  ASSERT_THAT(GetChildClassNames(container),
+              testing::ElementsAre("BoxLayoutView", "BoxLayoutView"));
+  for (views::View* row : container->children()) {
+    // Order: Icon, text
+    ASSERT_THAT(GetChildClassNames(row),
+                testing::ElementsAre("ImageView", "StyledLabel"));
+  }
+  views::StyledLabel* disclosure_label = GetRowLabel(container->children()[0]);
+  CheckDisclosureText(disclosure_label,
+                      /*expect_terms_of_service=*/true,
+                      /*expect_privacy_policy=*/true);
+  EXPECT_THAT(GetLinkTexts(disclosure_label),
+              testing::ElementsAre(u"privacy policy", u"terms of service"));
+  CheckIdpLinksRow(
+      container,
+      u"You can make changes in your idp-example.com account. See "
+      u"idp-example.com privacy policy and terms of service.",
+      {u"idp-example.com account", u"privacy policy", u"terms of service"});
+  // The container should only be as tall as its content, so that it doesn't
+  // take height away from the button row.
+  views::test::RunScheduledLayout(dialog());
+  EXPECT_EQ(container->height(),
+            container->GetHeightForWidth(container->width()));
+  // `kFedCmIdpLinks` also gives the container UI's style to the button row.
+  CheckButtonRow(dialog()->children()[2], /*expect_continue_button=*/true,
+                 /*expect_add_account_button=*/false,
+                 /*expect_back_button=*/true);
+
+  container = ShowRequestPermissionWithIdpLinks(kIdpAccountManagementUrl,
+                                                /*privacy_policy_url=*/"",
+                                                kIdpTermsOfServiceUrl);
+  CheckIdpLinksRow(container,
+                   u"You can make changes in your idp-example.com account. See "
+                   u"idp-example.com terms of service.",
+                   {u"idp-example.com account", u"terms of service"});
+
+  container = ShowRequestPermissionWithIdpLinks(kIdpAccountManagementUrl,
+                                                kIdpPrivacyPolicyUrl,
+                                                /*terms_of_service_url=*/"");
+  CheckIdpLinksRow(container,
+                   u"You can make changes in your idp-example.com account. See "
+                   u"idp-example.com privacy policy.",
+                   {u"idp-example.com account", u"privacy policy"});
+
+  container = ShowRequestPermissionWithIdpLinks(kIdpAccountManagementUrl,
+                                                /*privacy_policy_url=*/"",
+                                                /*terms_of_service_url=*/"");
+  CheckIdpLinksRow(container,
+                   u"You can make changes in your idp-example.com account.",
+                   {u"idp-example.com account"});
+
+  container = ShowRequestPermissionWithIdpLinks(
+      /*account_management_url=*/"", kIdpPrivacyPolicyUrl,
+      kIdpTermsOfServiceUrl);
+  CheckIdpLinksRow(container,
+                   u"See idp-example.com privacy policy and terms of service.",
+                   {u"privacy policy", u"terms of service"});
+
+  container = ShowRequestPermissionWithIdpLinks(/*account_management_url=*/"",
+                                                kIdpPrivacyPolicyUrl,
+                                                /*terms_of_service_url=*/"");
+  CheckIdpLinksRow(container, u"See idp-example.com privacy policy.",
+                   {u"privacy policy"});
+
+  container = ShowRequestPermissionWithIdpLinks(/*account_management_url=*/"",
+                                                /*privacy_policy_url=*/"",
+                                                kIdpTermsOfServiceUrl);
+  CheckIdpLinksRow(container, u"See idp-example.com terms of service.",
+                   {u"terms of service"});
+
+  // Without any links, there is no second row.
+  container = ShowRequestPermissionWithIdpLinks(/*account_management_url=*/"",
+                                                /*privacy_policy_url=*/"",
+                                                /*terms_of_service_url=*/"");
+  // Order: Disclosure row
+  EXPECT_THAT(GetChildClassNames(container),
+              testing::ElementsAre("BoxLayoutView"));
+}
+
+// Tests that with multiple identity providers, the links row has the links of
+// the selected account's identity provider.
+IN_PROC_BROWSER_TEST_P(AccountSelectionModalViewIdpLinksTest,
+                       RequestPermissionIdpLinksMultipleIdps) {
+  // Only the second identity provider has links.
+  idp_data()->idp_metadata.account_management_url = GURL();
+  idp_data()->idp_metadata.privacy_policy_url = GURL();
+  idp_data()->idp_metadata.terms_of_service_url = GURL();
+  auto idp_data_2 = base::MakeRefCounted<content::IdentityProviderData>(
+      kSecondIdpForDisplay, content::IdentityProviderMetadata(),
+      CreateTestClientMetadata(), blink::mojom::RpContext::kSignIn,
+      /*format=*/std::nullopt, kDefaultDisclosureFields,
+      /*has_login_status_mismatch=*/false);
+  idp_data_2->idp_metadata.terms_of_service_url = GURL(kIdpTermsOfServiceUrl);
+  std::vector<IdentityRequestAccountPtr> accounts = {
+      CreateTestIdentityRequestAccount("1", idp_data()),
+      CreateTestIdentityRequestAccount("2", idp_data_2)};
+  CreateAndShowMultiIdpPicker(accounts, {idp_data(), idp_data_2});
+
+  // Dialog order: Header, single account chooser, button row.
+  // Account chooser order: Account row, disclosure text.
+  dialog()->ShowRequestPermissionDialog(accounts[1]);
+  CheckIdpLinksRow(dialog()->children()[1]->children()[1],
+                   u"See idp2.com terms of service.", {u"terms of service"});
+
+  // The first identity provider has no links, so there is no links row.
+  dialog()->ShowRequestPermissionDialog(accounts[0]);
+  // Order: Disclosure row
+  EXPECT_THAT(GetChildClassNames(dialog()->children()[1]->children()[1]),
+              testing::ElementsAre("BoxLayoutView"));
+}
+
+// Tests that each of the identity provider's links opens its URL in a new
+// foreground tab, without recording the RP's link metrics.
+IN_PROC_BROWSER_TEST_P(AccountSelectionModalViewIdpLinksTest, ClickIdpLinks) {
+  base::HistogramTester histogram_tester;
+  views::View* container = ShowRequestPermissionWithIdpLinks(
+      kIdpAccountManagementUrl, kIdpPrivacyPolicyUrl, kIdpTermsOfServiceUrl);
+  ASSERT_EQ(container->children().size(), 2u);
+  views::StyledLabel* label = GetRowLabel(container->children()[1]);
+  ASSERT_TRUE(label);
+  std::vector<views::LinkFragment*> links = GetLinks(label);
+  const std::array<const char*, 3> expected_urls = {
+      kIdpAccountManagementUrl, kIdpPrivacyPolicyUrl, kIdpTermsOfServiceUrl};
+  ASSERT_EQ(links.size(), expected_urls.size());
+  AcceptAllInput();
+
+  TabStripModel* tab_strip_model = browser()->GetTabStripModel();
+  const int rp_tab_index = tab_strip_model->active_index();
+  for (size_t i = 0; i < links.size(); ++i) {
+    links[i]->OnKeyPressed(
+        ui::KeyEvent(ui::EventType::kKeyPressed, ui::VKEY_SPACE, ui::EF_NONE));
+    EXPECT_EQ(tab_strip_model->GetActiveWebContents()->GetVisibleURL(),
+              GURL(expected_urls[i]));
+    tab_strip_model->ActivateTabAt(rp_tab_index);
+  }
+  // The RP's tab, plus one tab per link.
+  EXPECT_EQ(static_cast<size_t>(tab_strip_model->count()),
+            expected_urls.size() + 1);
+  histogram_tester.ExpectTotalCount("Blink.FedCm.SignUp.PrivacyPolicyClicked",
+                                    0);
+  histogram_tester.ExpectTotalCount("Blink.FedCm.SignUp.TermsOfServiceClicked",
+                                    0);
 }
 
 }  //  namespace webid

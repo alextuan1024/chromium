@@ -142,6 +142,16 @@ class CONTENT_EXPORT WebBluetoothServiceImpl
                            DestroyedDuringRequestDeviceReset);
   FRIEND_TEST_ALL_PREFIXES(WebBluetoothServiceImplTest,
                            DestroyedDuringRequestScanningStart);
+  FRIEND_TEST_ALL_PREFIXES(WebBluetoothServiceImplTest,
+                           RequestDeviceWithoutUserActivation);
+  FRIEND_TEST_ALL_PREFIXES(WebBluetoothServiceImplTest,
+                           RequestDeviceDoesNotConsumeUserActivation);
+  FRIEND_TEST_ALL_PREFIXES(WebBluetoothServiceImplTest,
+                           RequestDeviceWhenDocumentNotActive);
+  FRIEND_TEST_ALL_PREFIXES(WebBluetoothServiceImplTest,
+                           RequestScanningStartWithoutUserActivation);
+  FRIEND_TEST_ALL_PREFIXES(WebBluetoothServiceImplTest,
+                           RequestScanningStartWhenDocumentNotActive);
   FRIEND_TEST_ALL_PREFIXES(WebBluetoothServiceImplTest, PermissionAllowed);
   FRIEND_TEST_ALL_PREFIXES(WebBluetoothServiceImplTest,
                            PermissionPromptCanceled);
@@ -471,6 +481,10 @@ class CONTENT_EXPORT WebBluetoothServiceImpl
 
   // Clears state associated with Bluetooth LE Scanning.
   void ClearAdvertisementClients();
+
+  // Cleans up active GATT connections, notify sessions, and watch
+  // advertisement clients associated with `device_id`.
+  void CleanupDeviceState(const blink::WebBluetoothDeviceId& device_id);
 
   // Returns true if the device identified by |device_id| has permission to be
   // accessed. Checks either the new permissions backend (BluetoothDelegate) or

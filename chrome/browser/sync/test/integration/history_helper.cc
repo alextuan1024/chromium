@@ -343,7 +343,7 @@ std::vector<sync_pb::HistorySpecifics> SyncEntitiesToHistorySpecifics(
     std::vector<sync_pb::SyncEntity> entities) {
   std::vector<sync_pb::HistorySpecifics> history;
   for (sync_pb::SyncEntity& entity : entities) {
-    DCHECK(entity.specifics().has_history());
+    CHECK(entity.specifics().has_history(), base::NotFatalUntil::M163);
     history.push_back(std::move(entity.specifics().history()));
   }
   return history;
@@ -434,6 +434,7 @@ LocalHistoryMatchChecker::LocalHistoryMatchChecker(
 LocalHistoryMatchChecker::~LocalHistoryMatchChecker() = default;
 
 bool LocalHistoryMatchChecker::IsExitConditionSatisfied(std::ostream* os) {
+  *os << "Waiting for local history visits to match: ";
   for (const auto& [url, matcher] : matchers_) {
     history::VisitVector visits =
         GetVisitsForURLFromClient(profile_index_, url);
@@ -465,6 +466,7 @@ void ServerHistoryMatchChecker::OnCommit(
 }
 
 bool ServerHistoryMatchChecker::IsExitConditionSatisfied(std::ostream* os) {
+  *os << "Waiting for server history entities to match: ";
   std::vector<sync_pb::HistorySpecifics> entities =
       SyncEntitiesToHistorySpecifics(
           fake_server()->GetSyncEntitiesByDataType(syncer::HISTORY));

@@ -448,7 +448,8 @@ class AutofillManager
   virtual bool CanShowAutofillUi() const;
 
   // Forwards call to the same-named `AutofillDriver` function.
-  virtual void TriggerFormExtractionInAllFrames(
+  void TriggerFormExtractionInAllFrames(
+      bool force,
       base::OnceCallback<void(bool success)> form_extraction_finished_callback);
 
   // Returns server predictions for fields identified by `field_ids` in a form
@@ -487,11 +488,8 @@ class AutofillManager
 
   AutofillDriver& driver() { return *driver_; }
 
-  // Reparses all known forms.
-  virtual void ReparseKnownForms();
-
-  // After subscribing, FieldClassificationModelHandler::OnModelUpdated() will
-  // trigger ReparseKnownForms(). There may be a handler for Autofill and/or
+  // After subscribing, `FieldClassificationModelHandler::OnModelUpdated()` will
+  // trigger form extraction. There may be a handler for Autofill and/or
   // Password Manager.
   void SubscribeToMlModelChanges(FieldClassificationModelHandler& handler);
 
@@ -624,8 +622,8 @@ class AutofillManager
   void RunMlModels(AsyncContext context,
                    base::OnceCallback<void(AsyncContext)> done_callback);
 
-  // Triggers the server predictions query for all `forms` that
-  // `ShouldBeQueried()`.
+  // Triggers the server predictions query for all `forms` that have
+  // `FormParsingPermission::kServerQuery`.
   void QueryServerPredictions(base::span<const FormData> forms,
                               base::TimeTicks form_seen_timestamp);
 

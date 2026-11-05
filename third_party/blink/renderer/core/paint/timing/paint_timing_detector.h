@@ -27,7 +27,6 @@ class ImageResourceContent;
 class LayoutBoxModelObject;
 class LayoutObject;
 class MediaTiming;
-class Node;
 class PaintTiming;
 class PropertyTreeStateOrAlias;
 class StyleFetchedImage;
@@ -55,7 +54,7 @@ class CORE_EXPORT PaintTimingDetector
   // Callback from the paint layer when a background image has been painted.
   // Updates paint timing state for the element if needed.
   static void NotifyBackgroundImagePaint(
-      Node&,
+      const LayoutObject& image_layout_object,
       const Image&,
       const StyleImage&,
       const PropertyTreeStateOrAlias& current_paint_chunk_properties,
@@ -65,7 +64,7 @@ class CORE_EXPORT PaintTimingDetector
   // poster image) has been painted. Updates paint timing state for the element
   // if needed.
   static void NotifyImagePaint(
-      const LayoutObject&,
+      const LayoutObject& image_layout_object,
       const gfx::Size& intrinsic_size,
       const MediaTiming& media_timing,
       const PropertyTreeStateOrAlias& current_paint_chunk_properties,
@@ -96,6 +95,7 @@ class CORE_EXPORT PaintTimingDetector
   void NotifyImageFinished(const LayoutObject&, const MediaTiming*);
   void NotifyBackgroundImageFinished(const StyleFetchedImage*);
   void NotifyImageRemoved(const LayoutObject&, const ImageResourceContent*);
+  void NotifyWillPaint();
   void NotifyPaintFinished();
 
   void DidChangePerformanceTiming();
@@ -118,15 +118,15 @@ class CORE_EXPORT PaintTimingDetector
   }
   PaintTiming& GetPaintTiming() { return *paint_timing_; }
 
-  // Reports the largest image and text candidates painted under non-nested 0
-  // opacity layer.
-  void ReportIgnoredContent();
-
   PaintTimingVisualizer* Visualizer() { return visualizer_.get(); }
 
  private:
   FRIEND_TEST_ALL_PREFIXES(ImagePaintTimingDetectorTest,
                            LargestImagePaint_Detached_Frame);
+
+  // Reports the largest image and text candidates painted under non-nested 0
+  // opacity layer.
+  void ReportIgnoredContent();
 
   // Returns the `LocalDOMWindow` associated with the relevant document, or
   // nullptr if the associated frame is detached.

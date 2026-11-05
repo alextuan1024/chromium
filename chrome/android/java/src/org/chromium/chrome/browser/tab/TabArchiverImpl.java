@@ -93,6 +93,7 @@ public class TabArchiverImpl implements TabArchiver {
     @Override
     public void destroy() {
         mCallbackController.destroy();
+        mObservers.clear();
     }
 
     @Override
@@ -671,8 +672,6 @@ public class TabArchiverImpl implements TabArchiver {
             }
             // Strip the parent id to avoid ordering issues within the tab model.
             tabState.parentId = Tab.INVALID_TAB_ID;
-            // Strip the root id to avoid reusing the old rootId from the tab state file.
-            tabState.rootId = Tab.INVALID_TAB_ID;
             return tabState;
         }
     }
@@ -680,17 +679,15 @@ public class TabArchiverImpl implements TabArchiver {
     @VisibleForTesting
     void ensureArchivedTabsHaveCorrectFields() {
         for (Tab archivedTab : mArchivedTabModel) {
-            // Archived tabs shouldn't have a root id or parent id. It's possible that there's
-            // stale data around for clients that have archived tabs prior to crrev.com/c/5750590
-            // landing. Fix those fields so that they're corrected in the tab state file.
-            archivedTab.setRootId(archivedTab.getId());
+            // Archived tabs shouldn't have a parent id. It's possible that there's stale data
+            // around for clients that have archived tabs prior to crrev.com/c/5750590 landing. Fix
+            // that field so that it's corrected in the tab state file.
             archivedTab.setParentId(Tab.INVALID_TAB_ID);
         }
     }
 
     private void broadcastDeclutterComplete() {
-        PostTask.postTask(
-                TaskTraits.UI_DEFAULT,
+        postUiThreadCancellableTask(
                 () -> {
                     for (Observer obs : mObservers) {
                         obs.onDeclutterPassCompleted();
@@ -703,8 +700,7 @@ public class TabArchiverImpl implements TabArchiver {
     }
 
     private void broadcastPersistedTabDataCreated() {
-        PostTask.postTask(
-                TaskTraits.UI_DEFAULT,
+        postUiThreadCancellableTask(
                 () -> {
                     for (Observer obs : mObservers) {
                         obs.onArchivePersistedTabDataCreated();
@@ -713,8 +709,7 @@ public class TabArchiverImpl implements TabArchiver {
     }
 
     private void broadcastAutodeletePassComplete() {
-        PostTask.postTask(
-                TaskTraits.UI_DEFAULT,
+        postUiThreadCancellableTask(
                 () -> {
                     for (Observer obs : mObservers) {
                         obs.onAutodeletePassCompleted();

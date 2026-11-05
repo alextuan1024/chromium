@@ -14,7 +14,7 @@
 #include "base/rand_util.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/task/sequenced_task_runner.h"
-#include "components/safe_browsing/content/browser/content_unsafe_resource_util.h"
+#include "components/safe_browsing/content/browser/interstitials/content_unsafe_resource_util.h"
 #include "components/safe_browsing/content/browser/triggers/trigger_manager.h"
 #include "components/safe_browsing/content/browser/triggers/trigger_throttler.h"
 #include "components/safe_browsing/content/browser/triggers/trigger_util.h"
@@ -89,7 +89,6 @@ AdSamplerTrigger::AdSamplerTrigger(
     history::HistoryService* history_service,
     ReferrerChainProvider* referrer_chain_provider)
     : content::WebContentsObserver(web_contents),
-      content::WebContentsUserData<AdSamplerTrigger>(*web_contents),
       sampler_frequency_denominator_(GetSamplerFrequencyDenominator()),
       start_report_delay_ms_(
           base::RandIntInclusive(kMinAdSampleCollectionStartDelayMilliseconds,
@@ -185,7 +184,5 @@ void AdSamplerTrigger::SetTaskRunnerForTest(
     scoped_refptr<base::SequencedTaskRunner> task_runner) {
   task_runner_ = task_runner;
 }
-
-WEB_CONTENTS_USER_DATA_KEY_IMPL(AdSamplerTrigger);
 
 }  // namespace safe_browsing

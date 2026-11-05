@@ -481,14 +481,7 @@ TEST_P(IndexedDBTest, CloseAfterUpgrade) {
   loop.Run();
 }
 
-// TODO(crbug.com/40813013): Test is flaky on Mac in debug.
-#if BUILDFLAG(IS_MAC) && !defined(NDEBUG)
-#define MAYBE_OpenNewConnectionWhileUpgrading \
-  DISABLED_OpenNewConnectionWhileUpgrading
-#else
-#define MAYBE_OpenNewConnectionWhileUpgrading OpenNewConnectionWhileUpgrading
-#endif
-TEST_P(IndexedDBTest, MAYBE_OpenNewConnectionWhileUpgrading) {
+TEST_P(IndexedDBTest, OpenNewConnectionWhileUpgrading) {
   const int64_t kDBVersion = 1;
   const int64_t kTransactionId = 1;
   const int64_t kObjectStoreId = 10;
@@ -903,8 +896,9 @@ TEST_P(IndexedDBTest, NotifyIndexedDBContentChanged) {
   EXPECT_EQ(2, observer.notify_content_changed_count);
 }
 
-// The test is flaky. See https://crbug.com/324282438
-TEST_P(IndexedDBTest, DISABLED_DatabaseOperationSequencing) {
+// Verifies that database operations (create, delete, and re-create object
+// stores) within an upgrade transaction execute in the correct sequence.
+TEST_P(IndexedDBTest, DatabaseOperationSequencing) {
   const std::u16string kObjectStoreName1 = u"os1";
   const std::u16string kObjectStoreName2 = u"os2";
   const std::u16string kObjectStoreName3 = u"os3";
@@ -1192,6 +1186,9 @@ TEST_P(IndexedDBTestWithBucketType, ForceCloseOpenDatabasesOnDelete) {
       "IndexedDB.BackendDuration.CloseBackingStore.OnDisk", 1);
   histograms.ExpectUniqueSample("IndexedDB.DeleteBucketDataSuccess.OnDisk",
                                 true, 1);
+  histograms.ExpectUniqueSample(
+      "IndexedDB.BackingStore.ResetReason.OnDisk",
+      BucketContext::BackingStoreResetReason::kBucketDeletion, 1);
 }
 
 // Verifies that the IDB connection is force closed when the backing store has
@@ -1204,10 +1201,26 @@ TEST_P(IndexedDBTest, ForceCloseOpenDatabasesOnDatabaseError) {
             BucketContext* bucket = test->GetBucketContext(bucket_info->id);
             const auto& dbs = bucket->GetDatabasesForTesting();
             ASSERT_EQ(1U, dbs.size());
+            base::HistogramTester histograms;
+            test->NudgeBackingStoreCloseLogic(bucket);
+            histograms.ExpectUniqueSample(
+                "IndexedDB.BackingStore.DatabaseError.OnDisk",
+                /*Status::Type::kOk=*/0, 1);
             for (auto& [name, db] : dbs) {
               bucket->OnDatabaseError(
                   db.get(), Status::InvalidArgument("operation not supported"),
                   std::string());
+            }
+            histograms.ExpectBucketCount(
+                "IndexedDB.BackingStore.DatabaseError.OnDisk",
+                /*Status::Type::kInvalidArgument=*/3, 1);
+            if (test->IsSqliteBackingStoreEnabled()) {
+              histograms.ExpectTotalCount(
+                  "IndexedDB.BackingStore.ResetReason.OnDisk", 0);
+            } else {
+              histograms.ExpectUniqueSample(
+                  "IndexedDB.BackingStore.ResetReason.OnDisk",
+                  BucketContext::BackingStoreResetReason::kDatabaseError, 1);
             }
           },
           this, &bucket_info),
@@ -1603,10 +1616,14 @@ TEST_P(IndexedDBTest, TooLongOrigin) {
 }
 
 TEST_P(IndexedDBTest, FactoryForceClose) {
+  base::HistogramTester histograms;
   base::WeakPtr<BucketContext> bucket_context = InitBucketContext();
   BucketLocator bucket_locator = bucket_context->bucket_locator();
 
   bucket_context->ForceClose(/*doom=*/false);
+  histograms.ExpectUniqueSample(
+      "IndexedDB.BackingStore.ResetReason.OnDisk",
+      BucketContext::BackingStoreResetReason::kInternalsPage, 1);
   // Weak pointer is immediately invalidated.
   EXPECT_FALSE(bucket_context);
 

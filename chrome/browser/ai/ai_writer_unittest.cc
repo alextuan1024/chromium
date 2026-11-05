@@ -26,7 +26,6 @@
 #include "components/optimization_guide/core/model_execution/test/feature_config_builder.h"
 #include "components/optimization_guide/core/model_execution/test/mock_on_device_capability.h"
 #include "components/optimization_guide/core/optimization_guide_proto_util.h"
-#include "components/optimization_guide/core/optimization_guide_switches.h"
 #include "components/optimization_guide/core/optimization_guide_util.h"
 #include "components/optimization_guide/proto/feature_configs.pb.h"
 #include "components/optimization_guide/proto/features/writing_assistance_api.pb.h"
@@ -50,7 +49,6 @@ using ::blink::mojom::AILanguageCode;
 using ::blink::mojom::AILanguageCodePtr;
 using ::on_device_model::mojom::PerformanceClass;
 using ::optimization_guide::FieldSubstitution;
-using ::optimization_guide::ForbidUnsafe;
 using ::optimization_guide::ProtoField;
 using ::optimization_guide::StringValueField;
 using ::optimization_guide::proto::WritingAssistanceApiRequest;
@@ -117,36 +115,9 @@ blink::mojom::AIWriterCreateOptionsPtr GetDefaultOptions() {
       /*output_language=*/AILanguageCode::New(""));
 }
 
-optimization_guide::proto::FeatureTextSafetyConfiguration CreateSafetyConfig() {
-  optimization_guide::proto::FeatureTextSafetyConfiguration safety_config;
-  safety_config.set_feature(optimization_guide::proto::
-                                MODEL_EXECUTION_FEATURE_WRITING_ASSISTANCE_API);
-  safety_config.mutable_safety_category_thresholds()->Add(ForbidUnsafe());
-  {
-    auto* check = safety_config.add_request_check();
-    check->mutable_input_template()->Add(FieldSubstitution(
-        "%s", ProtoField({WritingAssistanceApiRequest::kContextFieldNumber})));
-  }
-  {
-    auto* check = safety_config.add_request_check();
-    check->mutable_input_template()->Add(FieldSubstitution(
-        "%s",
-        ProtoField({WritingAssistanceApiRequest::kSharedContextFieldNumber})));
-  }
-  {
-    auto* check = safety_config.add_request_check();
-    check->mutable_input_template()->Add(FieldSubstitution(
-        "%s",
-        ProtoField({WritingAssistanceApiRequest::kInstructionsFieldNumber})));
-  }
-
-  return safety_config;
-}
-
 optimization_guide::proto::OnDeviceModelExecutionFeatureConfig
 CreateWriterConfig() {
   optimization_guide::proto::OnDeviceModelExecutionFeatureConfig config;
-  config.set_can_skip_text_safety(true);
   config.set_feature(optimization_guide::proto::ModelExecutionFeature::
                          MODEL_EXECUTION_FEATURE_WRITING_ASSISTANCE_API);
 
@@ -182,7 +153,6 @@ class AIWriterTest : public AITestUtils::AITestBase {
   proto::SolutionConfig CreateSolution() override {
     proto::SolutionConfig solution_config;
     *solution_config.mutable_feature() = CreateWriterConfig();
-    *solution_config.mutable_safety() = CreateSafetyConfig();
     return solution_config;
   }
 
@@ -356,28 +326,6 @@ TEST_F(AIWriterTest, CreateWriterModelNotEligible) {
   EXPECT_EQ(result.error().error,
             blink::mojom::AIManagerCreateClientError::kUnableToCreateSession);
 }
-
-#if BUILDFLAG(IS_ANDROID)
-TEST_F(AIWriterTest, CreateWriterSafetyConfigNotAvailable) {
-  SetSolutionConfig([&]() {
-    auto solution_config = CreateSolution();
-    solution_config.mutable_feature()->set_can_skip_text_safety(false);
-    // Provide a safety asset that does not support writer.
-    solution_config.mutable_safety()->set_feature(
-        optimization_guide::proto::MODEL_EXECUTION_FEATURE_TEST);
-    return solution_config;
-  }());
-
-  TestCreateWriterClient create_writer_client;
-  GetAIManagerRemote()->CreateWriter(
-      create_writer_client.BindNewPipeAndPassRemote(), GetDefaultOptions(),
-      /*monitor=*/mojo::NullRemote());
-
-  CreateWriterResult result = create_writer_client.result().Take();
-  EXPECT_EQ(result.error().error,
-            blink::mojom::AIManagerCreateClientError::kUnableToCreateSession);
-}
-#endif
 
 TEST_F(AIWriterTest, CreateWriterUnableToCalculateTokenSize) {
   // Incorrect `request_base_name` cause session to fail constructing input
@@ -568,116 +516,6 @@ TEST_F(AIWriterTest, Priority) {
               ElementsAre("hi"));
 }
 
-TEST_F(AIWriterTest, TextSafetyInput) {
-  SetSolutionConfig([&]() {
-    auto solution_config = CreateSolution();
-    solution_config.mutable_feature()->set_can_skip_text_safety(false);
-    return solution_config;
-  }());
-
-  fake_broker_->settings().set_execute_result({"hi"});
-  auto writer_remote = GetAIWriterRemote();
-  EXPECT_THAT(Write(*writer_remote, kInputString, kContextString),
-              ElementsAre("hi"));
-
-  AITestUtils::TestStreamingResponder responder;
-  writer_remote->Write("unsafe", kContextString, responder.BindRemote());
-  EXPECT_FALSE(responder.WaitForCompletion());
-  EXPECT_EQ(responder.error_status(),
-            blink::mojom::ModelStreamingResponseStatus::kErrorFiltered);
-}
-
-TEST_F(AIWriterTest, TextSafetyContext) {
-  SetSolutionConfig([&]() {
-    auto solution_config = CreateSolution();
-    solution_config.mutable_feature()->set_can_skip_text_safety(false);
-    return solution_config;
-  }());
-
-  fake_broker_->settings().set_execute_result({"hi"});
-  auto writer_remote = GetAIWriterRemote();
-  EXPECT_THAT(Write(*writer_remote, kInputString, kContextString),
-              ElementsAre("hi"));
-
-  AITestUtils::TestStreamingResponder responder;
-  writer_remote->Write(kInputString, "unsafe", responder.BindRemote());
-  EXPECT_FALSE(responder.WaitForCompletion());
-  EXPECT_EQ(responder.error_status(),
-            blink::mojom::ModelStreamingResponseStatus::kErrorFiltered);
-}
-
-TEST_F(AIWriterTest, TextSafetySharedContext) {
-  SetSolutionConfig([&]() {
-    auto solution_config = CreateSolution();
-    solution_config.mutable_feature()->set_can_skip_text_safety(false);
-    return solution_config;
-  }());
-
-  const auto options = blink::mojom::AIWriterCreateOptions::New(
-      "unsafe", blink::mojom::AIWriterTone::kNeutral,
-      blink::mojom::AIWriterFormat::kPlainText,
-      blink::mojom::AIWriterLength::kMedium,
-      /*expected_input_languages=*/std::vector<AILanguageCodePtr>(),
-      /*expected_context_languages=*/std::vector<AILanguageCodePtr>(),
-      /*output_language=*/AILanguageCode::New(""));
-
-  mojo::Remote<blink::mojom::AIWriter> writer_remote =
-      GetAIWriterRemote(options.Clone());
-  AITestUtils::TestStreamingResponder responder;
-  writer_remote->Write(kInputString, kContextString, responder.BindRemote());
-  EXPECT_FALSE(responder.WaitForCompletion());
-  EXPECT_EQ(responder.error_status(),
-            blink::mojom::ModelStreamingResponseStatus::kErrorFiltered);
-}
-
-TEST_F(AIWriterTest, TextSafetyOutput) {
-  SetSolutionConfig([&]() {
-    auto solution_config = CreateSolution();
-    solution_config.mutable_feature()->set_can_skip_text_safety(false);
-    solution_config.mutable_safety()
-        ->mutable_partial_output_checks()
-        ->set_minimum_tokens(1000);
-    return solution_config;
-  }());
-
-  // Fake text safety checker looks for the string "unsafe".
-  fake_broker_->settings().set_execute_result(
-      {"a", "b", "c", "d", "e", "f", "g", "unsafe", "h"});
-  auto writer_remote = GetAIWriterRemote();
-  AITestUtils::TestStreamingResponder responder;
-  writer_remote->Write(kInputString, kContextString, responder.BindRemote());
-  EXPECT_FALSE(responder.WaitForCompletion());
-  EXPECT_EQ(responder.error_status(),
-            blink::mojom::ModelStreamingResponseStatus::kErrorFiltered);
-  EXPECT_TRUE(responder.responses().empty());
-}
-
-TEST_F(AIWriterTest, TextSafetyOutputPartial) {
-  SetSolutionConfig([&]() {
-    auto solution_config = CreateSolution();
-    solution_config.mutable_feature()->set_can_skip_text_safety(false);
-    solution_config.mutable_safety()
-        ->mutable_partial_output_checks()
-        ->set_minimum_tokens(3);
-    solution_config.mutable_safety()
-        ->mutable_partial_output_checks()
-        ->set_token_interval(2);
-    return solution_config;
-  }());
-
-  // Fake text safety checker looks for the string "unsafe".
-  fake_broker_->settings().set_execute_result(
-      {"a", "b", "c", "d", "e", "f", "g", "unsafe", "h"});
-  auto writer_remote = GetAIWriterRemote();
-  AITestUtils::TestStreamingResponder responder;
-  writer_remote->Write(kInputString, kContextString, responder.BindRemote());
-  EXPECT_FALSE(responder.WaitForCompletion());
-  EXPECT_EQ(responder.error_status(),
-            blink::mojom::ModelStreamingResponseStatus::kErrorFiltered);
-  // Partial checks should still allow some output to stream.
-  EXPECT_THAT(responder.responses(), ElementsAre("abc", "de", "fg"));
-}
-
 TEST_F(AIWriterTest, ServiceCrash) {
   fake_broker_->settings().set_execute_result({"hi"});
 
@@ -844,11 +682,10 @@ class AIWriterWithFeatureConfigTest : public AIWriterTest {
                 proto::BaseModelRecipe::PERFORMANCE_HINT_HIGHEST_QUALITY,
                 {}, kDefaultMaxTokens),
             optimization_guide::FakeBaseModelAsset::Content{}, "1.0.0.0")
-        .AddSafetyModel("safety")
-        .AddSafeSolution("writing_assistance_api", "base", "safety",
-                         default_solution)
-        .AddSafeSolution("writing_assistance_gemma4", "gemma4_base", "safety",
-                         default_solution)
+        .AddUnsafeSolution("writing_assistance_api", "base",
+                           default_solution)
+        .AddUnsafeSolution("writing_assistance_gemma4", "gemma4_base",
+                           default_solution)
         .SetFeatureConfig("writing_assistance_api",
                           optimization_guide::AnyWrapProto(writer_cfg))
         .Finish();

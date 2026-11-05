@@ -31,6 +31,7 @@ export interface ContentBrowserProxy {
   onNodeWillBeDeleted: ChromeEvent<(nodeId: number) => void>;
   onMainFrameSameDocumentNavigation: ChromeEvent<(url: string) => void>;
   onRenderedTextMappingReady: ChromeEvent<() => void>;
+  onTranslationStateChanged: ChromeEvent<() => void>;
 
   showEmpty: ChromeEvent<() => void>;
   showLoading: ChromeEvent<() => void>;
@@ -71,10 +72,14 @@ export interface ContentBrowserProxy {
 
   hasValidSelection(): boolean;
   isReadabilityEnabled(): boolean;
-  isReadabilitySelectTextEnabled(): boolean;
+  isContentTranslated(): boolean;
+  isTranslatePdfEnabled(): boolean;
+  isReadAnythingSendFeedbackEnabled(): boolean;
   isGoogleDocs(): boolean;
   isLeafNode(nodeId: number): boolean;
   isOverline(nodeId: number): boolean;
+  isSuperscript(nodeId: number): boolean;
+  isSubscript(nodeId: number): boolean;
   shouldBold(nodeId: number): boolean;
   requiresDistillation(): boolean;
 
@@ -90,6 +95,7 @@ export interface ContentBrowserProxy {
       anchorNodeId: number, anchorOffset: number, focusNodeId: number,
       focusOffset: number): void;
   onScroll(scrollingOnSelection: boolean): void;
+  onSendFeedback(): void;
 }
 
 export class ContentBrowserProxyImpl implements ContentBrowserProxy {
@@ -99,6 +105,7 @@ export class ContentBrowserProxyImpl implements ContentBrowserProxy {
   onMainFrameSameDocumentNavigation =
       new EventForwarder<(url: string) => void>();
   onRenderedTextMappingReady = new EventForwarder<() => void>();
+  onTranslationStateChanged = new EventForwarder<() => void>();
   showEmpty = new EventForwarder<() => void>();
   showLoading = new EventForwarder<() => void>();
   updateImages = new EventForwarder<() => void>();
@@ -125,6 +132,10 @@ export class ContentBrowserProxyImpl implements ContentBrowserProxy {
 
     chrome.readingMode.onRenderedTextMappingReady = () => {
       this.onRenderedTextMappingReady.forward();
+    };
+
+    chrome.readingMode.onTranslationStateChanged = () => {
+      this.onTranslationStateChanged.forward();
     };
 
     chrome.readingMode.showEmpty = () => {
@@ -176,8 +187,16 @@ export class ContentBrowserProxyImpl implements ContentBrowserProxy {
     return chrome.readingMode.isReadabilityEnabled;
   }
 
-  isReadabilitySelectTextEnabled(): boolean {
-    return chrome.readingMode.isReadabilitySelectTextEnabled;
+  isContentTranslated(): boolean {
+    return chrome.readingMode.isContentTranslated;
+  }
+
+  isTranslatePdfEnabled(): boolean {
+    return chrome.readingMode.isTranslatePdfEnabled;
+  }
+
+  isReadAnythingSendFeedbackEnabled(): boolean {
+    return chrome.readingMode.isReadAnythingSendFeedbackEnabled;
   }
 
   isGoogleDocs(): boolean {
@@ -190,6 +209,14 @@ export class ContentBrowserProxyImpl implements ContentBrowserProxy {
 
   isOverline(nodeId: number): boolean {
     return chrome.readingMode.isOverline(nodeId);
+  }
+
+  isSuperscript(nodeId: number): boolean {
+    return chrome.readingMode.isSuperscript(nodeId);
+  }
+
+  isSubscript(nodeId: number): boolean {
+    return chrome.readingMode.isSubscript(nodeId);
   }
 
   shouldBold(nodeId: number): boolean {
@@ -321,6 +348,10 @@ export class ContentBrowserProxyImpl implements ContentBrowserProxy {
 
   onDistilled(wordCount: number): void {
     chrome.readingMode.onDistilled(wordCount);
+  }
+
+  onSendFeedback(): void {
+    chrome.readingMode.onSendFeedback();
   }
 
   static getInstance(): ContentBrowserProxy {

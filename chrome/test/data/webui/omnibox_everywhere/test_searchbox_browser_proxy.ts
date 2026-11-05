@@ -28,6 +28,7 @@ export function createDefaultInputState(): InputState {
     maxInputsByType: {},
     maxTotalInputs: 0,
     isCanvasQuerySubmitted: false,
+    willFulfillInAim: true,
   };
 }
 
@@ -47,12 +48,16 @@ export class TestSearchboxBrowserProxy {
     });
     this.handler.setPromiseResolveFor<'getSmartTabSharingActive'>(
         'getSmartTabSharingActive', {active: false});
+    this.handler.setPromiseResolveFor<'resetSmartTabSharing'>(
+        'resetSmartTabSharing', {active: false});
     this.handler.setPromiseResolveFor<'getPageClassification'>(
         'getPageClassification', {metricSource: 'OMNIBOX_EVERYWHERE'});
     this.handler.setPromiseResolveFor<'startScreenshare'>(
         'startScreenshare', {token: null});
     this.handler.setPromiseResolveFor<'captureRegionScreenshot'>(
         'captureRegionScreenshot', {token: null});
+    this.handler.setPromiseResolveFor<'showHotkeyDropdown'>(
+        'showHotkeyDropdown', undefined);
   }
 
   initVisibilityPrefs() {

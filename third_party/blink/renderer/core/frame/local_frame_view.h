@@ -172,6 +172,10 @@ class CORE_EXPORT LocalFrameView final
     // be clean but don't need to update state that is pushed further in the
     // rendering pipeline.
     virtual void DidFinishPostLifecycleSteps(const LocalFrameView&) {}
+
+    // Called when the LocalFrameView is being disposed (e.g. during
+    // Document::Shutdown).
+    virtual void WillDisposeView() {}
   };
 
   explicit LocalFrameView(LocalFrame&);
@@ -306,7 +310,7 @@ class CORE_EXPORT LocalFrameView final
   std::optional<NaturalSizingInfo> GetNaturalDimensions() const override;
   void ClearNaturalDimensions() override;
 
-  void Dispose() override;
+  void Dispose();
   void ZoomFactorChanged(float zoom_factor) override;
   void InvalidateAllCustomScrollbarsOnActiveChanged();
 
@@ -364,7 +368,6 @@ class CORE_EXPORT LocalFrameView final
 
   void DidAttachDocument();
 
-  void ClearRootScroller();
   void InitializeRootScroller();
 
   void AddPartToUpdate(LayoutEmbeddedContent&);
@@ -736,7 +739,7 @@ class CORE_EXPORT LocalFrameView final
   void DequeueScrollAnchoringAdjustment(ScrollableArea*);
   void PerformScrollAnchoringAdjustments();
 
-  void SetNeedsEnqueueScrollEvent(PaintLayerScrollableArea*);
+  void SetNeedsEnqueueDeferredScrollEvent(PaintLayerScrollableArea*);
 
   std::unique_ptr<JSONObject> CompositedLayersAsJSON(LayerTreeFlags);
 
@@ -816,8 +819,40 @@ class CORE_EXPORT LocalFrameView final
 #endif
 
   bool LifecycleUpdatePending() const;
-  void RegisterForLifecycleNotifications(LifecycleNotificationObserver*);
+  // This option affects only DidFinishPostLifecycleSteps(). Throttled frames
+  // still skip WillStartLifecycleUpdate() and DidFinishLifecycleUpdate().
+  enum class PostLifecycleNotificationBehavior {
+    kSuppressWhenThrottled,
+    kFireWhenThrottled,
+  };
+  void RegisterForLifecycleNotifications(
+      LifecycleNotificationObserver*,
+      PostLifecycleNotificationBehavior =
+          PostLifecycleNotificationBehavior::kSuppressWhenThrottled);
   void UnregisterFromLifecycleNotifications(LifecycleNotificationObserver*);
+
+  // Calls DidFinishPostLifecycleSteps() once after a full lifecycle update.
+  // By default, waits while this frame or an ancestor is throttled. Use
+  // kFireWhenThrottled to get the callback anyway, even if rendering work was
+  // skipped and the frame's layout is still out of date.
+  //
+  // The caller must schedule a rendering update if one is needed. The callback
+  // must not make changes that require more rendering work. A callback can
+  // requeue itself for the next update. Like regular observers, a request for
+  // a frame that has not been visited yet can run during the current update.
+  //
+  // Does not keep the observer alive. Requesting again for the same observer
+  // changes the throttling option without adding another callback. An observer
+  // also registered with RegisterForLifecycleNotifications() gets both
+  // callbacks.
+  void RequestOneShotPostLifecycleNotification(
+      LifecycleNotificationObserver*,
+      PostLifecycleNotificationBehavior =
+          PostLifecycleNotificationBehavior::kSuppressWhenThrottled);
+
+  // Call on the same frame. Cancels pending requests, but cannot cancel
+  // callbacks already selected for delivery on this frame.
+  void CancelOneShotPostLifecycleNotification(LifecycleNotificationObserver*);
 
   // Enqueue tasks to be run at the start of the next lifecycle. These tasks
   // will run right after `WillStartLifecycleUpdate()` on the lifecycle
@@ -835,7 +870,7 @@ class CORE_EXPORT LocalFrameView final
   void NotifyVideoIsDominantVisibleStatus(HTMLVideoElement* element,
                                           bool is_dominant);
 
-  void DidPaintCanvasChild(HTMLCanvasElement& canvas, Element& child);
+  void DidPaintCanvasDrawable(HTMLCanvasElement& canvas, Element& drawable);
   void RequestCanvasOnpaint(HTMLCanvasElement&, Element* child = nullptr);
 
   scoped_refptr<const cc::AnimatedImageFrameIndexMap>
@@ -907,7 +942,7 @@ class CORE_EXPORT LocalFrameView final
   void SelfVisibleChanged() override;
   void ParentVisibleChanged() override;
   void PropagateFrameRectsInternal() override;
-  void PropagateFrameRectsRecursively(bool force = false);
+  void PropagateFrameRectsRecursively();
   void NotifyFrameRectsChangedIfNeeded();
 
   // Updates viewport intersection state when LocalFrame's scroll positions,
@@ -920,7 +955,7 @@ class CORE_EXPORT LocalFrameView final
   }
   void VisibilityChanged(blink::mojom::FrameVisibility visibility) override;
 
-  void EnqueueScrollEvents();
+  void ProcessDeferredScrollEvents();
 
  private:
   friend class NaturalSizeLayoutScope;
@@ -1083,6 +1118,11 @@ class CORE_EXPORT LocalFrameView final
   void ForAllChildViewsAndPlugins(
       base::FunctionRef<void(EmbeddedContentView&)>);
 
+  using LifecycleObserverMap =
+      HeapHashMap<WeakMember<LifecycleNotificationObserver>,
+                  PostLifecycleNotificationBehavior>;
+  void NotifyPostLifecycleObservers();
+
   enum TraversalOrder { kPreOrder, kPostOrder };
   void ForAllNonThrottledLocalFrameViews(
       base::FunctionRef<void(LocalFrameView&)>,
@@ -1162,7 +1202,7 @@ class CORE_EXPORT LocalFrameView final
 
   void RunCanvasOnpaintSteps();
 
-  typedef HeapHashSet<Member<LayoutEmbeddedContent>> EmbeddedContentSet;
+  typedef HeapHashSet<WeakMember<LayoutEmbeddedContent>> EmbeddedContentSet;
   EmbeddedContentSet part_update_set_;
 
   Member<LocalFrame> frame_;
@@ -1187,6 +1227,7 @@ class CORE_EXPORT LocalFrameView final
   // Used for tracking the frame's size and replicating it to the browser
   // process when it changes.
   std::optional<gfx::Size> frame_size_;
+  std::optional<gfx::Rect> frame_bounds_in_local_root_;
 
   AtomicString media_type_;
   AtomicString media_type_when_not_printing_;
@@ -1231,6 +1272,7 @@ class CORE_EXPORT LocalFrameView final
   // TODO(bokan): This is unneeded when root-layer-scrolls is turned on.
   // crbug.com/417782.
   gfx::Size layout_overflow_size_;
+  gfx::Size layout_overflow_size_without_padding_box_;
   std::optional<gfx::Size> natural_size_;
 
   bool root_layer_did_scroll_;
@@ -1254,7 +1296,8 @@ class CORE_EXPORT LocalFrameView final
       HeapLinkedHashSet<WeakMember<ScrollableArea>>;
   AnchoringAdjustmentQueue anchoring_adjustment_queue_;
 
-  HeapLinkedHashSet<WeakMember<PaintLayerScrollableArea>> scroll_event_queue_;
+  HeapLinkedHashSet<WeakMember<PaintLayerScrollableArea>>
+      deferred_scroll_event_queue_;
 
   bool suppress_adjust_view_size_;
 #if DCHECK_IS_ON()
@@ -1331,7 +1374,8 @@ class CORE_EXPORT LocalFrameView final
 
   Member<TapFriendlinessChecker> tap_friendliness_checker_;
 
-  HeapHashSet<WeakMember<LifecycleNotificationObserver>> lifecycle_observers_;
+  LifecycleObserverMap lifecycle_observers_;
+  LifecycleObserverMap queued_one_shot_observers_;
 
   // Map of canvas elements which need onpaint. The value is a set of children
   // of the <canvas> which painted during the current paint lifecycle update.
@@ -1393,8 +1437,8 @@ class CORE_EXPORT LocalFrameView final
       pending_scroll_marker_selection_updates_;
 
   // This is a callback requested when a same document navigation was committed.
-  // We only record this once (if RecordSameDocumentPresentationTimeOnce is
-  // enabled). We do this within the lifecycle before the commit step.
+  // We only record this once. We do this within the lifecycle before the commit
+  // step.
   base::OnceCallback<void(const viz::FrameTimingDetails&)>
       same_document_presentation_time_callback_;
 

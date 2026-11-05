@@ -54,11 +54,18 @@ gn_args.config(
 # android:debuggable="true" causes ART to run more slowly, so tests run
 # faster without it. https://crbug.com/1276429
 gn_args.config(
-    name = "android_builder_without_codecs",
-    configs = ["android"],
+    name = "android_non_debuggable",
     args = {
         "debuggable_apks": False,
     },
+)
+
+gn_args.config(
+    name = "android_builder_without_codecs",
+    configs = [
+        "android",
+        "android_non_debuggable",
+    ],
 )
 
 # For builds requiring debuggable_apks.
@@ -554,13 +561,6 @@ gn_args.config(
 )
 
 gn_args.config(
-    name = "devtools_do_typecheck",
-    args = {
-        "devtools_skip_typecheck": False,
-    },
-)
-
-gn_args.config(
     name = "disable_seed_corpus",
     args = {
         "archive_seed_corpus": False,
@@ -785,13 +785,6 @@ gn_args.config(
     name = "hwasan",
     args = {
         "is_hwasan": True,
-    },
-)
-
-gn_args.config(
-    name = "reclient",
-    args = {
-        "use_reclient": True,
     },
 )
 
@@ -1048,9 +1041,23 @@ gn_args.config(
 )
 
 gn_args.config(
+    name = "no_devtools_bundled_chromium_deps",
+    args = {
+        "devtools_build_with_bundled_chromium_deps": False,
+    },
+)
+
+gn_args.config(
     name = "no_dsyms",
     args = {
         "enable_dsyms": False,
+    },
+)
+
+gn_args.config(
+    name = "no_fuzztest_fuzz",
+    args = {
+        "enable_fuzztest_fuzz": False,
     },
 )
 
@@ -1065,13 +1072,6 @@ gn_args.config(
     name = "no_mold",
     args = {
         "use_mold": False,
-    },
-)
-
-gn_args.config(
-    name = "no_reclient",
-    args = {
-        "use_reclient": False,
     },
 )
 
@@ -1229,6 +1229,15 @@ gn_args.config(
 )
 
 gn_args.config(
+    name = "release_builder_with_dchecks",
+    configs = [
+        "release_builder",
+        # Must come after "release_builder", which turns DCHECKs off.
+        "dcheck_always_on",
+    ],
+)
+
+gn_args.config(
     name = "release_builder_blink",
     configs = [
         "release_builder",
@@ -1238,6 +1247,9 @@ gn_args.config(
 
 gn_args.config(
     name = "release_try_builder",
+    args = {
+        "enable_expensive_dchecks": False,
+    },
     configs = [
         "release_builder",
         "try_builder",

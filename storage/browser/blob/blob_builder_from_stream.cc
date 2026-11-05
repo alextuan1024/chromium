@@ -4,6 +4,9 @@
 
 #include "storage/browser/blob/blob_builder_from_stream.h"
 
+#include <cstddef>
+#include <vector>
+
 #include "base/compiler_specific.h"
 #include "base/containers/span.h"
 #include "base/functional/bind.h"
@@ -340,8 +343,8 @@ class BlobBuilderFromStream::WritePipeToFutureDataHelper
 BlobBuilderFromStream::BlobBuilderFromStream(
     base::WeakPtr<BlobStorageContext> context,
     std::string content_type,
-    std::string content_disposition,
-    ResultCallback callback)
+    ResultCallback callback,
+    scoped_refptr<base::RefCountedString> creator_identity)
     : kMemoryBlockSize(std::min(
           kMaxMemoryChunkSize,
           context->memory_controller().limits().max_bytes_data_item_size)),
@@ -352,7 +355,7 @@ BlobBuilderFromStream::BlobBuilderFromStream(
       context_(std::move(context)),
       callback_(std::move(callback)),
       content_type_(std::move(content_type)),
-      content_disposition_(std::move(content_disposition)) {
+      creator_identity_(std::move(creator_identity)) {
   DCHECK(context_);
 }
 
@@ -406,11 +409,13 @@ void BlobBuilderFromStream::AllocateMoreMemorySpace(
   }
 
   std::vector<scoped_refptr<ShareableBlobDataItem>> chunk_items;
+  chunk_items.reserve(
+      base::checked_cast<size_t>((length_hint - 1) / kMemoryBlockSize + 1));
   while (length_hint > 0) {
     const auto block_size = std::min<uint64_t>(kMemoryBlockSize, length_hint);
     chunk_items.push_back(base::MakeRefCounted<ShareableBlobDataItem>(
         BlobDataItem::CreateBytesDescription(block_size),
-        ShareableBlobDataItem::QUOTA_NEEDED));
+        ShareableBlobDataItem::QUOTA_NEEDED, creator_identity_));
     length_hint -= block_size;
   }
   auto items_copy = chunk_items;
@@ -532,11 +537,13 @@ void BlobBuilderFromStream::AllocateMoreFileSpace(
   }
 
   std::vector<scoped_refptr<ShareableBlobDataItem>> chunk_items;
+  chunk_items.reserve(
+      base::checked_cast<size_t>((length_hint - 1) / kMaxFileSize + 1));
   while (length_hint > 0) {
     const auto file_size = std::min(kMaxFileSize, length_hint);
     chunk_items.push_back(base::MakeRefCounted<ShareableBlobDataItem>(
         BlobDataItem::CreateFutureFile(0, file_size, chunk_items.size()),
-        ShareableBlobDataItem::QUOTA_NEEDED));
+        ShareableBlobDataItem::QUOTA_NEEDED, creator_identity_));
     length_hint -= file_size;
   }
   auto items_copy = chunk_items;
@@ -679,7 +686,7 @@ void BlobBuilderFromStream::OnSuccess() {
   std::move(callback_).Run(
       this, context_->AddFinishedBlob(
                 base::Uuid::GenerateRandomV4().AsLowercaseString(),
-                content_type_, content_disposition_, std::move(items_)));
+                content_type_, std::move(items_)));
 }
 
 bool BlobBuilderFromStream::ShouldStoreNextBlockOnDisk(uint64_t length_hint) {

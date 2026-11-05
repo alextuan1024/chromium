@@ -52,6 +52,7 @@
 
 #if BUILDFLAG(IS_MAC)
 #include "chrome/browser/ui/fullscreen_util_mac.h"
+#include "ui/views/views_features.h"
 #endif
 
 DEFINE_USER_DATA(ToastController);
@@ -158,6 +159,14 @@ bool ToastController::MaybeShowToast(ToastParams params) {
 #if BUILDFLAG(IS_MAC)
 void ToastController::OnWidgetActivationChanged(views::Widget* widget,
                                                 bool active) {
+  // These workarounds are only needed when focusing a View in an inactive
+  // widget does not activate the widget.
+  // TODO(crbug.com/40486728): Remove once kMacActivateWidgetOnFocusRequest is
+  // removed.
+  if (base::FeatureList::IsEnabled(
+          views::features::kMacActivateWidgetOnFocusRequest)) {
+    return;
+  }
   if (active) {
     // Clears the stored focus view so that after widget activation occurs,
     // focus will not advance out of the widget and into the ContentsWebView.
@@ -253,7 +262,11 @@ void ToastController::OnOmniboxPopupVisibilityChanged(bool popup_is_open) {
 void ToastController::UpdateToastWidgetVisibility(bool show_toast_widget) {
   if (toast_widget_) {
     if (show_toast_widget) {
-      toast_widget_->ShowInactive();
+      // Avoid calling ShowInactive() if the toast is already visible, as doing
+      // so could deactivate an already-active toast widget.
+      if (!toast_widget_->IsVisible()) {
+        toast_widget_->ShowInactive();
+      }
     } else {
       toast_widget_->Hide();
     }
@@ -285,6 +298,8 @@ void ToastController::ShowToast(ToastParams params) {
       toast_registry_->GetToastSpecification(params.toast_id);
   CHECK(current_toast_spec);
   CHECK_EQ(current_toast_spec->has_menu(), !!params.menu_model);
+  CHECK_EQ(current_toast_spec->has_action_button_data_callback(),
+           params.action_button_callback_data.has_value());
   CHECK(current_toast_spec->body_string_id() != 0 ||
         params.body_string_override.has_value());
 
@@ -362,8 +377,11 @@ void ToastController::CreateToast(ToastParams params,
         FormatString(spec->action_button_string_id().value(),
                      params.action_button_string_replacement_params,
                      std::nullopt),
-        spec->action_button_callback().Then(base::BindRepeating(
-            &RecordToastActionButtonClicked, params.toast_id)));
+        spec->GetActionButtonCallback(
+                browser_window_interface_,
+                std::move(params.action_button_callback_data))
+            .Then(base::BindRepeating(&RecordToastActionButtonClicked,
+                                      params.toast_id)));
   }
 
   if (spec->has_menu()) {

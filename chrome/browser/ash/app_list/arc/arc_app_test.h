@@ -10,7 +10,6 @@
 #include <vector>
 
 #include "base/memory/raw_ptr.h"
-#include "chrome/browser/ash/login/users/fake_chrome_user_manager.h"
 #include "chromeos/ash/experiences/arc/mojom/app.mojom-forward.h"
 #include "components/session_manager/core/session_manager.h"
 #include "components/user_manager/scoped_user_manager.h"
@@ -98,6 +97,10 @@ class ArcAppTest {
   const std::vector<arc::mojom::ArcPackageInfoPtr>& fake_packages() const {
     return fake_packages_;
   }
+
+  // The user logged in by `PreProfileSetUp()`. Null unless
+  // `user_manager_mode` is `kCreate`.
+  const user_manager::User* user() const { return user_; }
 
   // Adds package info and takes ownership.
   void AddPackage(arc::mojom::ArcPackageInfoPtr package);

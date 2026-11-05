@@ -17,9 +17,11 @@
 #include "base/check_op.h"
 #include "base/feature_list.h"
 #include "base/functional/bind.h"
+#include "base/location.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/strings/string_util.h"
+#include "base/task/sequenced_task_runner.h"
 #include "base/time/time.h"
 #include "base/version_info/version_info.h"
 #include "components/autofill/core/browser/at_memory/at_memory_enablement_util.h"
@@ -341,17 +343,18 @@ bool IsFieldValueSaveable(const FormFieldData& field,
     return false;
   }
 
-  if (autofill_field &&
-      autofill_field->all_modifiers().contains(FieldModifier::kAutofill) &&
-      (autofill_field->last_modifier() != FieldModifier::kUser ||
-       autofill_field->filling_product() != FillingProduct::kAutocomplete)) {
-    // If a field has been autofilled by a structured product (e.g. Address,
-    // Payments, Autofill AI), we avoid saving the submitted value to
-    // Autocomplete, even if the user edited it.
-    //
-    // However, if the field was filled by Autocomplete and then edited by
-    // the user, we should save the edited value as it represents a new
-    // user-edited autocomplete value.
+  const bool was_autofilled =
+      autofill_field &&
+      autofill_field->all_modifiers().contains(FieldModifier::kAutofill);
+  const bool was_autocompleted_and_later_modified =
+      autofill_field &&
+      autofill_field->filling_product() == FillingProduct::kAutocomplete &&
+      autofill_field->last_modifier() == FieldModifier::kUser;
+
+  // Reject a field if it was autofilled by a structured product (e.g. Address,
+  // Payments, Autofill AI). The exception is when the user used Autocomplete
+  // and modified the value afterwards.
+  if (was_autofilled && !was_autocompleted_and_later_modified) {
     return false;
   }
 
@@ -413,6 +416,16 @@ AutocompleteHistoryManager::AutocompleteHistoryManager(
           weak_ptr_factory_.GetWeakPtr(),
           /*new_migration_generation=*/expected_migration_generation));
     }
+  }
+
+  if (base::FeatureList::IsEnabled(
+          features::kAutofillRecordAutocompleteTableStats)) {
+    // Delay the query to avoid impact on startup.
+    base::SequencedTaskRunner::GetCurrentDefault()->PostDelayedTask(
+        FROM_HERE,
+        base::BindOnce(&AutocompleteHistoryManager::QueryAutocompleteTableStats,
+                       weak_ptr_factory_.GetWeakPtr()),
+        kTableStatsRecordingDelay);
   }
 }
 
@@ -568,6 +581,24 @@ void AutocompleteHistoryManager::OnLegacyTableDataMigrationReturned(
         prefs::kAutofillAutocompleteLabelSensitiveMigrationGeneration,
         new_migration_generation);
   }
+}
+
+void AutocompleteHistoryManager::QueryAutocompleteTableStats() {
+  profile_database_->GetAutocompleteTableStats(base::BindOnce(
+      &AutocompleteHistoryManager::OnAutocompleteTableStatsReturned,
+      weak_ptr_factory_.GetWeakPtr()));
+}
+
+void AutocompleteHistoryManager::OnAutocompleteTableStatsReturned(
+    WebDataServiceBase::Handle current_handle,
+    std::unique_ptr<WDTypedResult> result) {
+  if (!result) {
+    return;
+  }
+  DCHECK_EQ(AUTOCOMPLETE_TABLE_STATS, result->GetType());
+  const auto* stats_result =
+      static_cast<const WDResult<AutocompleteTableStats>*>(result.get());
+  AutofillMetrics::LogAutocompleteTableStats(stats_result->GetValue());
 }
 
 }  // namespace autofill

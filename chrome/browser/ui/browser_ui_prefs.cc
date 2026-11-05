@@ -201,6 +201,10 @@ void RegisterBrowserUserPrefs(user_prefs::PrefRegistrySyncable* registry) {
   registry->RegisterBooleanPref(prefs::kForceMaximizeOnFirstRun, false);
 #endif
 
+#if BUILDFLAG(IS_ANDROID)
+  registry->RegisterBooleanPref(prefs::kAllowFileSelectionDialogs, true);
+#endif
+
   registry->RegisterBooleanPref(prefs::kEnterpriseHardwarePlatformAPIEnabled,
                                 false);
   registry->RegisterBooleanPref(prefs::kUserFeedbackAllowed, true);

@@ -36,26 +36,28 @@ bool CreateDirectory::Execute(int request_id) {
   options.directory_path = directory_path_.AsUTF8Unsafe();
   options.recursive = recursive_;
 
+  auto event_args = base::MakeRefCounted<extensions::EventArgs>(
+      extensions::api::file_system_provider::OnCreateDirectoryRequested::Create(
+          options));
   return SendEvent(
       request_id,
       extensions::events::FILE_SYSTEM_PROVIDER_ON_CREATE_DIRECTORY_REQUESTED,
       extensions::api::file_system_provider::OnCreateDirectoryRequested::
           kEventName,
-      extensions::api::file_system_provider::OnCreateDirectoryRequested::Create(
-          options));
+      std::move(event_args));
 }
 
 void CreateDirectory::OnSuccess(/*request_id=*/int,
                                 /*result=*/const RequestValue&,
                                 bool has_more) {
-  DCHECK(callback_);
+  CHECK(callback_, base::NotFatalUntil::M160);
   std::move(callback_).Run(base::File::FILE_OK);
 }
 
 void CreateDirectory::OnError(/*request_id=*/int,
                               /*result=*/const RequestValue&,
                               base::File::Error error) {
-  DCHECK(callback_);
+  CHECK(callback_, base::NotFatalUntil::M160);
   std::move(callback_).Run(error);
 }
 

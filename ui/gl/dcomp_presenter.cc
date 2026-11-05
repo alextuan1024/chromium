@@ -82,8 +82,6 @@ constexpr std::string_view CommitErrorReasonToString(
     case CommitError::Reason::
         kPresentToSwapChainSdrRevertCreateVideoProcessorOutputView:
       return "PresentToSwapChainSdrRevertCreateVideoProcessorOutputView";
-    case CommitError::Reason::kPresentToSwapChainSdrRevertSetColorSpace:
-      return "PresentToSwapChainSdrRevertSetColorSpace";
     case CommitError::Reason::kUploadVideoImageInvalidPixmapData:
       return "UploadVideoImageInvalidPixmapData";
     case CommitError::Reason::kUploadVideoImageInvalidPixmapSize:
@@ -231,6 +229,15 @@ void DCompPresenter::Present(SwapCompletionCallback completion_callback,
       // originating from viz. `PRESENTATION_ERROR_LOST` usually happens when
       // device removed is caught internally in DWM when using DComp textures.
     }
+
+    const CommitError& error = result.error();
+    LOG(ERROR) << "DComp commit failed: "
+               << CommitErrorReasonToString(error.reason)
+               << error.hr
+                      .transform([](HRESULT hr) {
+                        return ", " + logging::SystemErrorCodeToString(hr);
+                      })
+                      .value_or("");
 
     std::move(completion_callback)
         .Run(gfx::SwapCompletionResult(gfx::SwapResult::SWAP_FAILED));

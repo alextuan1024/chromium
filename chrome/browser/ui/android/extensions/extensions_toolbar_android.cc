@@ -7,10 +7,9 @@
 #include <cstdint>
 #include <utility>
 
-#include "base/android/jni_array.h"
 #include "base/android/jni_string.h"
+#include "base/containers/span.h"
 #include "base/notimplemented.h"
-#include "base/strings/utf_string_conversions.h"
 #include "chrome/browser/extensions/extension_view_host.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/tab_list/tab_list_interface.h"
@@ -24,6 +23,8 @@
 #include "content/public/browser/web_contents.h"
 #include "extensions/browser/extension_registry.h"
 #include "extensions/browser/permissions_manager.h"
+#include "third_party/jni_zero/default_conversions.h"
+#include "third_party/jni_zero/jni_zero.h"
 #include "ui/base/unowned_user_data/scoped_unowned_user_data.h"
 #include "ui/color/color_provider.h"
 #include "ui/events/android/key_event_android.h"
@@ -33,24 +34,22 @@
 #include "ui/gfx/image/image_skia_rep.h"
 #include "ui/gfx/paint_vector_icon.h"
 
-// Must come after all headers that specialize FromJniType() / ToJniType().
+// Must come after headers that provide symbols used by @JniType.
 #include "chrome/browser/ui/android/extensions/jni_headers/ExtensionAction_jni.h"
 #include "chrome/browser/ui/android/extensions/jni_headers/ExtensionsMenuButtonState_jni.h"
 #include "chrome/browser/ui/android/extensions/jni_headers/ExtensionsToolbarBridge_jni.h"
 #include "chrome/browser/ui/android/extensions/jni_headers/RequestAccessButtonParams_jni.h"
 
 using base::android::AttachCurrentThread;
-using base::android::ConvertUTF16ToJavaString;
-using base::android::JavaRef;
-using base::android::ScopedJavaLocalRef;
-using base::android::ToJavaArrayOfStrings;
 using content::WebContents;
+using jni_zero::JavaRef;
+using jni_zero::ScopedJavaLocalRef;
 
 namespace extensions {
 
 ExtensionsToolbarAndroid::ExtensionsToolbarAndroid(
     BrowserWindowInterface* browser,
-    const base::android::JavaRef<jobject>& java_object)
+    const JavaRef<jobject>& java_object)
     : browser_(browser),
       toolbar_view_model_(std::make_unique<ExtensionsToolbarViewModel>(
           this,
@@ -83,13 +82,12 @@ void ExtensionsToolbarAndroid::TriggerPopup(
     std::unique_ptr<ExtensionViewHost> host,
     PopupShowAction show_action,
     ShowPopupCallback callback) {
-  auto* popup_contents = new ExtensionActionPopupContents(
-      std::move(host), show_action == PopupShowAction::kShowAndInspect,
-      std::move(callback));
+  bool inspect_with_devtools = show_action == PopupShowAction::kShowAndInspect;
   Java_ExtensionsToolbarBridge_triggerPopup(
       AttachCurrentThread(), java_object_, action_id,
-      popup_contents->GetJavaObject(),
-      show_action == PopupShowAction::kShowAndInspect);
+      ExtensionActionPopupContents::Create(
+          std::move(host), inspect_with_devtools, std::move(callback)),
+      inspect_with_devtools);
 }
 
 void ExtensionsToolbarAndroid::ShowContextMenu(
@@ -108,7 +106,7 @@ ExtensionsToolbarAndroid::CreateActionViewModel(
                                                        action_id, this));
 }
 
-base::android::ScopedJavaLocalRef<jobject>
+jni_zero::ScopedJavaLocalRef<jobject>
 ExtensionsToolbarAndroid::GetRequestAccessButtonParams(
     JNIEnv* env,
     content::WebContents* web_contents) {
@@ -206,8 +204,7 @@ void ExtensionsToolbarAndroid::OnActiveWebContentsChanged(
   request_access_button_params_ =
       ExtensionsToolbarViewModel::RequestAccessButtonParams();
   Java_ExtensionsToolbarBridge_onActiveWebContentsChanged(
-      AttachCurrentThread(), java_object_,
-      web_contents ? web_contents->GetJavaWebContents() : nullptr);
+      AttachCurrentThread(), java_object_, web_contents);
   if (web_contents) {
     extensions::MaybeShowExtensionControlledNewTabPage(browser_, web_contents);
   }
@@ -218,11 +215,7 @@ void ExtensionsToolbarAndroid::OnToolbarControlStateUpdated() {
       AttachCurrentThread(), java_object_);
 }
 
-void ExtensionsToolbarAndroid::Destroy(JNIEnv* env) {
-  delete this;
-}
-
-base::android::ScopedJavaLocalRef<jobject> ExtensionsToolbarAndroid::GetAction(
+jni_zero::ScopedJavaLocalRef<jobject> ExtensionsToolbarAndroid::GetAction(
     JNIEnv* env,
     const ToolbarActionsModel::ActionId& action_id,
     content::WebContents* web_contents) {
@@ -233,37 +226,19 @@ base::android::ScopedJavaLocalRef<jobject> ExtensionsToolbarAndroid::GetAction(
   ExtensionActionViewModel::HoverCardUiState ui_state =
       action->GetHoverCardUiState(hover_card_state, web_contents);
 
-  std::optional<std::string> site_access_title;
-  if (ui_state.site_access_title.has_value()) {
-    site_access_title = base::UTF16ToUTF8(ui_state.site_access_title.value());
-  }
-
-  std::optional<std::string> site_access_description;
-  if (ui_state.site_access_description.has_value()) {
-    site_access_description =
-        base::UTF16ToUTF8(ui_state.site_access_description.value());
-  }
-
-  std::optional<std::string> policy_text;
-  if (ui_state.policy_text.has_value()) {
-    policy_text = base::UTF16ToUTF8(ui_state.policy_text.value());
-  }
-
-  base::android::ScopedJavaLocalRef<jobject> java_hover_card_state =
+  ScopedJavaLocalRef<jobject> java_hover_card_state =
       Java_HoverCardState_Constructor(
           env, static_cast<int>(hover_card_state.site_access),
-          site_access_title, site_access_description,
-          static_cast<int>(hover_card_state.policy), policy_text);
+          ui_state.site_access_title, ui_state.site_access_description,
+          static_cast<int>(hover_card_state.policy), ui_state.policy_text);
 
   return Java_ExtensionAction_Constructor(
-      env, action_id, base::UTF16ToUTF8(action->GetActionName()),
-      base::UTF16ToUTF8(action->GetActionTitle(web_contents)),
-      base::UTF16ToUTF8(action->GetAccessibleName(web_contents)),
-      java_hover_card_state);
+      env, action_id, action->GetActionName(),
+      action->GetActionTitle(web_contents),
+      action->GetAccessibleName(web_contents), java_hover_card_state);
 }
 
-base::android::ScopedJavaLocalRef<jobject> ExtensionsToolbarAndroid::GetIcon(
-    JNIEnv* env,
+SkBitmap ExtensionsToolbarAndroid::GetIcon(
     const ToolbarActionsModel::ActionId& action_id,
     content::WebContents* web_contents,
     int canvas_width_dp,
@@ -273,38 +248,30 @@ base::android::ScopedJavaLocalRef<jobject> ExtensionsToolbarAndroid::GetIcon(
 
   ToolbarActionViewModel* action =
       toolbar_view_model_->GetActionModelForId(action_id);
-  DCHECK(action);
+  CHECK(action, base::NotFatalUntil::M162);
   ui::ImageModel model = action->GetIcon(web_contents, size);
 
   if (model.IsEmpty() || !model.IsImage()) {
-    return nullptr;
+    return SkBitmap();
   }
 
   gfx::ImageSkia image_skia = model.GetImage().AsImageSkia();
 
   const gfx::ImageSkiaRep& rep = image_skia.GetRepresentation(scale_factor);
-  const SkBitmap& bitmap = rep.GetBitmap();
-
-  if (bitmap.isNull()) {
-    return nullptr;
-  }
-
-  return gfx::ConvertToJavaBitmap(bitmap);
+  return rep.GetBitmap();
 }
 
-std::vector<ToolbarActionsModel::ActionId>
-ExtensionsToolbarAndroid::GetAllActionIds(JNIEnv* env) {
-  const auto& ids = toolbar_view_model_->GetAllActionIds();
-  return std::vector(ids.begin(), ids.end());
+base::span<const ToolbarActionsModel::ActionId>
+ExtensionsToolbarAndroid::GetAllActionIds() {
+  return toolbar_view_model_->GetAllActionIds();
 }
 
-std::vector<ToolbarActionsModel::ActionId>
-ExtensionsToolbarAndroid::GetPinnedActionIds(JNIEnv* env) {
+base::span<const ToolbarActionsModel::ActionId>
+ExtensionsToolbarAndroid::GetPinnedActionIds() {
   if (!ToolbarActionsModel::CanShowActionsInToolbar(*browser_)) {
     return {};
   }
-  const auto& ids = toolbar_view_model_->GetPinnedActionIds();
-  return std::vector(ids.begin(), ids.end());
+  return toolbar_view_model_->GetPinnedActionIds();
 }
 
 namespace {
@@ -338,7 +305,7 @@ class MenuButtonIconSource : public gfx::CanvasImageSource {
 
 }  // namespace
 
-base::android::ScopedJavaLocalRef<jobject>
+jni_zero::ScopedJavaLocalRef<jobject>
 ExtensionsToolbarAndroid::GetMenuButtonState(JNIEnv* env,
                                              content::WebContents* web_contents,
                                              int canvas_width_dp,
@@ -362,30 +329,21 @@ ExtensionsToolbarAndroid::GetMenuButtonState(JNIEnv* env,
   const SkBitmap& bitmap =
       image_skia.GetRepresentation(scale_factor).GetBitmap();
 
-  base::android::ScopedJavaLocalRef<jobject> java_bitmap;
-  if (!bitmap.isNull()) {
-    java_bitmap = gfx::ConvertToJavaBitmap(bitmap);
-  }
-
-  return Java_ExtensionsMenuButtonState_Constructor(
-      env, base::UTF16ToUTF8(tooltip), base::UTF16ToUTF8(accessible_text),
-      java_bitmap);
+  return Java_ExtensionsMenuButtonState_Constructor(env, tooltip,
+                                                    accessible_text, bitmap);
 }
 
 bool ExtensionsToolbarAndroid::HandleKeyDownEvent(
-    JNIEnv* env,
     const ui::KeyEventAndroid& key_event) {
   return keybinding_registry_->HandleKeyDownEvent(key_event);
 }
 
 bool ExtensionsToolbarAndroid::IsActionDraggable(
-    JNIEnv* env,
     const ToolbarActionsModel::ActionId& action_id) {
   return toolbar_view_model_->IsActionDraggable(action_id);
 }
 
 bool ExtensionsToolbarAndroid::OnRequestAccessButtonClicked(
-    JNIEnv* env,
     content::WebContents* web_contents) {
   if (!web_contents) {
     return false;
@@ -421,7 +379,7 @@ void ExtensionsToolbarAndroid::RegisterIconObserverForAction(
     const ToolbarActionsModel::ActionId& action_id) {
   ToolbarActionViewModel* action_model =
       toolbar_view_model_->GetActionModelForId(action_id);
-  DCHECK(action_model);
+  CHECK(action_model, base::NotFatalUntil::M162);
 
   icon_subscriptions_.insert_or_assign(
       action_id, action_model->RegisterIconUpdateObserver(base::BindRepeating(
@@ -441,14 +399,10 @@ void ExtensionsToolbarAndroid::MovePinnedAction(
   toolbar_view_model_->MovePinnedAction(action_id, target_index);
 }
 
-static int64_t JNI_ExtensionsToolbarBridge_Init(
-    JNIEnv* env,
-    const base::android::JavaRef<jobject>& java_object,
-    int64_t j_browser_window_interface) {
-  BrowserWindowInterface* browser =
-      reinterpret_cast<BrowserWindowInterface*>(j_browser_window_interface);
-  return reinterpret_cast<int64_t>(
-      new ExtensionsToolbarAndroid(browser, java_object));
+static jni_zero::JniUniquePtr<ExtensionsToolbarAndroid>
+JNI_ExtensionsToolbarBridge_Init(const jni_zero::JavaRef<jobject>& java_object,
+                                 BrowserWindowInterface* browser) {
+  return jni_zero::MakeUnique<ExtensionsToolbarAndroid>(browser, java_object);
 }
 
 }  // namespace extensions

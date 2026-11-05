@@ -124,9 +124,7 @@ DisplayResourceProviderSkia::DeleteAndReturnUnusedResourcesToChildImpl(
       resource->sync_token = sync_token;
     }
     for (auto& client_shared_image : client_shared_images_to_return) {
-      if (client_shared_image) {
-        client_shared_image->EndDisplayCompositorAccess(sync_token);
-      }
+      client_shared_image->EndDisplayCompositorAccess(sync_token);
     }
   }
 
@@ -149,8 +147,7 @@ DisplayResourceProviderSkia::LockSetForExternalUse::~LockSetForExternalUse() {
 ExternalUseClient::ImageContext*
 DisplayResourceProviderSkia::LockSetForExternalUse::LockResource(
     ResourceId id,
-    bool maybe_concurrent_reads,
-    bool raw_draw_is_possible) {
+    bool maybe_concurrent_reads) {
   auto it = resource_provider_->resources_.find(id);
   CHECK(it != resource_provider_->resources_.end());
 
@@ -166,8 +163,7 @@ DisplayResourceProviderSkia::LockSetForExternalUse::LockResource(
           resource_provider_->GetSurfaceId(id).frame_sink_id().client_id();
       resource.image_context =
           resource_provider_->external_use_client_->CreateImageContext(
-              resource.transferable, maybe_concurrent_reads,
-              raw_draw_is_possible, client_id);
+              resource.transferable, maybe_concurrent_reads, client_id);
     }
     resource.locked_for_external_use = true;
 
@@ -211,6 +207,8 @@ void DisplayResourceProviderSkia::LockSetForExternalUse::UnlockResources(
     // which owns it with the |sync_token|. The child is responsible for issuing
     // a WaitSyncToken GL command with the |sync_token| before reusing it.
     resource->UpdateSyncToken(sync_token);
+    resource->transferable.shared_image()->EndDisplayCompositorAccess(
+        sync_token);
     resource->locked_for_external_use = false;
 
     resource_provider_->TryReleaseResource(id, resource);
@@ -238,6 +236,8 @@ DisplayResourceProviderSkia::ScopedExclusiveReadLockSharedImage::
         resource_provider->external_use_client_->ReleaseImageContexts(
             std::move(image_contexts));
     resource.UpdateSyncToken(sync_token);
+    resource.transferable.shared_image()->EndDisplayCompositorAccess(
+        sync_token);
   }
 }
 DisplayResourceProviderSkia::ScopedExclusiveReadLockSharedImage::

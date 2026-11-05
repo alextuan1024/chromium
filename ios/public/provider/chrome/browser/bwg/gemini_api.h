@@ -26,6 +26,7 @@ using GeminiEligibilityCallback = void (^)(BOOL eligible);
 
 namespace gemini {
 enum class EntryPoint;
+enum class InputType;
 }
 
 namespace ios::provider {
@@ -203,6 +204,11 @@ void UpdatePromptAction(gemini::EntryPoint entry_point,
                         NSString* prepopulated_prompt,
                         bool should_auto_submit = false);
 
+// Updates the prompt action of the floaty with an input type if it's invoked.
+void UpdatePromptAction(gemini::InputType input_type,
+                        NSString* prepopulated_prompt,
+                        bool should_auto_submit = false);
+
 // Returns true if a URL is protected.
 bool IsProtectedUrl(std::string url);
 
@@ -273,6 +279,10 @@ int GetLiveCaptionsNumberOfLines();
 
 // Sets whether the suggestion chips should be shown on the floaty.
 void SetShouldShowSuggestionChips(bool should_show);
+
+// Sets whether the input plate should be shown on the floaty. This is a no-op
+// until a floaty view has been created in this session.
+void SetShouldShowInputPlate(bool should_show);
 
 // Sets whether query submission should be blocked while page context is
 // loading.

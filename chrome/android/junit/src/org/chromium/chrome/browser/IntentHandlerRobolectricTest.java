@@ -52,17 +52,17 @@ import org.chromium.base.IntentUtils;
 import org.chromium.base.Token;
 import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.base.test.util.Feature;
-import org.chromium.base.test.util.Features.DisableFeatures;
 import org.chromium.base.test.util.Features.EnableFeatures;
 import org.chromium.chrome.browser.IntentHandler.ExternalAppId;
 import org.chromium.chrome.browser.actor.ActorKeyedService;
 import org.chromium.chrome.browser.actor.ActorKeyedServiceFactory;
-import org.chromium.chrome.browser.actor.ActorNotificationFactory;
 import org.chromium.chrome.browser.actor.ActorTask;
+import org.chromium.chrome.browser.actor.notifications.ActorNotificationFactory;
 import org.chromium.chrome.browser.app.tabmodel.AsyncTabParamsManagerSingleton;
 import org.chromium.chrome.browser.customtabs.CustomTabsConnection;
 import org.chromium.chrome.browser.customtabs.CustomTabsIntentTestUtils;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
+import org.chromium.chrome.browser.glic.GlicIntentConstants;
 import org.chromium.chrome.browser.notifications.NotificationConstants;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.profiles.ProfileManager;
@@ -87,7 +87,6 @@ import java.util.Map;
  * than GURL/Origin).
  */
 @RunWith(BaseRobolectricTestRunner.class)
-@EnableFeatures(ChromeFeatureList.SEND_TAB_TO_SELF_PROPAGATE_SCROLL_POSITION)
 public class IntentHandlerRobolectricTest {
     private static final String[] ACCEPTED_NON_HTTP_AND_HTTPS_URLS = {
         "chrome://newtab",
@@ -167,8 +166,12 @@ public class IntentHandlerRobolectricTest {
         {"file://foo.mht", "application/octet-stream"},
         {"file://foo", "multipart/related"},
         {"file://foo", "message/rfc822"},
+        {"file://foo", "Multipart/Related"},
+        {"file://foo", "Message/RFC822"},
         {"content://example.com/1", "multipart/related"},
         {"content://example.com/1", "message/rfc822"},
+        {"content://example.com/1", "Multipart/Related"},
+        {"content://example.com/1", "Message/RFC822"},
     };
 
     private static final String[][] INTENT_URLS_AND_TYPES_NOT_FOR_MHTML = {
@@ -228,7 +231,7 @@ public class IntentHandlerRobolectricTest {
         for (String[] urlAndType : urlsAndTypes) {
             Uri url = Uri.parse(urlAndType[0]);
             String type = urlAndType[1];
-            if (type.equals("")) {
+            if (type.isEmpty()) {
                 mIntent.setData(url);
             } else {
                 mIntent.setDataAndType(url, type);
@@ -265,8 +268,11 @@ public class IntentHandlerRobolectricTest {
                         (KeyguardManager) appContext.getSystemService(Context.KEYGUARD_SERVICE));
     }
 
+    /**
+     * Verifies that `createLoadUrlParamsForIntent` sets an opaque initiator origin for untrusted
+     * intents and a null initiator origin for trusted intents from Chrome.
+     */
     @Test
-    @EnableFeatures(ChromeFeatureList.SEND_TAB_TO_SELF_PROPAGATE_SCROLL_POSITION)
     public void testNewIntentInitiator() throws Exception {
         Intent intent = new Intent(Intent.ACTION_VIEW);
         intent.setData(Uri.parse(GOOGLE_URL));
@@ -440,6 +446,17 @@ public class IntentHandlerRobolectricTest {
         Assert.assertEquals(
                 "Foo: bar\nX-Chrome-intent-type: message/rfc822",
                 IntentHandler.maybeAddAdditionalContentHeaders(intent, contentUrl, "Foo: bar"));
+
+        // Mixed-case MHTML types.
+        intent.setType("Multipart/Related");
+        Assert.assertEquals(
+                "X-Chrome-intent-type: Multipart/Related",
+                IntentHandler.maybeAddAdditionalContentHeaders(intent, contentUrl, null));
+
+        intent.setType("Message/RFC822");
+        Assert.assertEquals(
+                "X-Chrome-intent-type: Message/RFC822",
+                IntentHandler.maybeAddAdditionalContentHeaders(intent, contentUrl, null));
     }
 
     @Test
@@ -628,11 +645,11 @@ public class IntentHandlerRobolectricTest {
     public void testScreenOffNoContext() {
         Intent intent = new Intent(Intent.ACTION_VIEW);
         intent.setData(Uri.parse(GOOGLE_URL));
-        mShadowPowerManager.setIsInteractive(false);
+        mShadowPowerManager.turnScreenOn(false);
         Assert.assertTrue(IntentHandler.shouldIgnoreIntent(intent, null));
-        mShadowPowerManager.setIsInteractive(true);
+        mShadowPowerManager.turnScreenOn(true);
         Assert.assertFalse(IntentHandler.shouldIgnoreIntent(intent, null));
-        mShadowPowerManager.setIsInteractive(false);
+        mShadowPowerManager.turnScreenOn(false);
         intent = new Intent(Intent.ACTION_MAIN);
         Assert.assertFalse(IntentHandler.shouldIgnoreIntent(intent, null));
         intent.setData(Uri.parse(GOOGLE_URL));
@@ -652,11 +669,11 @@ public class IntentHandlerRobolectricTest {
 
         Intent intent = new Intent(Intent.ACTION_VIEW);
         intent.setData(Uri.parse(GOOGLE_URL));
-        mShadowPowerManager.setIsInteractive(false);
+        mShadowPowerManager.turnScreenOn(false);
         Assert.assertTrue(IntentHandler.shouldIgnoreIntent(intent, activity));
-        mShadowPowerManager.setIsInteractive(true);
+        mShadowPowerManager.turnScreenOn(true);
         Assert.assertFalse(IntentHandler.shouldIgnoreIntent(intent, activity));
-        mShadowPowerManager.setIsInteractive(false);
+        mShadowPowerManager.turnScreenOn(false);
         intent = new Intent(Intent.ACTION_MAIN);
         Assert.assertFalse(IntentHandler.shouldIgnoreIntent(intent, activity));
         intent.setData(Uri.parse(GOOGLE_URL));
@@ -678,16 +695,16 @@ public class IntentHandlerRobolectricTest {
         Intent intent = new Intent(Intent.ACTION_VIEW);
         intent.setData(Uri.parse(GOOGLE_URL));
         // Test with main screen on
-        mShadowPowerManager.setIsInteractive(true);
-        shadowPowerManagerAct.setIsInteractive(false);
+        mShadowPowerManager.turnScreenOn(true);
+        shadowPowerManagerAct.turnScreenOn(false);
         Assert.assertTrue(IntentHandler.shouldIgnoreIntent(intent, activity));
-        shadowPowerManagerAct.setIsInteractive(true);
+        shadowPowerManagerAct.turnScreenOn(true);
         Assert.assertFalse(IntentHandler.shouldIgnoreIntent(intent, activity));
         // Test with main screen off
-        mShadowPowerManager.setIsInteractive(false);
-        shadowPowerManagerAct.setIsInteractive(false);
+        mShadowPowerManager.turnScreenOn(false);
+        shadowPowerManagerAct.turnScreenOn(false);
         Assert.assertTrue(IntentHandler.shouldIgnoreIntent(intent, activity));
-        shadowPowerManagerAct.setIsInteractive(true);
+        shadowPowerManagerAct.turnScreenOn(true);
         Assert.assertFalse(IntentHandler.shouldIgnoreIntent(intent, activity));
     }
 
@@ -801,7 +818,7 @@ public class IntentHandlerRobolectricTest {
     @Test
     @Feature({"Android-AppBase"})
     public void testDetermineExternalIntentSource() {
-        Activity activity = Mockito.mock(Activity.class);
+        Activity activity = Robolectric.buildActivity(Activity.class).setup().get();
         Intent intent = new Intent(Intent.ACTION_VIEW);
         intent.putExtra(
                 IntentHandler.EXTRA_ACTIVITY_REFERRER,
@@ -835,19 +852,6 @@ public class IntentHandlerRobolectricTest {
         Intent intent = new Intent(Intent.ACTION_VIEW);
         intent.setData(Uri.parse(GOOGLE_URL));
         intent.putExtra(IntentHandler.EXTRA_SCROLL_TO_TEXT_FRAGMENT, "selector");
-
-        LoadUrlParams params = IntentHandler.createLoadUrlParamsForIntent(GOOGLE_URL, intent, 0);
-        Assert.assertNull(params.getInternalScrollToTextFragment());
-    }
-
-    @Test
-    @DisableFeatures(ChromeFeatureList.SEND_TAB_TO_SELF_PROPAGATE_SCROLL_POSITION)
-    public void testScrollToTextFragment_FeatureDisabled() {
-        Intent intent = new Intent(Intent.ACTION_VIEW);
-        intent.setData(Uri.parse(GOOGLE_URL));
-        intent.putExtra(IntentHandler.EXTRA_SCROLL_TO_TEXT_FRAGMENT, "selector");
-        intent.setPackage(ContextUtils.getApplicationContext().getPackageName());
-        IntentUtils.addTrustedIntentExtras(intent);
 
         LoadUrlParams params = IntentHandler.createLoadUrlParamsForIntent(GOOGLE_URL, intent, 0);
         Assert.assertNull(params.getInternalScrollToTextFragment());
@@ -904,26 +908,26 @@ public class IntentHandlerRobolectricTest {
         assertNull(IntentHandler.getGlicConversationId(null));
         assertNull(IntentHandler.getGlicConversationId(new Intent(Intent.ACTION_VIEW)));
 
-        // Untrusted intent with EXTRA_GLIC_CONVERSATION_ID and non-Chrome appId should return null.
+        // Untrusted intent with EXTRA_CONVERSATION_ID and non-Chrome appId should return null.
         Intent untrustedIntent = new Intent(Intent.ACTION_VIEW);
-        untrustedIntent.putExtra(NotificationConstants.EXTRA_GLIC_CONVERSATION_ID, "conv_123");
+        untrustedIntent.putExtra(GlicIntentConstants.EXTRA_CONVERSATION_ID, "conv_123");
         untrustedIntent.putExtra(Browser.EXTRA_APPLICATION_ID, "com.example.otherapp");
         assertNull(IntentHandler.getGlicConversationId(untrustedIntent));
 
-        // Untrusted intent with EXTRA_GLIC_CONVERSATION_ID and Chrome's appId
+        // Untrusted intent with EXTRA_CONVERSATION_ID and Chrome's appId
         // (wasIntentSenderChrome
         // is false because it lacks trusted extras) should return null.
         Intent chromeAppIdIntent = new Intent(Intent.ACTION_VIEW);
-        chromeAppIdIntent.putExtra(NotificationConstants.EXTRA_GLIC_CONVERSATION_ID, "conv_123");
+        chromeAppIdIntent.putExtra(GlicIntentConstants.EXTRA_CONVERSATION_ID, "conv_123");
         chromeAppIdIntent.putExtra(Browser.EXTRA_APPLICATION_ID, context.getPackageName());
         assertNull(IntentHandler.getGlicConversationId(chromeAppIdIntent));
 
-        // Trusted intent from Chrome with EXTRA_GLIC_CONVERSATION_ID should return the conversation
+        // Trusted intent from Chrome with EXTRA_CONVERSATION_ID should return the conversation
         // ID.
         try {
             IntentUtils.setForceIsTrustedIntentForTesting(true);
             Intent trustedIntent = new Intent(Intent.ACTION_VIEW);
-            trustedIntent.putExtra(NotificationConstants.EXTRA_GLIC_CONVERSATION_ID, "conv_123");
+            trustedIntent.putExtra(GlicIntentConstants.EXTRA_CONVERSATION_ID, "conv_123");
             trustedIntent.setPackage(context.getPackageName());
             assertEquals("conv_123", IntentHandler.getGlicConversationId(trustedIntent));
         } finally {
@@ -945,7 +949,6 @@ public class IntentHandlerRobolectricTest {
                         /* tabGroupTitle= */ "Title",
                         /* mhtmlTabTitle= */ null,
                         /* tabGroupCollapsed= */ false,
-                        /* isGroupShared= */ false,
                         isIncognito);
         IntentHandler.setTabGroupMetadata(intent, metadata);
         if (isTrusted) {
@@ -973,16 +976,29 @@ public class IntentHandlerRobolectricTest {
 
     @Test
     public void testIsActorNotificationIntent() {
+        Context context = ContextUtils.getApplicationContext();
+
         assertFalse(IntentHandler.isActorNotificationIntent(null));
 
         Intent intent = new Intent(Intent.ACTION_VIEW);
         assertFalse(IntentHandler.isActorNotificationIntent(intent));
 
+        // Untrusted intents with Actor extras should be rejected.
         intent.putExtra(ActorNotificationFactory.EXTRA_SHOW_ACTOR_CONTROL, true);
+        assertFalse(IntentHandler.isActorNotificationIntent(intent));
+        intent.setPackage(context.getPackageName());
+        assertFalse(IntentHandler.isActorNotificationIntent(intent));
+
+        IntentUtils.addTrustedIntentExtras(intent);
         assertTrue(IntentHandler.isActorNotificationIntent(intent));
 
         intent = new Intent(Intent.ACTION_VIEW);
         intent.putExtra(NotificationConstants.EXTRA_ACTOR_TASK_ID, 123);
+        assertFalse(IntentHandler.isActorNotificationIntent(intent));
+        intent.setPackage(context.getPackageName());
+        assertFalse(IntentHandler.isActorNotificationIntent(intent));
+
+        IntentUtils.addTrustedIntentExtras(intent);
         assertTrue(IntentHandler.isActorNotificationIntent(intent));
     }
 

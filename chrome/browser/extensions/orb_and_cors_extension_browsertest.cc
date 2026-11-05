@@ -10,6 +10,7 @@
 #include "base/containers/to_vector.h"
 #include "base/files/file_path.h"
 #include "base/functional/bind.h"
+#include "base/functional/callback_helpers.h"
 #include "base/json/json_reader.h"
 #include "base/memory/raw_ptr.h"
 #include "base/run_loop.h"
@@ -17,6 +18,7 @@
 #include "base/strings/stringprintf.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/test/bind.h"
+#include "base/test/test_future.h"
 #include "base/values.h"
 #include "build/build_config.h"
 #include "chrome/browser/apps/platform_apps/app_browsertest_util.h"
@@ -75,6 +77,7 @@
 #include "net/dns/mock_host_resolver.h"
 #include "net/test/embedded_test_server/controllable_http_response.h"
 #include "net/test/embedded_test_server/embedded_test_server.h"
+#include "net/test/embedded_test_server/expectation_handler.h"
 #include "net/test/embedded_test_server/http_request.h"
 #include "services/network/public/cpp/cors/origin_access_list.h"
 #include "services/network/public/cpp/features.h"
@@ -83,8 +86,8 @@
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/public/common/storage_key/storage_key.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
 #include "ui/base/page_transition_types.h"
-#include "ui/base/window_open_disposition.h"
 #include "url/gurl.h"
 #include "url/origin.h"
 
@@ -2140,7 +2143,8 @@ IN_PROC_BROWSER_TEST_F(OrbAndCorsExtensionBrowserTest,
     NavigateParams nav_params(
         browser(), web_ui_url,
         ui::PageTransitionFromInt(ui::PAGE_TRANSITION_GENERATED));
-    nav_params.disposition = WindowOpenDisposition::NEW_FOREGROUND_TAB;
+    nav_params.disposition =
+        ui::mojom::WindowOpenDisposition::kNewForegroundTab;
     content::WebContentsAddedObserver new_web_contents_observer;
     Navigate(&nav_params);
 
@@ -2325,8 +2329,9 @@ using OriginHeaderExtensionBrowserTest = OrbAndCorsExtensionBrowserTest;
 IN_PROC_BROWSER_TEST_F(OriginHeaderExtensionBrowserTest,
                        OriginHeaderInCrossOriginGetRequest) {
   const char kResourcePath[] = "/simulated-resource";
-  net::test_server::ControllableHttpResponse http_request(
-      embedded_test_server(), kResourcePath);
+  net::test_server::ExpectationHandler handler(embedded_test_server());
+  base::test::TestFuture<net::test_server::HttpRequest> request_future;
+  handler.OnRequest(kResourcePath).RespondWith().SetValue(request_future);
   ASSERT_TRUE(embedded_test_server()->Start());
   ASSERT_TRUE(InstallExtension());
 
@@ -2355,9 +2360,9 @@ IN_PROC_BROWSER_TEST_F(OriginHeaderExtensionBrowserTest,
       content::JsReplace(kScriptTemplate, cross_site_resource));
 
   // Extract the Origin header.
-  http_request.WaitForRequest();
+  const net::test_server::HttpRequest& captured_request = request_future.Get();
   std::string actual_origin_header = "<none>";
-  const auto& headers_map = http_request.http_request()->headers;
+  const auto& headers_map = captured_request.headers;
   auto it = headers_map.find("Origin");
   if (it != headers_map.end()) {
     actual_origin_header = it->second;
@@ -3058,7 +3063,7 @@ IN_PROC_BROWSER_TEST_F(OrbAndCorsExtensionBrowserTest,
   ActiveTabPermissionGranter* granter =
       ActiveTabPermissionGranter::FromWebContents(active_web_contents());
   ASSERT_TRUE(granter);
-  granter->GrantIfRequested(extension());
+  granter->GrantIfRequested(extension(), base::DoNothing());
   waiter.WaitForActiveTabPermissionGranted(extension()->id());
 
   // 3. Navigate a separate, new tab to an extension origin.
@@ -3068,7 +3073,8 @@ IN_PROC_BROWSER_TEST_F(OrbAndCorsExtensionBrowserTest,
     NavigateParams nav_params(
         browser(), extension_resource,
         ui::PageTransitionFromInt(ui::PAGE_TRANSITION_GENERATED));
-    nav_params.disposition = WindowOpenDisposition::NEW_FOREGROUND_TAB;
+    nav_params.disposition =
+        ui::mojom::WindowOpenDisposition::kNewForegroundTab;
     content::WebContentsAddedObserver new_web_contents_observer;
     Navigate(&nav_params);
     extension_web_contents = new_web_contents_observer.GetWebContents();

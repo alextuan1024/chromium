@@ -115,7 +115,7 @@ std::u16string GetLastUpdateTimeMessage(base::Time time) {
   }
 
   const auto midnight_today = base::Time::Now().LocalMidnight();
-  const auto midnight_tomorrow = midnight_today + base::Days(1);
+  const auto midnight_tomorrow = midnight_today.NextLocalMidnight();
   if (midnight_today <= time && time < midnight_tomorrow) {
     return l10n_util::GetStringFUTF16(
         IDS_GLANCEABLES_TASKS_ERROR_LAST_UPDATE_TIME, time_of_day);
@@ -416,7 +416,7 @@ void GlanceablesTasksView::ScheduleUpdateTasks(ListShownContext context) {
   }
 
   SetIsLoading(true);
-  combobox_view()->GetViewAccessibility().SetDescription(u"");
+  combobox_view()->GetViewAccessibility().RemoveDescription();
 
   const auto* const active_task_list = GetActiveTaskList();
   tasks_combobox_model_->SaveLastSelectedTaskList(active_task_list->id);

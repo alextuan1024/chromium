@@ -295,6 +295,8 @@ void PageContainerLayoutAlgorithm::LayoutPageBorderBox(
   space_builder.SetIsPaintedAtomically(true);
   ConstraintSpace child_space = space_builder.ToConstraintSpace();
   LayoutAlgorithmParams params(page_border_box_node, geometry, child_space);
+  params.fragmentation.fragmented_oof_container =
+      container_builder_.GetFragmentedOofContainer();
   PageBorderBoxLayoutAlgorithm child_algorithm(params, content_node_,
                                                page_area_params_);
   const LayoutResult* result = child_algorithm.Layout();
@@ -563,9 +565,11 @@ PageContainerLayoutAlgorithm::EdgeMarginNodePreferredSize(
           GetConstraintSpace(), child.Style().GetWritingDirection(),
           /*is_new_fc=*/true);
       intrinsic_space_builder.SetCacheSlot(LayoutResultCacheSlot::kMeasure);
+      // We pass MinMaxSizesInput::Unconstrained() because page-margin boxes
+      // are not IFCs.
       minmax = ComputeMinAndMaxContentContributionForSelf(
                    child, intrinsic_space_builder.ToConstraintSpace(),
-                   MinMaxSizesInput::UnconstrainedUntriaged())
+                   MinMaxSizesInput::Unconstrained())
                    .sizes;
     } else {
       BoxStrut border_padding = ComputeBorders(child_space, child) +

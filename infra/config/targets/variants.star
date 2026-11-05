@@ -296,7 +296,6 @@ targets.variant(
     identifier = "iPad Air (6th generation) 27.2",
     mixins = [
         "ios_runtime_cache_27_2",
-        "use-ios-simulator-cache",
     ],
     args = [
         "--platform",
@@ -326,7 +325,6 @@ targets.variant(
     identifier = "iPad (A16) 27.2",
     mixins = [
         "ios_runtime_cache_27_2",
-        "use-ios-simulator-cache",
     ],
     args = [
         "--platform",
@@ -416,7 +414,6 @@ targets.variant(
     identifier = "iPad (10th generation) 27.2",
     mixins = [
         "ios_runtime_cache_27_2",
-        "use-ios-simulator-cache",
     ],
     args = [
         "--platform",
@@ -506,13 +503,26 @@ targets.variant(
     identifier = "iPhone 16 27.2",
     mixins = [
         "ios_runtime_cache_27_2",
-        "use-ios-simulator-cache",
     ],
     args = [
         "--platform",
         "iPhone 16",
         "--version",
         "27.2",
+    ],
+)
+
+targets.variant(
+    name = "SIM_IPHONE_DUO_27_2",
+    identifier = "iPhone Duo 27.2",
+    mixins = [
+        "ios_runtime_cache_27_2_iphone19_4",
+    ],
+    args = [
+        "--platform",
+        "iPhone Duo",
+        "--version",
+        "27.2-iphone19-4",
     ],
 )
 
@@ -566,7 +576,6 @@ targets.variant(
     identifier = "iPhone 16 Plus 27.2",
     mixins = [
         "ios_runtime_cache_27_2",
-        "use-ios-simulator-cache",
     ],
     args = [
         "--platform",
@@ -641,31 +650,12 @@ targets.variant(
     identifier = "iPhone SE (3rd generation) 27.2",
     mixins = [
         "ios_runtime_cache_27_2",
-        "use-ios-simulator-cache",
     ],
     args = [
         "--platform",
         "iPhone SE (3rd generation)",
         "--version",
         "27.2",
-    ],
-)
-
-targets.variant(
-    name = "WEBVIEW_FULL_CTS_TESTS",
-    identifier = "full_mode",
-    swarming = targets.swarming(
-        shards = 2,
-    ),
-)
-
-targets.variant(
-    name = "WEBVIEW_INSTANT_CTS_TESTS",
-    identifier = "instant_mode",
-    args = [
-        "--exclude-annotation",
-        "AppModeFull",
-        "--test-apk-as-instant",
     ],
 )
 

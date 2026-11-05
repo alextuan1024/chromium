@@ -29,8 +29,8 @@
 #include "chrome/browser/indigo/proto/indigo_prompts.pb.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/common/chrome_features.h"
+#include "components/optimization_guide/core/feature_registry/feature_keys.h"
 #include "components/optimization_guide/core/feature_registry/feature_registration.h"
-#include "components/optimization_guide/core/optimization_guide_prefs.h"
 #include "components/policy/core/common/management/management_service.h"
 #include "components/prefs/pref_change_registrar.h"
 #include "components/prefs/pref_service.h"
@@ -572,6 +572,11 @@ bool IndigoService::IsOriginAllowed(const url::Origin& origin) const {
 void IndigoService::SetConfigForTesting(ConfigData config) {
   config_ = std::move(config);
   config_loaded_ = true;
+}
+
+void IndigoService::ResetConfigForTesting() {
+  config_ = ConfigData();
+  config_loaded_ = false;
 }
 
 }  // namespace indigo

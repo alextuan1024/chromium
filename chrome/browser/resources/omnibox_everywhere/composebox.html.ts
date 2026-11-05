@@ -17,12 +17,10 @@ export function getHtml(this: OmniboxEverywhereComposeboxElement) {
           animation-state="${this.animationState}"
           .coloredTicTacVoiceAnimationEnabled="${false}"
           .isListening="${this.isListening}"
-          .entrypointName="${this.entrypointName}"
           .requiresVoice="${this.shouldShowVoiceSearchAnimation()}"
           .transcript="${this.transcript}"
           .receivedSpeech="${this.receivedSpeech}"
           .energyEffectAnimationEnabled="${this.energyEffectAnimationEnabled}"
-          .isZeroState="${false}"
           exportparts="composebox-background">
       </search-animated-glow>
     ` : ''}
@@ -115,7 +113,6 @@ export function getHtml(this: OmniboxEverywhereComposeboxElement) {
                         .smartTabSharingActive="${this.smartTabSharingActive}"
                         .energyEffectAnimationEnabled="${
                             this.energyEffectAnimationEnabled}"
-                        ?upload-button-disabled="${this.uploadButtonDisabled}"
                         ?show-context-menu-description="${
                             this.showContextMenuDescription}"
                         @context-menu-entrypoint-click="${
@@ -142,7 +139,8 @@ export function getHtml(this: OmniboxEverywhereComposeboxElement) {
                 </div>
                 ` : ''}
                 <div class="searchbox-icon-button-container lens ${
-                    this.isScreenshotMenuOpen ? 'menu-open' : ''}">
+                    this.isScreenshotMenuOpen ? 'menu-open' : ''} ${
+                    this.isLensHelpBubbleShowing ? 'help-bubble-open' : ''}">
                   <button id="lensSearchButton" class="searchbox-icon-button"
                       @pointerdown="${this.onLensSearchPointerdown_}"
                       @pointercancel="${this.onLensSearchPointercancel_}"

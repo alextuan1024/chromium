@@ -44,7 +44,7 @@
 #include "mojo/public/cpp/bindings/remote_set.h"
 
 #if BUILDFLAG(ENABLE_CDM_PROVISION_FETCHER)
-#include "content/public/browser/provision_fetcher_impl.h"
+#include "content/browser/media/provision_fetcher_impl.h"
 #include "content/public/browser/render_process_host.h"
 #include "content/public/browser/storage_partition.h"
 #include "services/network/public/cpp/shared_url_loader_factory.h"
@@ -327,17 +327,35 @@ class MediaFoundationRendererExtensionProxy
 
   // media::mojom::MediaFoundationRendererExtension implementation.
   void GetDCOMPSurface(GetDCOMPSurfaceCallback callback) override {
-    target_remote_->GetDCOMPSurface(std::move(callback));
+    if (!HasTargetRemote()) {
+      std::move(callback).Run(std::nullopt, "Target disconnected");
+      return;
+    }
+    target_remote_->GetDCOMPSurface(mojo::WrapCallbackWithDefaultInvokeIfNotRun(
+        std::move(callback), std::nullopt, "Target disconnected"));
   }
   void SetVideoStreamEnabled(bool enabled) override {
+    if (!HasTargetRemote()) {
+      return;
+    }
     target_remote_->SetVideoStreamEnabled(enabled);
   }
   void SetOutputRect(const gfx::Rect& rect,
                      SetOutputRectCallback callback) override {
-    target_remote_->SetOutputRect(rect, std::move(callback));
+    if (!HasTargetRemote()) {
+      std::move(callback).Run(false);
+      return;
+    }
+    target_remote_->SetOutputRect(
+        rect, mojo::WrapCallbackWithDefaultInvokeIfNotRun(std::move(callback),
+                                                          false));
   }
 
  private:
+  bool HasTargetRemote() const {
+    return target_remote_.is_bound() && target_remote_.is_connected();
+  }
+
   void OnTargetDisconnect() {
     // The utility process disconnected (MediaFoundationRenderer destroyed).
     // Revoke the grant by resetting it.
@@ -494,9 +512,17 @@ void MediaInterfaceProxy::CreateMediaFoundationRenderer(
   auto* factory = GetMediaFoundationServiceInterfaceFactory(base::FilePath());
   if (factory) {
     // `MediaFoundationRenderer` bypasses the browser's audio service.
-    // Authorize the frame for audibility bypass claims.
-    AudibilityBypassTracker::ScopedGrant grant =
-        AudibilityBypassTracker::AddGrant(&render_frame_host());
+    // Authorize the frame for audibility bypass claims — but only when the
+    // document is in a legitimate MediaFoundation playback context (clear
+    // playback enabled, or a hardware-secure CDM created via CreateCdm()).
+    // Otherwise any renderer could self-mint the authorization and spoof
+    // tab audibility (WasRecentlyAudible / speaker indicator / Auto-PiP
+    // gates) with no real playback.
+    AudibilityBypassTracker::ScopedGrant grant;
+    if (media::SupportMediaFoundationClearPlayback() ||
+        mf_protected_playback_context_) {
+      grant = AudibilityBypassTracker::AddGrant(&render_frame_host());
+    }
 
     mojo::PendingRemote<media::mojom::MediaFoundationRendererExtension>
         utility_extension_remote;
@@ -582,6 +608,10 @@ void MediaInterfaceProxy::CreateCdm(const media::CdmConfig& cdm_config,
       bool is_cached_factory = mf_interface_factory_remote_.is_bound();
       auto* factory = GetMediaFoundationServiceInterfaceFactory(cdm_info->path);
       if (factory) {
+        // A hardware-secure CDM is being created for this document, so
+        // subsequent MediaFoundationRenderer creation is part of a real
+        // protected-playback setup and may claim audibility bypass.
+        mf_protected_playback_context_ = true;
         factory->CreateCdm(
             cdm_config,
             WrapCreateCdmCallback(base::BindOnce(

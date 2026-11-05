@@ -19,10 +19,12 @@
 #include "mojo/public/cpp/bindings/pending_receiver.h"
 #include "mojo/public/cpp/bindings/pending_remote.h"
 #include "mojo/public/cpp/bindings/receiver.h"
+#include "ui/base/mojom/menu_source_type.mojom-forward.h"
 #include "ui/menus/simple_menu_model.h"
 #include "ui/webui/resources/cr_components/composebox/composebox.mojom.h"
 #include "ui/webui/resources/cr_components/help_bubble/help_bubble.mojom.h"
 #include "ui/webui/resources/cr_components/most_visited/most_visited.mojom.h"
+#include "ui/webui/resources/cr_components/search/plural_string_provider.mojom.h"
 
 class ComposeboxEverywhereHandler;
 class ContextualSearchboxHandler;
@@ -74,6 +76,8 @@ class OmniboxEverywhereUI
       public ContextualSearchboxScreenshareController::Delegate,
       public ui::SimpleMenuModel::Delegate {
  public:
+  static constexpr int kProfileAvatarSizePx = 96;
+
   explicit OmniboxEverywhereUI(content::WebUI* web_ui);
   OmniboxEverywhereUI(const OmniboxEverywhereUI&) = delete;
   OmniboxEverywhereUI& operator=(const OmniboxEverywhereUI&) = delete;
@@ -102,6 +106,14 @@ class OmniboxEverywhereUI
     return "OmniboxEverywhere";
   }
 
+  // Returns whether AI Mode (Fusebox) is eligible for `profile` via
+  // `AimEligibilityService`.
+  static bool IsFuseboxEligible(Profile* profile);
+
+  // Returns whether AI Mode (Fusebox) is both eligible and enabled via the
+  // Omnibox Everywhere "Show AI Mode" preference for `profile`.
+  static bool IsFuseboxEnabled(Profile* profile);
+
   // most_visited::mojom::MostVisitedPageHandlerFactory:
   void BindInterface(
       mojo::PendingReceiver<most_visited::mojom::MostVisitedPageHandlerFactory>
@@ -110,6 +122,12 @@ class OmniboxEverywhereUI
       mojo::PendingRemote<most_visited::mojom::MostVisitedPage> pending_page,
       mojo::PendingReceiver<most_visited::mojom::MostVisitedPageHandler>
           pending_page_handler) override;
+
+  // Binds the plural_string::mojom::PluralStringProvider used by the shared
+  // searchbox and composebox components.
+  void BindInterface(
+      mojo::PendingReceiver<plural_string::mojom::PluralStringProvider>
+          receiver);
 
   // composebox::mojom::PageHandlerFactory:
   void BindInterface(
@@ -141,6 +159,13 @@ class OmniboxEverywhereUI
   // Shows the native Views context menu anchored below the WebUI entrypoint
   // button. `anchor_rect` is in WebUI viewport coordinates (CSS DIPs).
   void ShowContextActionMenu(const gfx::Rect& anchor_rect);
+
+  // Shows the native overflow (three-dot) menu containing Omnibox Everywhere
+  // settings, anchored below the WebUI overflow button. `anchor_rect` is in
+  // WebUI viewport coordinates (CSS DIPs); `source_type` is how the button was
+  // activated.
+  void ShowOverflowMenu(const gfx::Rect& anchor_rect,
+                        ui::mojom::MenuSourceType source_type);
 
   // Computes the screen point for anchoring the native context menu given the
   // entrypoint bounding box in WebUI viewport coordinates and container bounds.
@@ -208,12 +233,16 @@ class OmniboxEverywhereUI
       omnibox_everywhere::mojom::ComposeboxInitialStatePtr initial_state);
 
   void OnContextMenuClosed();
+  // Notifies the WebUI that the overflow (three-dot) menu closed.
+  void OnOverflowMenuClosed();
 
   bool is_composebox_mode() const { return is_composebox_mode_; }
   void SetIsComposebox(bool is_composebox);
+  void OnDismissMostVisited();
 
   void AddFileContext(const base::UnguessableToken& token,
                       searchbox::mojom::SelectedFileInfoPtr file_info);
+  void AddScreenshotContextToken(const base::UnguessableToken& token);
   void OnContextualInputStatusChanged(
       const base::UnguessableToken& token,
       contextual_search::ContextUploadStatus status,
@@ -227,7 +256,10 @@ class OmniboxEverywhereUI
   void ExecuteScreenshotCommand(
       int command_id,
       base::WeakPtr<ContextualSearchboxScreenshareController> controller);
+  void OnScreenshotCaptureDone(
+      const std::optional<base::UnguessableToken>& token);
   void ResetScreenshotMenu();
+  void SynthesizeMouseMoveEvent();
 
   // Buffers upload status notifications that arrive while the WebUI is
   // transitioning to composebox mode before `composebox_handler_` is bound.
@@ -240,8 +272,10 @@ class OmniboxEverywhereUI
 
   const raw_ptr<Profile> profile_;
   bool is_composebox_mode_ = false;
+  bool screenshot_origin_was_searchbox_ = false;
 
   std::vector<PendingUploadStatus> pending_upload_statuses_;
+  std::vector<base::UnguessableToken> pending_screenshot_tokens_;
 
   std::unique_ptr<ComposeboxEverywhereHandler> composebox_handler_;
   std::unique_ptr<OmniboxEverywhereHandler> omnibox_handler_;

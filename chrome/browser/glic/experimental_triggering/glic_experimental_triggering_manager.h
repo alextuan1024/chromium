@@ -16,6 +16,7 @@
 #include "chrome/browser/glic/experimental_triggering/glic_experimental_triggering_types.h"
 #include "chrome/browser/glic/host/glic.mojom.h"
 #include "chrome/browser/glic/public/context/glic_sharing_manager.h"
+#include "chrome/browser/glic/public/glic_provider_metrics.h"
 #include "mojo/public/cpp/bindings/pending_remote.h"
 #include "mojo/public/cpp/bindings/remote.h"
 
@@ -48,14 +49,24 @@ class GlicExperimentalTriggeringManager {
           handler,
       base::OnceCallback<void(bool)> success_status_callback);
 
+  // Forwards an opaque, serialized confirmation response to the web client so
+  // that it can resolve a pending confirmation dialog. `callback` is run with
+  // true if the web client applied the response, and false otherwise
+  // (including if the web client is not connected or drops the reply).
+  virtual void SubmitConfirmationResponse(
+      const std::vector<uint8_t>& response,
+      base::OnceCallback<void(bool accepted)> callback);
+
  private:
   void OnPageContextFetchedForEncryption(
+      GlicMetricReporter reporter,
       std::vector<uint8_t> public_key,
       std::vector<uint8_t> auth_secret,
       base::OnceCallback<
           void(base::expected<std::string, ScreenshotResult::Status>)> callback,
       glic::GlicGetContextResult result);
   void OnScreenshotEncrypted(
+      GlicMetricReporter reporter,
       uint32_t width_pixels,
       uint32_t height_pixels,
       std::string mime_type,

@@ -9,7 +9,9 @@
 #include "chrome/browser/ui/actions/chrome_action_id.h"
 #include "chrome/browser/ui/browser_element_identifiers.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "chrome/browser/ui/tabs/organizer/organizer_panel_utils.h"
 #include "chrome/browser/ui/views/animations/organizer_panel_animations.h"
+#include "chrome/browser/ui/views/tabs/organizer/layout_constants.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/views/interaction/interactive_views_test.h"
 #include "ui/views/layout/fill_layout.h"
@@ -96,7 +98,9 @@ views::ProposedLayout FakeBrowserView::CalculateProposedLayout(
   return layout;
 }
 
-OrganizerPanelTestBase::OrganizerPanelTestBase() = default;
+OrganizerPanelTestBase::OrganizerPanelTestBase() {
+  feature_list_.InitAndEnableFeature(kOrganizerPanel);
+}
 OrganizerPanelTestBase::~OrganizerPanelTestBase() = default;
 
 void OrganizerPanelTestBase::SetUp() {
@@ -108,6 +112,8 @@ void OrganizerPanelTestBase::SetUp() {
       FROM_HERE, base::Seconds(10));
 
   profile_ = std::make_unique<TestingProfile>();
+  EXPECT_CALL(browser_, GetType())
+      .WillRepeatedly(testing::Return(BrowserWindowInterface::TYPE_NORMAL));
   EXPECT_CALL(browser_, GetProfile())
       .WillRepeatedly(testing::Return(profile_.get()));
 
@@ -140,6 +146,13 @@ void OrganizerPanelTestBase::SetUp() {
           browser_);
   EXPECT_CALL(*vertical_tab_strip_controller_, ShouldDisplayVerticalTabs)
       .WillRepeatedly(testing::Return(false));
+  EXPECT_CALL(*vertical_tab_strip_controller_, IsCollapsed)
+      .WillRepeatedly(testing::Return(false));
+  EXPECT_CALL(*vertical_tab_strip_controller_, IsExpandOnHoverEnabled)
+      .WillRepeatedly(testing::Return(true));
+  EXPECT_CALL(*vertical_tab_strip_controller_, GetUncollapsedWidth)
+      .WillRepeatedly(
+          testing::Return(organizer_panel::kOrganizerPanelMinWidth));
 
   state_controller_ =
       std::make_unique<OrganizerPanelController>(browser_, root_action_);
@@ -155,8 +168,7 @@ void OrganizerPanelTestBase::SetUp() {
   // to be reset later as it will be torn down with its parent view.
   auto panel = std::make_unique<views::View>();
   panel_ = panel.get();
-  panel_->SetProperty(views::kElementIdentifierKey,
-                      kOrganizerPanelViewElementId);
+  panel_->SetProperty(views::kElementIdentifierKey, kOrganizerPanelElementId);
   SetContextWidget(widget_.get());
 
   BeforeSetPanel();
@@ -213,7 +225,7 @@ OrganizerPanelTestBase::ShowPanel() {
       EnsureNotPresent(OrganizerTrayView::kTrayElementId), TogglePanel(),
       InParallel(RunSubsequence(SetAnimationValue(1.0)),
                  RunSubsequence(WaitForShow(OrganizerTrayView::kTrayElementId),
-                                WaitForShow(kOrganizerPanelViewElementId))));
+                                WaitForShow(kOrganizerPanelElementId))));
   AddDescriptionPrefix(steps, "ShowPanel()");
   return steps;
 }
@@ -224,19 +236,9 @@ OrganizerPanelTestBase::HidePanel() {
       TogglePanel(),
       InParallel(RunSubsequence(SetAnimationValue(0.0)),
                  RunSubsequence(WaitForHide(OrganizerTrayView::kTrayElementId),
-                                WaitForHide(kOrganizerPanelViewElementId))));
+                                WaitForHide(kOrganizerPanelElementId))));
   AddDescriptionPrefix(steps, "HidePanel()");
   return steps;
-}
-
-views::test::InteractiveViewsTestApi::StepBuilder
-OrganizerPanelTestBase::SetExclusion(int width, int height) {
-  return WithView(OrganizerTrayView::kTrayElementId,
-                  [width, height](OrganizerTrayView* tray) {
-                    tray->SetTopLeadingExclusion(gfx::Size(width, height));
-                    tray->GetWidget()->LayoutRootViewIfNecessary();
-                  })
-      .SetDescription("SetExclusion()");
 }
 
 }  // namespace organizer_panel::test

@@ -38,6 +38,9 @@ public final class TestSideUiContainer implements SideUiContainer {
     /** Map of {@link Tab} to whether this container has content to show for that tab. */
     public final Map<Tab, Boolean> mHasContentForTabMap = new ArrayMap<>();
 
+    /** Number of times {@link #hasContentToShow} is called. */
+    public int mNumHasContentToShowCalls;
+
     /**
      * Whether browser top controls should remain locked when this container is showing.
      *
@@ -60,28 +63,37 @@ public final class TestSideUiContainer implements SideUiContainer {
     /** Minimum width for this {@link SideUiContainer}. */
     public int mMinWidthDp;
 
+    /**
+     * How much wider than its reserved width this container renders, i.e. how much of the web
+     * contents it overlays. 0 for a container that doesn't overlay them.
+     */
+    public @Px int mOverlayWidth;
+
     /** Number of times {@link #onWillAutoClose} is called. */
     public int mNumOnWillAutoCloseReceived;
+
+    /** The last {@code isShowable} received by {@link #onWillAutoClose}. */
+    public @Nullable Boolean mLastIsShowableOnWillAutoClose;
 
     /** Number of times {@link #onWillAutoRestore} is called. */
     public int mNumOnWillAutoRestoreReceived;
 
     /**
-     * Whether to call {@link SideUiCoordinator#updateUi} in {@link #onWillAutoClose()}.
+     * Whether to call {@link SideUiCoordinator#updateUi} in {@link #onWillAutoClose}.
      *
      * <p>When this is true, it simulates a common mistake in a {@link SideUiContainer}. Please see
-     * the documentation of {@link #onWillAutoClose()} for details.
+     * the documentation of {@link #onWillAutoClose} for details.
      */
     public boolean mRequestUiUpdateOnWillAutoClose;
 
     /** Number of times {@link #onUiUpdateStarting} is called. */
     public int mNumOnUiUpdateStartingReceived;
 
-    /** The last {@code oldWidth} received by {@link #onUiUpdateStarting}. */
-    public @Nullable @Px Integer mLastOldWidthOnUpdateStarting;
+    /** The last {@code oldReservedWidth} received by {@link #onUiUpdateStarting}. */
+    public @Nullable @Px Integer mLastOldReservedWidthOnUpdateStarting;
 
-    /** The last {@code newWidth} received by {@link #onUiUpdateStarting}. */
-    public @Nullable @Px Integer mLastNewWidthOnUpdateStarting;
+    /** The last {@code newReservedWidth} received by {@link #onUiUpdateStarting}. */
+    public @Nullable @Px Integer mLastNewReservedWidthOnUpdateStarting;
 
     /** The last {@code oldHeightType} received by {@link #onUiUpdateStarting}. */
     public @HeightType int mLastOldHeightTypeOnUpdateStarting;
@@ -92,11 +104,11 @@ public final class TestSideUiContainer implements SideUiContainer {
     /** Number of times {@link #onUiUpdateCompleted} is called. */
     public int mNumOnUiUpdateCompletedReceived;
 
-    /** The last {@code oldWidth} received by {@link #onUiUpdateCompleted}. */
-    public @Nullable @Px Integer mLastOldWidthOnUpdateCompleted;
+    /** The last {@code oldReservedWidth} received by {@link #onUiUpdateCompleted}. */
+    public @Nullable @Px Integer mLastOldReservedWidthOnUpdateCompleted;
 
-    /** The last {@code newWidth} received by {@link #onUiUpdateCompleted}. */
-    public @Nullable @Px Integer mLastNewWidthOnUpdateCompleted;
+    /** The last {@code newReservedWidth} received by {@link #onUiUpdateCompleted}. */
+    public @Nullable @Px Integer mLastNewReservedWidthOnUpdateCompleted;
 
     /** The last {@code oldHeightType} received by {@link #onUiUpdateCompleted}. */
     public @HeightType int mLastOldHeightTypeOnUpdateCompleted;
@@ -160,7 +172,8 @@ public final class TestSideUiContainer implements SideUiContainer {
             return new SideUiSize(0, HeightType.NOT_APPLICABLE);
         }
 
-        return new SideUiSize(availableWidth < maxWidth ? availableWidth : maxWidth, mHeightType);
+        @Px int reservedWidth = availableWidth < maxWidth ? availableWidth : maxWidth;
+        return new SideUiSize(reservedWidth, reservedWidth + mOverlayWidth, mHeightType);
     }
 
     @Override
@@ -171,13 +184,14 @@ public final class TestSideUiContainer implements SideUiContainer {
 
     @Override
     public boolean hasContentToShow(Tab tab) {
+        mNumHasContentToShowCalls++;
         return mHasContentForTabMap.getOrDefault(tab, true);
     }
 
     @Override
-    public void setWidth(int width) {
+    public void setRenderedWidth(int renderedWidth) {
         LayoutParams layoutParams = mSideUiContainerView.getLayoutParams();
-        layoutParams.width = width;
+        layoutParams.width = renderedWidth;
         mSideUiContainerView.setLayoutParams(layoutParams);
     }
 
@@ -188,33 +202,34 @@ public final class TestSideUiContainer implements SideUiContainer {
 
     @Override
     public void onUiUpdateStarting(
-            @Px int oldWidth,
-            @Px int newWidth,
+            @Px int oldReservedWidth,
+            @Px int newReservedWidth,
             @HeightType int oldHeightType,
             @HeightType int newHeightType) {
         mNumOnUiUpdateStartingReceived++;
-        mLastOldWidthOnUpdateStarting = oldWidth;
-        mLastNewWidthOnUpdateStarting = newWidth;
+        mLastOldReservedWidthOnUpdateStarting = oldReservedWidth;
+        mLastNewReservedWidthOnUpdateStarting = newReservedWidth;
         mLastOldHeightTypeOnUpdateStarting = oldHeightType;
         mLastNewHeightTypeOnUpdateStarting = newHeightType;
     }
 
     @Override
     public void onUiUpdateCompleted(
-            @Px int oldWidth,
-            @Px int newWidth,
+            @Px int oldReservedWidth,
+            @Px int newReservedWidth,
             @HeightType int oldHeightType,
             @HeightType int newHeightType) {
         mNumOnUiUpdateCompletedReceived++;
-        mLastOldWidthOnUpdateCompleted = oldWidth;
-        mLastNewWidthOnUpdateCompleted = newWidth;
+        mLastOldReservedWidthOnUpdateCompleted = oldReservedWidth;
+        mLastNewReservedWidthOnUpdateCompleted = newReservedWidth;
         mLastOldHeightTypeOnUpdateCompleted = oldHeightType;
         mLastNewHeightTypeOnUpdateCompleted = newHeightType;
     }
 
     @Override
-    public void onWillAutoClose() {
+    public void onWillAutoClose(boolean isShowable) {
         mNumOnWillAutoCloseReceived++;
+        mLastIsShowableOnWillAutoClose = isShowable;
 
         if (mRequestUiUpdateOnWillAutoClose) {
             mSideUiCoordinator.updateUi(

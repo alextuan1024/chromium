@@ -109,7 +109,7 @@ void ReparentSubsequentFloatingOrOutOfFlow(LayoutBlockFlow* from,
                                            LayoutObject* next) {
   while (next && next->IsFloatingOrOutOfFlowPositioned()) {
     LayoutObject* sibling = next->NextSibling();
-    from->MoveChildTo(to, next, nullptr, true);
+    from->MoveChildTo(to, next);
     next = sibling;
   }
 }
@@ -119,7 +119,7 @@ void ReparentPrecedingFloatingOrOutOfFlow(LayoutBlockFlow* from,
                                           LayoutObject* prev) {
   while (prev && prev->IsFloatingOrOutOfFlowPositioned()) {
     LayoutObject* sibling = prev->NextSibling();
-    from->MoveChildTo(to, prev, to->FirstChild(), true);
+    from->MoveChildTo(to, prev, to->FirstChild());
     prev = sibling;
   }
 }
@@ -151,7 +151,7 @@ LayoutBlockFlow* LayoutBlockFlow::CreateAnonymous(Document& document,
 bool LayoutBlockFlow::IsInitialLetterBox() const {
   NOT_DESTROYED();
   return IsA<FirstLetterPseudoElement>(GetNode()) &&
-         !StyleRef().InitialLetter().IsNormal();
+         !Style().InitialLetter().IsNormal();
 }
 
 bool LayoutBlockFlow::CanContainFirstFormattedLine() const {
@@ -264,7 +264,7 @@ void LayoutBlockFlow::AddChild(LayoutObject* new_child,
     // and that is not inline level, but IsInline().
     if (new_child->IsInline() && !new_child->IsLayoutOutsideListMarker()) {
       // No suitable existing anonymous block-flow - create a new one.
-      auto* new_block_flow = To<LayoutBlockFlow>(CreateAnonymousBlock());
+      auto* new_block_flow = To<LayoutBlockFlow>(CreateAnonymousChild());
       LayoutBox::AddChild(new_block_flow, before_child);
       // Reparent adjacent floating or out-of-flow siblings to the new block.
       ReparentPrecedingFloatingOrOutOfFlow(this, new_block_flow,
@@ -289,7 +289,7 @@ void LayoutBlockFlow::AddChild(LayoutObject* new_child,
     LayoutObject* next_sibling = NextSibling();
     // Invoking RemoveChild may destroy `parent_block_flow`.
     parent_block_flow->Children()->RemoveChildNode(parent_block_flow, this);
-    MoveAllChildrenTo(parent_block_flow, next_sibling, true);
+    MoveAllChildrenTo(parent_block_flow, next_sibling);
     Destroy();
   }
 }
@@ -328,8 +328,7 @@ void LayoutBlockFlow::RemoveChild(LayoutObject* old_child) {
         // `next_block_flow` might be a non-anonymous block-flow for InsertHTML
         // TestRendering.
         if (next_block_flow->IsAnonymous()) {
-          MoveAllChildrenTo(next_block_flow, next_block_flow->FirstChild(),
-                            /* full_remove_insert */ true);
+          MoveAllChildrenTo(next_block_flow, next_block_flow->FirstChild());
         }
       }
     }
@@ -393,13 +392,11 @@ void LayoutBlockFlow::CollapseAnonymousBlockChild(LayoutBlockFlow* child) {
   NOT_DESTROYED();
   if (!AllowsCollapseAnonymousBlockChild(*this, *child))
     return;
-  SetNeedsLayoutAndIntrinsicWidthsRecalcAndFullPaintInvalidation(
-      layout_invalidation_reason::kChildAnonymousBlockChanged);
 
-  child->MoveAllChildrenTo(this, child->NextSibling(), child->HasLayer());
+  LayoutObject* next_sibling = child->NextSibling();
+  Children()->RemoveChildNode(this, child);
   SetChildrenInline(child->ChildrenInline());
-
-  Children()->RemoveChildNode(this, child, child->HasLayer());
+  child->MoveAllChildrenTo(this, next_sibling);
   child->Destroy();
 }
 
@@ -525,10 +522,9 @@ void LayoutBlockFlow::MakeChildrenNonInline(LayoutObject* insertion_point) {
 
     child = inline_run_end->NextSibling();
 
-    LayoutBlock* block = CreateAnonymousBlock();
+    LayoutBlock* block = CreateAnonymousChild();
     Children()->InsertChildNode(this, block, inline_run_start);
-    MoveChildrenTo(block, inline_run_start, child,
-                   /*full_remove_insert=*/true);
+    MoveChildrenTo(block, inline_run_start, child);
   }
 
 #if DCHECK_IS_ON()
@@ -546,14 +542,14 @@ bool LayoutBlockFlow::ShouldTruncateOverflowingText() const {
   const LayoutObject* style_object = this;
   if (IsAnonymousBlockFlow()) {
     const LayoutObject* parent = Parent();
-    if (!parent || !parent->BehavesLikeBlockContainer()) {
+    if (!parent || !parent->CanApplyTextOverflow()) {
       return false;
     }
     style_object = parent;
   }
   const LayoutObject* scroll_object = style_object->ScrollerForTextOverflow();
   if (!scroll_object->HasNonVisibleOverflow() ||
-      style_object->StyleRef().TextOverflow().IsClip()) {
+      style_object->Style().TextOverflow().IsClip()) {
     return false;
   }
   // If selection focus is inside this element, don't truncate (show full text).
@@ -634,7 +630,7 @@ bool LayoutBlockFlow::AllowsColumns() const {
   // We don't allow custom layout and multicol on the same object. This is
   // similar to not allowing it for flexbox, grids and tables (although those
   // don't create LayoutBlockFlow, so we don't need to check for those here).
-  if (StyleRef().IsDisplayLayoutCustom()) {
+  if (Style().IsDisplayLayoutCustom()) {
     return false;
   }
 
@@ -654,7 +650,7 @@ bool LayoutBlockFlow::AllowsColumns() const {
 void LayoutBlockFlow::UpdateForMulticol() {
   NOT_DESTROYED();
   auto ShouldBeMulticol = [this]() -> bool {
-    if (!StyleRef().SpecifiesColumns() || !AllowsColumns()) {
+    if (!Style().SpecifiesColumns() || !AllowsColumns()) {
       return false;
     }
 
@@ -713,7 +709,7 @@ void LayoutBlockFlow::SetShouldDoFullPaintInvalidationForFirstLine() {
   DCHECK(ChildrenInline());
 
   const auto fragments = PhysicalFragments();
-  if (fragments.IsEmpty()) {
+  if (fragments.empty()) {
     return;
   }
   for (const PhysicalBoxFragment& fragment : fragments) {
@@ -736,11 +732,11 @@ void LayoutBlockFlow::SetShouldDoFullPaintInvalidationForFirstLine() {
         }
         LayoutObject* layout_object = item->GetMutableLayoutObject();
         DCHECK(layout_object);
-        layout_object->StyleRef().ClearCachedPseudoElementStyles();
+        layout_object->Style().ClearCachedPseudoElementStyles();
         item->GetMutableForPainting().InvalidateInkOverflow();
         layout_object->SetShouldDoFullPaintInvalidation();
       }
-      StyleRef().ClearCachedPseudoElementStyles();
+      Style().ClearCachedPseudoElementStyles();
       SetShouldDoFullPaintInvalidation();
       return;
     }

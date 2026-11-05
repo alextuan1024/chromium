@@ -58,6 +58,7 @@ source_set("platform_browser_tests") {
   sources = [
     "prefetch_browsertest.cc",
     "search_prefetch/search_preload_unified_browsertest.cc",
+    "zero_suggest_prefetch/zero_suggest_prefetch_browsertest.cc",
   ]
 
   defines = [ "HAS_OUT_OF_PROC_TEST_RUNNER" ]
@@ -81,15 +82,22 @@ source_set("platform_browser_tests") {
     "//chrome/test/base:browser_test_waiters",
     "//chrome/test/base:chrome_test_utils",
     "//components/omnibox/browser",
+    "//components/omnibox/common",
     "//components/page_load_metrics/browser",
     "//components/page_load_metrics/browser:test_support",
+    "//components/search_engines",
   ]
 
   if (use_blink) {
     deps += [ "//third_party/blink/public/common:preloading_headers" ]
   }
 
-  data = [ "//chrome/test/data/" ]
+  data = [
+    "//chrome/test/data/client_hints/",
+    "//chrome/test/data/empty.html",
+    "//chrome/test/data/simple.html",
+    "//chrome/test/data/title1.html",
+  ]
   if (!is_android) {
     deps += [ "//chrome/browser/ui:browser_window_header" ]
   }
@@ -180,6 +188,7 @@ if (!is_android) {
       "//chrome/browser/search_engines",
       "//chrome/browser/ui:browser_window_header",
       "//chrome/browser/ui/browser_window",
+      "//chrome/browser/ui/views/frame:browser_view_header",
       "//chrome/test:test_support",
       "//chrome/test/base:browser_test_waiters",
       "//components/embedder_support",
@@ -188,10 +197,7 @@ if (!is_android) {
       "//components/privacy_sandbox:features",
       "//components/security_state/content",
       "//components/ukm:test_support",
+      "//ui/views",
     ]
-
-    # TODO(crbug.com/40031409): Fix code that adds exit-time destructors and
-    # enable the diagnostic by removing this line.
-    configs += [ "//build/config/compiler:no_exit_time_destructors" ]
   }
 }

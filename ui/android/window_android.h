@@ -121,6 +121,7 @@ class UI_ANDROID_EXPORT WindowAndroid : public ViewAndroid,
   void Animate(base::TimeTicks begin_frame_time);
   void OnVisibilityChanged(JNIEnv* env,
                            bool visible);
+  void OnOcclusionChanged(JNIEnv* env, bool occluded);
   void OnActivityStopped(JNIEnv* env);
   void OnActivityStarted(JNIEnv* env);
   void OnUpdateRefreshRate(JNIEnv* env,
@@ -266,7 +267,7 @@ inline ui::WindowAndroid* FromJniType<ui::WindowAndroid*>(
 template <>
 inline ScopedJavaLocalRef<jobject> ToJniType(JNIEnv* env,
                                              ui::WindowAndroid* obj) {
-  return obj->GetJavaObject();
+  return obj ? obj->GetJavaObject() : nullptr;
 }
 }  // namespace jni_zero
 

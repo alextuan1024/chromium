@@ -50,8 +50,8 @@ const LayoutBlockFlow* GetInlineFormattingContext(const Node& node) {
   // For <textarea>, ignore internal anonymous IFCs for backward compatibility.
   if (block_flow && block_flow->IsAnonymous() &&
       node.IsInUserAgentShadowRoot()) {
-    for (const LayoutBlock* parent = block_flow->ContainingBlock(); parent;
-         parent = parent->ContainingBlock()) {
+    for (const LayoutBox* parent = block_flow->ContainingBox(); parent;
+         parent = parent->ContainingBox()) {
       if (!parent->IsAnonymous() && parent->IsLayoutBlockFlow()) {
         return To<LayoutBlockFlow>(parent);
       }
@@ -82,6 +82,13 @@ bool FindBuffer::ShouldIgnoreContents(const Node& node) {
       if (control->IsPreviewed()) {
         return true;
       }
+    }
+    // The autofill popover should not be showing, otherwise it would be
+    // possible for the page to figure out what the suggested option is.
+    if (const auto* select = DynamicTo<HTMLSelectElement>(element)) {
+      HTMLSelectElement::SelectAutofillPreviewElement* preview =
+          select->GetAutofillPreviewElement();
+      CHECK(!preview || !preview->popoverOpen());
     }
   }
 

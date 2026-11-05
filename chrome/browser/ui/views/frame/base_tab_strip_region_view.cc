@@ -56,6 +56,7 @@ BaseTabStripRegionView::~BaseTabStripRegionView() {
   on_active_tab_changed_subscription_.reset();
 
   if (root_node_) {
+    root_node_->Deinitialize();
     root_node_->SetController(nullptr);
   }
   tab_strip_controller_.reset();
@@ -93,7 +94,7 @@ void BaseTabStripRegionView::InitializeTabStrip() {
 
   TabStripModel* tab_strip_model = browser_view_->browser()->GetTabStripModel();
   CHECK(tab_strip_model);
-  auto drag_handler = std::make_unique<TabDragHandlerImpl>(
+  auto drag_handler = std::make_unique<TabDragHandler>(
       *tab_strip_model, *root_node_.get(), *this);
   drag_handler->SetProperty(views::kViewIgnoredByLayoutKey, true);
   drag_handler_ = drag_handler.get();
@@ -118,6 +119,13 @@ void BaseTabStripRegionView::InitializeTabStrip() {
   on_child_moved_subscription_ =
       root_node_->RegisterOnChildMovedCallback(base::BindRepeating(
           &BaseTabStripRegionView::OnChildMoved, base::Unretained(this)));
+  on_active_tab_changed_subscription_ =
+      root_node_->RegisterOnActiveTabChangedCallback(base::BindRepeating(
+          &BaseTabStripRegionView::OnActiveTabChanged, base::Unretained(this)));
+
+  if (const auto* active_tab = tab_strip_model->GetActiveTab()) {
+    OnActiveTabChanged(active_tab);
+  }
 }
 
 void BaseTabStripRegionView::ResetTabStrip() {
@@ -128,6 +136,7 @@ void BaseTabStripRegionView::ResetTabStrip() {
   on_children_added_subscription_.reset();
   on_children_removed_subscription_.reset();
   on_child_moved_subscription_.reset();
+  on_active_tab_changed_subscription_.reset();
 
   root_node_->Reset();
 
@@ -431,17 +440,12 @@ views::View* BaseTabStripRegionView::SetTabStripView(
   AddTabStripView(std::move(view));
   CHECK(Contains(tab_strip_view_));
 
-  on_active_tab_changed_subscription_ =
-      root_node_->RegisterOnActiveTabChangedCallback(base::BindRepeating(
-          &BaseTabStripRegionView::OnActiveTabChanged, base::Unretained(this)));
-
   return tab_strip_view_;
 }
 
 void BaseTabStripRegionView::ClearTabStripView(views::View* view) {
   CHECK(tab_strip_view_);
   CHECK_EQ(tab_strip_view_, view);
-  on_active_tab_changed_subscription_.reset();
 
   // Remove the tab strip. Note that the tab strip may not be a direct child of
   // `this`. Hold onto the result temporarily so we can verify the view was
@@ -468,14 +472,6 @@ void BaseTabStripRegionView::RecordNewTabButtonPressed() {
   base::RecordAction(base::UserMetricsAction("NewTab_Button"));
 }
 
-void BaseTabStripRegionView::AddedToWidget() {
-  widget_observation_.Observe(GetWidget());
-}
-
-void BaseTabStripRegionView::RemovedFromWidget() {
-  widget_observation_.Reset();
-}
-
 void BaseTabStripRegionView::Layout(PassKey) {
   LayoutSuperclass<TabStripRegionView>(this);
   // `drag_handler_` (TabDragContext) is ignored by FlexLayout so that it does
@@ -483,18 +479,6 @@ void BaseTabStripRegionView::Layout(PassKey) {
   // and drag events can be accurately converted to screen coordinates.
   if (drag_handler_) {
     drag_handler_->GetDragContext()->SetBoundsRect(GetLocalBounds());
-  }
-}
-
-void BaseTabStripRegionView::OnWidgetVisibilityChanged(views::Widget* widget,
-                                                       bool visible) {
-  if (visible && is_first_window_presentation_) {
-    is_first_window_presentation_ = false;
-    // Only scroll-in the active tab for the first window presentation.
-    if (tab_strip_view()) {
-      tab_strip_view()->OnTabChanged(
-          root_node_->GetController()->GetActiveTab());
-    }
   }
 }
 
@@ -507,36 +491,17 @@ void BaseTabStripRegionView::OnChildrenAdded(
     new_tab_button_pressed_start_time_.reset();
   }
   hover_tab_selector_->CancelTabTransition();
-
-  const tabs::TabInterface* active_tab = tab_strip_model_->GetActiveTab();
-  if (!active_tab) {
-    return;
-  }
-
-  const tabs::TabInterface* last_new_tab = nullptr;
-  for (const auto& handle : handles) {
-    if (const auto* tab_handle = std::get_if<tabs::TabHandle>(&handle)) {
-      tabs::TabInterface* new_tab = tab_handle->Get();
-      if (new_tab && new_tab != active_tab) {
-        last_new_tab = new_tab;
-      }
-    }
-  }
-
-  if (last_new_tab && tab_strip_view_ && !is_first_window_presentation_) {
-    tab_strip_view_->ScrollToFitTabs(active_tab, last_new_tab);
-  }
+  tab_strip_view_->OnChildrenAdded(handles);
 }
 
 void BaseTabStripRegionView::OnChildrenRemoved() {
   hover_tab_selector_->CancelTabTransition();
+  tab_strip_view_->OnChildrenRemoved();
 }
 
 void BaseTabStripRegionView::OnChildMoved(TabCollectionNode* moved_node) {
   hover_tab_selector_->CancelTabTransition();
-  if (tab_strip_view_ && !is_first_window_presentation_) {
-    tab_strip_view_->OnChildMoved(moved_node);
-  }
+  tab_strip_view_->OnChildMoved(moved_node);
 }
 
 void BaseTabStripRegionView::OnActiveTabChanged(
@@ -545,9 +510,7 @@ void BaseTabStripRegionView::OnActiveTabChanged(
     hover_card_controller_->UpdateHoverCard(
         nullptr, TabSlotController::HoverCardUpdateType::kSelectionChanged);
   }
-  if (tab_strip_view_ && !is_first_window_presentation_) {
-    tab_strip_view_->OnTabChanged(active_tab);
-  }
+  tab_strip_view_->OnActiveTabChanged(active_tab);
 }
 
 

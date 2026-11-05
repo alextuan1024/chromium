@@ -23,7 +23,6 @@
 #include "chrome/browser/ash/auth/legacy_fingerprint_engine.h"
 #include "chrome/browser/ash/login/quick_unlock/quick_unlock_utils.h"
 #include "chrome/browser/ash/privacy_hub/privacy_hub_util.h"
-#include "chrome/browser/ash/profiles/profile_helper.h"
 #include "chrome/browser/ash/system/timezone_util.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/ui/webui/ash/settings/os_settings_features_util.h"
@@ -86,7 +85,7 @@ base::span<const SearchConcept> GetPrivacySearchConceptsSharedWithGuestMode() {
 
 base::span<const SearchConcept> GetPrivacySearchConcepts(
     const user_manager::User& user) {
-  DCHECK(!IsGuestModeActive(user));
+  CHECK(!IsGuestModeActive(user), base::NotFatalUntil::M162);
   static constexpr auto tags = std::to_array<SearchConcept>({
       {IDS_OS_SETTINGS_TAG_MANAGE_OTHER_PEOPLE_PAGE,
        mojom::kManageOtherPeopleSubpagePathV2,
@@ -208,8 +207,9 @@ base::span<const SearchConcept> GetPciguardSearchConcepts() {
 }
 
 base::span<const SearchConcept> GetSmartPrivacySearchConcepts() {
-  DCHECK(ash::features::IsSnoopingProtectionEnabled() &&
-         ash::features::IsQuickDimEnabled());
+  CHECK(ash::features::IsSnoopingProtectionEnabled() &&
+            ash::features::IsQuickDimEnabled(),
+        base::NotFatalUntil::M162);
   static constexpr auto tags = std::to_array<SearchConcept>({
       {IDS_OS_SETTINGS_TAG_SMART_PRIVACY,
        mojom::kSmartPrivacySubpagePath,
@@ -257,7 +257,7 @@ base::span<const SearchConcept> GetPrivacyGoogleChromeSearchConcepts() {
 
 base::span<const SearchConcept> GetPrivacyControlsSearchConcepts(
     const user_manager::User& user) {
-  DCHECK(!IsGuestModeActive(user));
+  CHECK(!IsGuestModeActive(user), base::NotFatalUntil::M162);
   static constexpr auto tags = std::to_array<SearchConcept>({
       {IDS_OS_SETTINGS_TAG_PRIVACY_CONTROLS,
        mojom::kPrivacyHubSubpagePath,
@@ -283,8 +283,8 @@ base::span<const SearchConcept> GetPrivacyControlsSearchConcepts(
 
 base::span<const SearchConcept> GetPrivacyControlsLocationSearchConcepts(
     const user_manager::User& user) {
-  DCHECK(!IsGuestModeActive(user));
-  DCHECK(features::IsCrosPrivacyHubLocationEnabled());
+  CHECK(!IsGuestModeActive(user), base::NotFatalUntil::M162);
+  CHECK(features::IsCrosPrivacyHubLocationEnabled(), base::NotFatalUntil::M162);
   static constexpr auto tags = std::to_array<SearchConcept>(
       {{IDS_OS_SETTINGS_TAG_GEOLOCATION,
         mojom::kPrivacyHubGeolocationSubpagePath,
@@ -375,8 +375,8 @@ PrivacySection::PrivacySection(
   // one day.
   //
   // For now, assume they are always equal.
-  DCHECK_EQ(ash::features::IsSnoopingProtectionEnabled(),
-            ash::features::IsQuickDimEnabled());
+  CHECK_EQ(ash::features::IsSnoopingProtectionEnabled(),
+           ash::features::IsQuickDimEnabled(), base::NotFatalUntil::M162);
   if (ash::features::IsQuickDimEnabled()) {
     updater.AddSearchTags(GetSmartPrivacySearchConcepts());
   }
@@ -746,7 +746,6 @@ void PrivacySection::RegisterHierarchy(HierarchyGenerator* generator) const {
       mojom::Setting::kLockScreenV2,
       mojom::Setting::kChangeAuthPinV2,
       mojom::Setting::kPeripheralDataAccessProtection,
-      mojom::Setting::kLockScreenNotification,
       mojom::Setting::kDataRecovery,
   };
   RegisterNestedSettingBulk(mojom::Subpage::kSecurityAndSignInV2,

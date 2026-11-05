@@ -80,17 +80,18 @@ ModuleData GetMainModuleData() {
   ModuleData module_data;
   Dl_info dl_info;
   if (dladdr(&__ehdr_start, &dl_info)) {
-    base::debug::ElfBuildIdBuffer build_id;
-    size_t build_id_length =
-        base::debug::ReadElfBuildId(&__ehdr_start, true, build_id);
-    if (build_id_length) {
+    // SAFETY: `__ehdr_start` is a linker-defined symbol at the ELF header of
+    // the module containing this code, which has been loaded, and thus fully
+    // mapped into memory.
+    module_data.build_id =
+        UNSAFE_BUFFERS(base::debug::ReadElfBuildId(&__ehdr_start, true));
+    if (!module_data.build_id.empty()) {
       base::FilePath module_data_path = base::FilePath(dl_info.dli_fname);
       if (module_data_path.IsAbsolute()) {
         module_data.path = dl_info.dli_fname;
       } else {
         module_data.path = base::MakeAbsoluteFilePath(module_data_path).value();
       }
-      module_data.build_id = std::string(build_id, build_id_length);
     }
   }
   return module_data;

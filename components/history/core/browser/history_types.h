@@ -388,11 +388,11 @@ struct QueryOptions {
   // enough room. When 0, this will return everything.
   int max_count = 0;
 
-  // Temporarily defaulted to `kExclude404s`; this may change in the future.
+  // Defaulted to `kInclude404s`.
   // Callers are strongly encouraged to explicitly set a value, unless they are
   // certain that the handling of 404 visits is irrelevant for their use case.
   VisitQuery404sPolicy policy_for_404_visits =
-      VisitQuery404sPolicy::kExclude404s;
+      VisitQuery404sPolicy::kInclude404s;
 
   enum DuplicateHandling {
     // Omit visits for which there is a more recent visit to the same URL.
@@ -1069,10 +1069,10 @@ struct DuplicateClusterVisit {
   VisitID visit_id = 0;
 
   // Not persisted; derived from visit_id.
-  GURL url = {};
+  GURL url;
 
   // Not persisted; derived from visit_id.
-  base::Time visit_time = {};
+  base::Time visit_time;
 };
 
 // An `AnnotatedVisit` associated with some other metadata from clustering.

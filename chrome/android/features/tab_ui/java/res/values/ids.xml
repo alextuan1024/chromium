@@ -44,6 +44,8 @@ found in the LICENSE file.
     <item type="id" name="tab_clip_from_top" />
 
     <!-- Vertical Tabs Hover. -->
-    <item type="id" name="tab_hover_exit_listener" />
     <item type="id" name="tab_hover_state_listener" />
+
+    <!-- Vertical Tabs context menu items. -->
+    <item type="id" name="toggle_expand_tabs_on_hover_menu_id" />
 </resources>

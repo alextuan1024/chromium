@@ -14,15 +14,13 @@
 
 #include "base/memory/scoped_refptr.h"
 #include "base/types/expected.h"
+#include "base/values.h"
 #include "build/build_config.h"
 #include "components/enterprise/buildflags/buildflags.h"
+#include "components/enterprise/client_certificates/core/client_identity.h"
+#include "components/enterprise/client_certificates/core/upload_client_error.h"
 #include "components/enterprise/connectors/connectors_internals.mojom.h"
 #include "crypto/sign.h"
-
-#if BUILDFLAG(ENTERPRISE_CLIENT_CERTIFICATES)
-#include "components/enterprise/client_certificates/core/client_identity.h"
-#include "components/enterprise/client_certificates/core/upload_client_error.h"  // nogncheck
-#endif  // BUILDFLAG(ENTERPRISE_CLIENT_CERTIFICATES)
 
 #if BUILDFLAG(ENTERPRISE_PROXY)
 namespace enterprise_net {
@@ -39,12 +37,10 @@ namespace client_certificates {
 class CertificateProvisioningService;
 }  // namespace client_certificates
 
-#if !BUILDFLAG(IS_ANDROID)
 namespace enterprise_connectors {
 class DeviceTrustConnectorService;
 enum class DTCPolicyLevel;
 }  // namespace enterprise_connectors
-#endif  // !BUILDFLAG(IS_ANDROID)
 
 namespace enterprise_reporting {
 class ReportRequest;
@@ -58,8 +54,6 @@ namespace enterprise_connectors::utils {
 inline constexpr char kBrowserLevel[] = "Browser";
 inline constexpr char kProfileLevel[] = "Profile";
 inline constexpr char kUserLevel[] = "User";
-
-#if BUILDFLAG(ENTERPRISE_CLIENT_CERTIFICATES)
 
 // Fetches the identity from `provisioning_service` if the policy is enabled.
 // If enabled, `enabled_level` is added to `enabled_levels`.
@@ -85,8 +79,6 @@ CreateClientCertificateState(
     client_certificates::CertificateProvisioningService*
         profile_certificate_provisioning_service);
 
-#endif  // BUILDFLAG(ENTERPRISE_CLIENT_CERTIFICATES)
-
 #if BUILDFLAG(ENTERPRISE_PROXY)
 
 // Converts debug info from `proxy_service` into a Mojo
@@ -109,15 +101,15 @@ std::string HashAndEncodeString(const std::string& spki_bytes);
 connectors_internals::mojom::Int32ValuePtr ToMojomValue(
     std::optional<int> integer_value);
 
-// Returns a JSON string representation of the given `request`.
-std::string GetJsonForReportRequest(
+// Returns the security signals in the given profile report `request`, including
+// a summary of its policies.
+base::DictValue GetSignalsForReportRequest(
     const enterprise_reporting::ReportRequest& request);
 
 // Returns a formatted date and time string from `timestamp`, or an empty string
 // if `timestamp` is null.
 std::string GetStringFromTimestamp(base::Time timestamp);
 
-#if !BUILDFLAG(IS_ANDROID)
 // Converts `level` to its string representation ("Browser" or "User").
 std::string ConvertPolicyLevelToString(
     enterprise_connectors::DTCPolicyLevel level);
@@ -127,7 +119,6 @@ std::string ConvertPolicyLevelToString(
 std::vector<std::string> GetPolicyEnabledLevels(
     const enterprise_connectors::DeviceTrustConnectorService*
         connector_service);
-#endif  // !BUILDFLAG(IS_ANDROID)
 
 // Creates a DeviceTrustState indicating that Device Trust is unsupported.
 connectors_internals::mojom::DeviceTrustStatePtr
@@ -140,10 +131,13 @@ CreateDeviceTrustStateWithNoKey(
     bool is_device_trust_enabled,
     std::vector<std::string> policy_enabled_levels,
     std::string signals_json,
-    connectors_internals::mojom::ConsentMetadataPtr consent_metadata = nullptr);
+    connectors_internals::mojom::ConsentMetadataPtr consent_metadata);
 
 // Creates a SignalsReportingState populated with preference timestamps and
-// scheduler status.
+// scheduler status. If signals reporting is enabled and `report_scheduler`
+// successfully uploaded a report with security signals since it was created,
+// the state is also populated with those signals
+// (`SignalsSource::kLastUploadedReport`).
 connectors_internals::mojom::SignalsReportingStatePtr
 CreateSignalsReportingState(
     const PrefService* profile_prefs,
@@ -152,8 +146,8 @@ CreateSignalsReportingState(
     std::optional<std::string> error_info = std::nullopt);
 
 // Processes the result of a profile report generation, returning a pair of
-// (error_message, signals_json). Exactly one of the two will be populated.
-std::pair<std::optional<std::string>, std::optional<std::string>>
+// (error_message, signals). Exactly one of the two will be populated.
+std::pair<std::optional<std::string>, std::optional<base::DictValue>>
 ProcessReportGenerationResult(
     base::expected<enterprise_reporting::ReportRequestQueue,
                    enterprise_reporting::ReportGenerationError> result);

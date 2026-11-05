@@ -4,8 +4,9 @@
 
 module ai_overlay_dialog.mojom;
 
-import "mojo/public/mojom/base/big_buffer.mojom";
 import "chrome/browser/ui/webui/ai_overlay_dialog/tools/tools.mojom";
+import "mojo/public/mojom/base/big_buffer.mojom";
+import "mojo/public/mojom/base/values.mojom";
 import "third_party/blink/public/mojom/dom/dom_node_id.mojom";
 import "ui/gfx/geometry/mojom/geometry.mojom";
 import "url/mojom/url.mojom";
@@ -36,9 +37,9 @@ struct PageContentNode {
   array<PageContentNode> children;
 };
 
-// Result payload containing base64-encoded JPEG image data and scale metadata.
+// Result payload containing raw JPEG image data bytes and scale metadata.
 struct RawViewportRegionResult {
-  string jpeg_data_b64;
+  mojo_base.mojom.BigBuffer jpeg_bytes;
   int32 width;
   int32 height;
   float scale_factor;
@@ -54,6 +55,15 @@ struct ImageBytesResult {
 struct RememberedNote {
   string key;
   string value;
+};
+
+// Metadata for a WebMCP tool exposed by the active page's ModelContext.
+struct WebMcpToolDefinition {
+  string name;
+  string description;
+  mojo_base.mojom.Value input_schema;
+  bool read_only;
+  bool consequential;
 };
 
 // Factory for creating a PageHandler.
@@ -77,8 +87,8 @@ interface PageHandler {
 
   // Closes and dismisses the overlay WebUI dialog widget. Calling this is
   // equivalent to the user clicking the toolbar microphone button to deactivate
-  // listening, tearing down the active audio listener and session via HideOverlay().
-  // TODO(crbug.com/540858790): Rename HideOverlay() to CloseOverlay() for clarity.
+  // listening, tearing down the active audio listener and session via
+  // CloseOverlay().
   Close();
 
   // Returns current mouse pointer coordinates relative to the tab viewport,
@@ -87,8 +97,11 @@ interface PageHandler {
 
   // Captures a cropped, un-annotated region of the tab surface.
   //
-  // x, y: Top-left corner coordinates of the target region in viewport CSS pixels.
+  // x, y: Top-left corner coordinates of the target region in viewport CSS
+  // pixels.
   // width, height: Dimensions of the target region in viewport CSS pixels.
+  // Returns null if there is no active web contents, render view, or if surface
+  // capture/encoding fails.
   CaptureRawViewportRegion(int32 x, int32 y, int32 width, int32 height)
       => (RawViewportRegionResult? result);
 
@@ -120,7 +133,8 @@ interface PageHandler {
   // from the user's microphone.
   SendAudioChunk(mojo_base.mojom.BigBuffer pcm_data);
 
-  // Submits a typed text query to the MES backend as part of the active session.
+  // Submits a typed text query to the MES backend as part of the active
+  // session.
   // `text`: The user-provided text query.
   SendTextInput(string text);
 
@@ -132,6 +146,11 @@ interface PageHandler {
 
   // Closes the active streaming session with the backend.
   StopStreamingSession();
+
+  // Executes a WebMCP tool registered on the active tab's document via
+  // direct renderer InvokeTool dispatch.
+  ExecuteWebMcpTool(string tool_name, mojo_base.mojom.Value args)
+      => result<mojo_base.mojom.Value, string>;
 };
 
 // Implemented by the WebUI (TypeScript/JS). Called by the Browser C++.
@@ -143,10 +162,13 @@ interface Page {
   DidChangePage(string url, string? title, string? content);
 
   // Passes context about the current page to the app.
-  UpdateCurrentPageContext(string page_title, PageContentNode? root_node);
+  UpdateCurrentPageContext(string page_title,
+                           PageContentNode? root_node,
+                           array<WebMcpToolDefinition> webmcp_tools);
 
   // TODO(crbug.com/535704548): Consider renaming SetInputCaptionsVisible to
-  // SetInputCaptionsEnabled to avoid confusion with time-based/ephemeral visibility.
+  // SetInputCaptionsEnabled to avoid confusion with time-based/ephemeral
+  // visibility.
   // Controls whether input captions are visible.
   SetInputCaptionsVisible(bool visible);
 
@@ -165,9 +187,8 @@ interface Page {
   // server backend, or empty if disconnected.
   // `error_message`: Human-readable error description if the session failed or
   // closed unexpectedly, or empty string on clean shutdown.
-  OnStreamingSessionStateChanged(bool connected,
-                                 string session_id,
-                                 string error_message);
+  OnStreamingSessionStateChanged(
+      bool connected, string session_id, string error_message);
 
   // Delivers live real-time transcriptions for display in caption UI.
   // `input_transcription`: Live speech-to-text transcription of the user's

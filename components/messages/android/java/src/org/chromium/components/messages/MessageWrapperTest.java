@@ -169,4 +169,23 @@ public class MessageWrapperTest {
         Assert.assertEquals(
                 "Secondary menu is not cleared.", 0, messageSecondaryMenuItems.mMenuItems.size());
     }
+
+    /** Tests that setPrimaryWidgetAppearance updates the message's primary widget appearance. */
+    @Test
+    public void testSetPrimaryWidgetAppearance() {
+        MessageWrapper message = MessageWrapper.create(1, MessageIdentifier.TEST_MESSAGE);
+        PropertyModel messageProperties = message.getMessageProperties();
+
+        Assert.assertEquals(
+                PrimaryWidgetAppearance.BUTTON_IF_TEXT_IS_SET,
+                message.getPrimaryWidgetAppearance());
+
+        message.setPrimaryWidgetAppearance(PrimaryWidgetAppearance.PROGRESS_SPINNER);
+
+        Assert.assertEquals(
+                PrimaryWidgetAppearance.PROGRESS_SPINNER, message.getPrimaryWidgetAppearance());
+        Assert.assertEquals(
+                PrimaryWidgetAppearance.PROGRESS_SPINNER,
+                messageProperties.get(MessageBannerProperties.PRIMARY_WIDGET_APPEARANCE));
+    }
 }

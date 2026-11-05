@@ -5,15 +5,14 @@
 #ifndef CHROME_BROWSER_READALOUD_READ_ALOUD_PLAYBACK_SESSION_H_
 #define CHROME_BROWSER_READALOUD_READ_ALOUD_PLAYBACK_SESSION_H_
 
+#include "base/functional/callback.h"
 #include "base/memory/raw_ptr.h"
-#include "base/memory/weak_ptr.h"
 #include "base/time/time.h"
 #include "content/public/browser/media_session_player_observer.h"
 #include "content/public/browser/web_contents_observer.h"
-#include "services/media_session/public/cpp/media_metadata.h"
-#include "services/media_session/public/cpp/media_position.h"
 
 namespace content {
+class MediaSession;
 class WebContents;
 class RenderFrameHost;
 }  // namespace content
@@ -25,19 +24,31 @@ class ReadAloudService;
 class ReadAloudPlaybackSession : public content::MediaSessionPlayerObserver,
                                  public content::WebContentsObserver {
  public:
+  // Callback used to retrieve the `content::MediaSession` for a given
+  // `WebContents`. Primarily used to inject mock sessions during testing.
+  using MediaSessionGetter =
+      base::RepeatingCallback<content::MediaSession*(content::WebContents*)>;
+
   ReadAloudPlaybackSession(content::WebContents* web_contents,
-                           ReadAloudService* service);
+                           ReadAloudService* service,
+                           MediaSessionGetter media_session_getter = {});
   ReadAloudPlaybackSession(const ReadAloudPlaybackSession&) = delete;
   ReadAloudPlaybackSession& operator=(const ReadAloudPlaybackSession&) = delete;
   ~ReadAloudPlaybackSession() override;
 
-  // Called by ReadAloudService to synchronize internal state.
-  void NotifyPlaybackStarted();
+  // Called by `ReadAloudService` to synchronize internal state.
+  //
+  // If `MediaSession` itself suspended or resumed Read Aloud (`OnSuspend()` or
+  // `OnResume()`), the matching `NotifyPlaybackPaused()` or
+  // `NotifyPlaybackStarted()` only updates local state. `MediaSession` has
+  // already updated its own state, and calling back into it can change its
+  // player list while it is iterating over it (b/572721812).
+  //
+  // `NotifyPlaybackStarted()` returns `false` if `MediaSession::AddPlayer()`
+  // rejected the player (e.g., when system audio focus was denied).
+  bool NotifyPlaybackStarted();
   void NotifyPlaybackPaused();
   void NotifyPlaybackStopped();
-
-  bool is_paused() const { return is_paused_; }
-  bool is_playback_in_progress() const { return is_playback_in_progress_; }
 
   // content::MediaSessionPlayerObserver overrides:
   void OnSuspend(int player_id, bool triggered_by_user) override;
@@ -51,13 +62,24 @@ class ReadAloudPlaybackSession : public content::MediaSessionPlayerObserver,
   bool IsPaused(int player_id) const override;
 
  private:
+  // A suspend or resume initiated by `MediaSession` whose `Notify*()` call has
+  // not happened yet.
+  enum class SessionCommand { kNone, kSuspend, kResume };
+
+  // Consumes any pending MediaSession command and returns whether it matched
+  // `command`.
+  bool ConsumePendingSessionCommand(SessionCommand command);
+
+  content::MediaSession* GetOrCreateMediaSession();
+  content::MediaSession* GetMediaSessionIfExists();
+
   const raw_ptr<ReadAloudService> service_;
+  MediaSessionGetter media_session_getter_;
   static constexpr int kPlayerId = 0;
 
   bool is_paused_ = true;
-  bool is_playback_in_progress_ = false;
 
-  base::WeakPtrFactory<ReadAloudPlaybackSession> weak_factory_{this};
+  SessionCommand pending_session_command_ = SessionCommand::kNone;
 };
 
 }  // namespace readaloud

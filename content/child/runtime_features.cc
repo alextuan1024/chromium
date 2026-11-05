@@ -138,8 +138,6 @@ void SetRuntimeFeaturesFromChromiumFeatures() {
           {wf::EnableBackgroundFetch, features::kBackgroundFetch},
           {wf::EnableBoundaryEventDispatchTracksNodeRemoval,
            blink::features::kBoundaryEventDispatchTracksNodeRemoval},
-          {wf::EnableCompositeBGColorAnimation,
-           features::kCompositeBGColorAnimation},
           {wf::EnableDigitalGoods, features::kDigitalGoodsApi,
            kSetOnlyIfOverridden},
           {wf::EnableDocumentPolicyNegotiation,
@@ -205,6 +203,8 @@ void SetRuntimeFeaturesFromChromiumFeatures() {
           {wf::EnableWebAuthenticationAmbient, device::kWebAuthnAmbientSignin},
           {wf::EnableWebAuthenticationCrossDeviceFallbackUrl,
            device::kWebAuthnCrossDeviceFallbackUrl},
+          {wf::EnableWebAuthenticationRemoteClientDataJson,
+           device::kWebAuthnRemoteClientDataJson},
           {wf::EnableWebBluetooth, features::kWebBluetooth,
            kSetOnlyIfOverridden},
           {wf::EnableWebBluetoothGetDevices,
@@ -265,6 +265,12 @@ void SetRuntimeFeaturesFromChromiumFeatures() {
           {"CompressionDictionaryTransport",
            network::features::kCompressionDictionaryTransport},
           {"CookieStoreAPIMaxAge", blink::features::kCookieStoreAPIMaxAge},
+          // Overriding kWebMCP (e.g. --enable-features=WebMCP) controls both
+          // imperative and declarative WebMCP. An explicit kDeclarativeWebMCP
+          // override still takes precedence, since it is applied afterwards by
+          // UpdateStatusFromBaseFeatures().
+          {"DeclarativeWebMCP", blink::features::kWebMCP, kSetOnlyIfOverridden},
+          {"DeviceBoundSessionJsApi", features::kDeviceBoundSessionJsApi},
           {"DocumentPolicyIncludeJSCallStacksInCrashReports",
            blink::features::kDocumentPolicyIncludeJSCallStacksInCrashReports,
            kSetOnlyIfOverridden},
@@ -282,7 +288,6 @@ void SetRuntimeFeaturesFromChromiumFeatures() {
            webnn::mojom::features::kWebMachineLearningNeuralNetwork,
            kSetOnlyIfOverridden},
           {"OriginIsolationHeader", features::kOriginIsolationHeader},
-          {"ReduceAcceptLanguage", network::features::kReduceAcceptLanguage},
           {"RelatedWebsitePartitionAPI",
            net::features::kRelatedWebsitePartitionAPI},
           {"SerialPortConnected", features::kSerialPortConnected},
@@ -295,8 +300,6 @@ void SetRuntimeFeaturesFromChromiumFeatures() {
           {"ExperimentalMachineLearningNeuralNetwork",
            webnn::mojom::features::kExperimentalWebMachineLearningNeuralNetwork,
            kSetOnlyIfOverridden},
-          {"RequestStorageAccessFor",
-           content_settings::features::kStorageAccessAPIRelatedWebsiteSets},
           {"LocalNetworkAccessPermissionPolicy",
            network::features::kLocalNetworkAccessChecks}};
   for (const auto& mapping : runtime_feature_name_to_chromium_feature_mapping) {
@@ -422,9 +425,11 @@ void SetCustomizedRuntimeFeaturesFromCombinedArgs(
   // content. See HTMLElement::showUnboundedElement().
   if (base::android::android_info::sdk_int() <
       base::android::android_info::SDK_VERSION_U) {
-    // UnboundedElement is implied_by UnboundedElementOnTheOpenWeb, so both have
-    // to be disabled for UnboundedElementEnabled() to return false.
-    WebRuntimeFeatures::EnableUnboundedElementOnTheOpenWeb(false);
+    // UnboundedElement is implied_by UnsafeUnboundedElementOnTheOpenWeb,
+    // which is implied_by UnsafeEscapingUnboundedElementOnTheOpenWeb, so they
+    // all have to be disabled for UnboundedElementEnabled() to return false.
+    WebRuntimeFeatures::EnableUnsafeEscapingUnboundedElementOnTheOpenWeb(false);
+    WebRuntimeFeatures::EnableUnsafeUnboundedElementOnTheOpenWeb(false);
     WebRuntimeFeatures::EnableUnboundedElement(false);
   }
 #endif
@@ -444,6 +449,15 @@ void SetCustomizedRuntimeFeaturesFromCombinedArgs(
       // This feature is not ready for non-desktop devices. See
       // crbug.com/522529331.
       base::android::device_info::is_desktop());
+  if (base::android::device_info::is_desktop() &&
+      !base::FeatureList::GetStateIfOverridden(
+           blink::features::kWebAudioBypassOutputBuffering)
+           .has_value()) {
+    // TODO(crbug.com/436988695): Remove when the long term solution is
+    // implemented.
+    WebRuntimeFeatures::EnableFeatureFromString("WebAudioBypassOutputBuffering",
+                                                true);
+  }
 #endif
 
   // TODO(rodneyding): This is a rare case for a stable feature
@@ -467,16 +481,12 @@ void SetCustomizedRuntimeFeaturesFromCombinedArgs(
 // Ensures that the various ways of enabling/disabling features do not produce
 // an invalid configuration.
 void ResolveInvalidConfigurations() {
-  // Fenced frames cannot be enabled without the support of the
-  // browser process.
-  if ((base::FeatureList::IsEnabled(features::kPrivacySandboxAdsAPIsOverride) ||
-       base::FeatureList::IsEnabled(
-           features::kPrivacySandboxAdsAPIsM1Override)) &&
-      !base::FeatureList::IsEnabled(blink::features::kFencedFrames)) {
-    LOG_IF(WARNING, WebRuntimeFeatures::IsFencedFramesEnabled())
-        << "Fenced frames cannot be enabled in this configuration. Use --"
-        << switches::kEnableFeatures << "="
-        << blink::features::kFencedFrames.name << " instead.";
+  // Fenced frames cannot be enabled without the support of the browser
+  // process, which is gated on blink::features::kFencedFrames. The Blink
+  // runtime feature is stable (and also enabled via the Privacy Sandbox Ads
+  // APIs overrides), so force it off whenever the base::Feature is disabled,
+  // e.g. by the FencedFramesDeprecation field trial.
+  if (!base::FeatureList::IsEnabled(blink::features::kFencedFrames)) {
     WebRuntimeFeatures::EnableFencedFrames(false);
   }
 
@@ -507,7 +517,7 @@ void ResolveInvalidConfigurations() {
   // InstallElement cannot be enabled without the support of the browser
   // process.
   if (!base::FeatureList::IsEnabled(blink::features::kInstallElement)) {
-    LOG_IF(WARNING, WebRuntimeFeatures::IsInstallElementEnabledByRuntimeFlag())
+    LOG_IF(WARNING, WebRuntimeFeatures::IsInstallElementEnabled())
         << "InstallElement cannot be enabled in this configuration. Use --"
         << switches::kEnableFeatures << "="
         << blink::features::kInstallElement.name << " instead.";
@@ -517,8 +527,7 @@ void ResolveInvalidConfigurations() {
   // WebAppInstallation cannot be enabled without the support of the browser
   // process.
   if (!base::FeatureList::IsEnabled(blink::features::kWebAppInstallation)) {
-    LOG_IF(WARNING,
-           WebRuntimeFeatures::IsWebAppInstallationEnabledByRuntimeFlag())
+    LOG_IF(WARNING, WebRuntimeFeatures::IsWebAppInstallationEnabled())
         << "WebAppInstallation cannot be enabled in this configuration. Use "
            "--"
         << switches::kEnableFeatures << "="
@@ -531,6 +540,18 @@ void ResolveInvalidConfigurations() {
   if (!base::FeatureList::IsEnabled(
           network::features::kCSPScriptSrcHashesInV1)) {
     WebRuntimeFeatures::EnableCSPHashesV1(false);
+  }
+
+  if (!base::FeatureList::IsEnabled(
+          blink::features::kPermissionsPolicyForSharedWorkers)) {
+    LOG_IF(WARNING,
+           WebRuntimeFeatures::IsPermissionsPolicyForSharedWorkersEnabled())
+        << "PermissionsPolicyForSharedWorkers cannot be enabled in this "
+           "configuration. Use --"
+        << switches::kEnableFeatures << "="
+        << blink::features::kPermissionsPolicyForSharedWorkers.name
+        << " instead.";
+    WebRuntimeFeatures::EnablePermissionsPolicyForSharedWorkers(false);
   }
 
   // LegacyAbstractRange (containers on AbstractRange.prototype) is the

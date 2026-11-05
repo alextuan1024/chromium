@@ -147,6 +147,7 @@ class SyncServiceImpl : public SyncService,
 #if BUILDFLAG(IS_ANDROID)
   void SetInvalidationsForSessionsEnabled(bool enabled) override;
 #endif  // BUILDFLAG(IS_ANDROID)
+  void SetPasskeysLocked(bool passkeys_locked) override;
   void SendExplicitPassphraseToPlatformClient() override;
   void AddObserver(SyncServiceObserver* observer) override;
   void RemoveObserver(SyncServiceObserver* observer) override;
@@ -160,6 +161,7 @@ class SyncServiceImpl : public SyncService,
       base::RepeatingCallback<void(const TypeEntitiesCount&)> callback)
       const override;
   const GURL& GetSyncServiceUrlForDebugging() const override;
+  base::FilePath GetLocalSyncBackendFolderForDebugging() const override;
   std::string GetUnrecoverableErrorMessageForDebugging() const override;
   base::Location GetUnrecoverableErrorLocationForDebugging() const override;
   void AddProtocolEventObserver(ProtocolEventObserver* observer) override;
@@ -384,9 +386,8 @@ class SyncServiceImpl : public SyncService,
   void TryStart();
 
   // The actual synchronous implementation of TryStart().
-  void TryStartImpl(
-      base::TimeTicks try_start_time,
-      std::vector<scoped_refptr<os_crypt_async::Encryptor>> encryptors);
+  void TryStartImpl(base::TimeTicks try_start_time,
+                    scoped_refptr<os_crypt_async::Encryptor> encryptor);
 
   // Whether sync has been authenticated with an account ID.
   bool IsSignedIn() const;
@@ -555,6 +556,8 @@ class SyncServiceImpl : public SyncService,
   // kAlwaysRegisterSessionsInvalidationsAndroid is disabled.
   bool sessions_invalidations_enabled_ = false;
 #endif  // BUILDFLAG(IS_ANDROID)
+
+  bool passkeys_locked_ = false;
 
   // Set if/when Initialize() schedules a deferred task to start the engine.
   // Cleared on the first start attempt, regardless of success and who triggered

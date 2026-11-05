@@ -17,7 +17,6 @@
 #include "base/strings/strcat.h"
 #include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
-#include "components/autofill/core/browser/autofill_type.h"
 #include "components/autofill/core/browser/data_model/addresses/autofill_profile.h"
 #include "components/autofill/core/browser/data_model/addresses/autofill_structured_address_component.h"
 #include "components/autofill/core/browser/data_model/data_model_util.h"
@@ -180,9 +179,8 @@ void PhoneNumber::GetMatchingTypes(std::u16string_view text,
 //   (650)2345678 -> 6502345678
 //   1-800-FLOWERS -> 18003569377
 // If the phone cannot be normalized, returns the stored value verbatim.
-std::u16string PhoneNumber::GetInfo(const AutofillType& autofill_type,
+std::u16string PhoneNumber::GetInfo(FieldType type,
                                     std::string_view app_locale) const {
-  FieldType type = autofill_type.GetAddressType();
   UpdateCacheIfNeeded(app_locale);
 
   // When the phone number autofill has stored cannot be normalized, it
@@ -293,11 +291,11 @@ std::u16string PhoneNumber::GetInfo(const AutofillType& autofill_type,
   }
 }
 
-bool PhoneNumber::SetInfoWithVerificationStatus(const AutofillType& type,
+bool PhoneNumber::SetInfoWithVerificationStatus(FieldType type,
                                                 std::u16string_view value,
                                                 std::string_view app_locale,
                                                 VerificationStatus status) {
-  SetRawInfoWithVerificationStatus(type.GetAddressType(), value, status);
+  SetRawInfoWithVerificationStatus(type, value, status);
 
   if (number_.empty()) {
     return true;
@@ -323,13 +321,19 @@ VerificationStatus PhoneNumber::GetVerificationStatus(FieldType type) const {
 
 void PhoneNumber::UpdateCacheIfNeeded(std::string_view app_locale) const {
   std::string region = GetRegion(*profile_, app_locale);
-  if (!number_.empty() && cached_parsed_phone_.region() != region) {
-    // To enable filling of country calling codes for nationally formatted
-    // numbers, infer it from the `profile_`'s country information while parsing
-    // the number.
-    cached_parsed_phone_ = i18n::PhoneObject(
-        number_, region,
-        /*infer_country_code=*/profile_->HasInfo(ADDRESS_HOME_COUNTRY));
+  // To enable filling of country calling codes for nationally formatted
+  // numbers, infer it from the `profile_`'s country information while parsing
+  // the number.
+  const bool infer_country_code = profile_->HasRawInfo(ADDRESS_HOME_COUNTRY);
+  // Since nearly all profiles have a country, `infer_country_code` rarely
+  // changes. It is still compared so that adding a country to `profile_`
+  // doesn't keep a stale `cached_parsed_phone_` if `region` stays the same.
+  if (!number_.empty() &&
+      (cached_parsed_phone_.creation_region_hint() != region ||
+       cached_parsed_phone_.infer_country_code_from_region_hint() !=
+           infer_country_code)) {
+    cached_parsed_phone_ =
+        i18n::PhoneObject(number_, region, infer_country_code);
   }
 }
 

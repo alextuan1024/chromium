@@ -10,6 +10,7 @@
 
 #include "base/functional/callback_helpers.h"
 #include "base/logging.h"
+#include "base/memory/weak_ptr.h"
 #include "base/strings/utf_string_conversions.h"
 #include "chrome/browser/android/tab_android.h"
 #include "chrome/browser/ui/android/chrome_http_auth_handler.h"
@@ -47,22 +48,37 @@ class LoginHandlerAndroid : public LoginHandler {
   bool BuildViewImpl(const std::u16string& authority,
                      const std::u16string& explanation,
                      LoginModelData* login_model_data) override {
-    DCHECK_CURRENTLY_ON(BrowserThread::UI);
+    CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M162);
 
     content::WebContents* contents =
-        web_contents()->GetResponsibleWebContents();
-    CHECK(contents);
+        web_contents() ? web_contents()->GetResponsibleWebContents() : nullptr;
+    if (!contents) {
+      return false;
+    }
 
     TabAndroid* tab = TabAndroid::FromWebContents(contents);
     ui::ViewAndroid* view = contents->GetNativeView();
     ui::WindowAndroid* window = view ? view->GetWindowAndroid() : nullptr;
     // Notify WindowAndroid that HTTP authentication is required.
     if (tab && window) {
+      base::WeakPtr<LoginHandler> weak_this = GetWeakPtr();
       auto blocker = contents->ForSecurityDropFullscreen(
           /*display_id=*/display::kInvalidDisplayId);
-      if (!blocker) {
+      if (!weak_this || !blocker) {
         return false;
       }
+      contents = web_contents() ? web_contents()->GetResponsibleWebContents()
+                                : nullptr;
+      if (!contents) {
+        return false;
+      }
+      tab = TabAndroid::FromWebContents(contents);
+      view = contents->GetNativeView();
+      window = view ? view->GetWindowAndroid() : nullptr;
+      if (!tab || !window) {
+        return false;
+      }
+
       fullscreen_blocker_ = std::move(*blocker);
 
       chrome_http_auth_handler_ = std::make_unique<ChromeHttpAuthHandler>(
@@ -80,6 +96,7 @@ class LoginHandlerAndroid : public LoginHandler {
   }
 
   void CloseDialog() override {
+    fullscreen_blocker_.RunAndReset();
     if (chrome_http_auth_handler_) {
       chrome_http_auth_handler_->CloseDialog();
     }

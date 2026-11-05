@@ -13,6 +13,7 @@
 #import "components/autofill/ios/browser/autofill_client_ios.h"
 #import "components/autofill/ios/browser/test_autofill_client_ios.h"
 #import "components/device_reauth/device_authenticator.h"
+#import "components/device_reauth/mock_device_auth_availability_checker.h"
 #import "components/device_reauth/mock_device_authenticator.h"
 #import "components/enterprise/connectors/core/features.h"
 #import "components/enterprise/connectors/core/reporting_event_router.h"
@@ -35,6 +36,8 @@
 #import "ios/chrome/browser/enterprise/connectors/reporting/ios_realtime_reporting_client_factory.h"
 #import "ios/chrome/browser/enterprise/connectors/reporting/ios_reporting_event_router_factory.h"
 #import "ios/chrome/browser/infobars/model/infobar_manager_impl.h"
+#import "ios/chrome/browser/intelligence/actor/model/actor_tab_helper.h"
+#import "ios/chrome/browser/intelligence/actor/public/actor_control_state.h"
 #import "ios/chrome/browser/passwords/model/features.h"
 #import "ios/chrome/browser/passwords/model/password_controller.h"
 #import "ios/chrome/browser/shared/model/browser/test/test_browser.h"
@@ -57,6 +60,7 @@
 #import "third_party/ocmock/OCMock/OCMock.h"
 #import "url/gurl.h"
 
+using ::actor::ActorControlState;
 using ::password_manager::MockPasswordFormManagerForUI;
 using ::password_manager::PasswordFormManager;
 using ::password_manager::PasswordFormManagerForUI;
@@ -283,29 +287,55 @@ TEST_F(IOSChromePasswordManagerClientTest, OnPasswordBreachInvoked) {
 }
 
 // Tests that `IsReauthBeforeFillingRequired` returns true when the
-// authenticator can authenticate with biometric or screen lock.
+// checker can authenticate with biometric or screen lock.
 TEST_F(IOSChromePasswordManagerClientTest,
        IsReauthBeforeFillingRequired_ReauthRequired) {
+  PasswordManagerClient* client = passwordController_.passwordManagerClient;
+  auto checker =
+      std::make_unique<device_reauth::MockDeviceAuthAvailabilityChecker>();
+
+  EXPECT_CALL(*checker, CanAuthenticateWithBiometricOrScreenLock)
+      .WillOnce(Return(true));
+  EXPECT_TRUE(client->IsReauthBeforeFillingRequired(checker.get()));
+}
+
+// Tests that `IsReauthBeforeFillingRequiredLegacy` returns true when the
+// authenticator can authenticate with biometric or screen lock.
+TEST_F(IOSChromePasswordManagerClientTest,
+       IsReauthBeforeFillingRequiredLegacy_ReauthRequired) {
   PasswordManagerClient* client = passwordController_.passwordManagerClient;
   auto authenticator =
       std::make_unique<device_reauth::MockDeviceAuthenticator>();
 
   EXPECT_CALL(*authenticator, CanAuthenticateWithBiometricOrScreenLock)
       .WillOnce(Return(true));
-  EXPECT_TRUE(client->IsReauthBeforeFillingRequired(authenticator.get()));
+  EXPECT_TRUE(client->IsReauthBeforeFillingRequiredLegacy(authenticator.get()));
 }
 
 // Tests that `IsReauthBeforeFillingRequired` returns false when the
-// authenticator cannot authenticate with biometric or screen lock.
+// checker cannot authenticate with biometric or screen lock.
 TEST_F(IOSChromePasswordManagerClientTest,
        IsReauthBeforeFillingRequired_ReauthNotRequired) {
+  PasswordManagerClient* client = passwordController_.passwordManagerClient;
+  auto checker =
+      std::make_unique<device_reauth::MockDeviceAuthAvailabilityChecker>();
+
+  EXPECT_CALL(*checker, CanAuthenticateWithBiometricOrScreenLock)
+      .WillOnce(Return(false));
+  EXPECT_FALSE(client->IsReauthBeforeFillingRequired(checker.get()));
+}
+
+// Tests that `IsReauthBeforeFillingRequiredLegacy` returns false when the
+// authenticator cannot authenticate with biometric or screen lock.
+TEST_F(IOSChromePasswordManagerClientTest,
+       IsReauthBeforeFillingRequiredLegacy_ReauthNotRequired) {
   PasswordManagerClient* client = passwordController_.passwordManagerClient;
   auto authenticator =
       std::make_unique<device_reauth::MockDeviceAuthenticator>();
 
   EXPECT_CALL(*authenticator, CanAuthenticateWithBiometricOrScreenLock)
       .WillOnce(Return(false));
-  EXPECT_FALSE(client->IsReauthBeforeFillingRequired(authenticator.get()));
+  EXPECT_FALSE(client->IsReauthBeforeFillingRequiredLegacy(authenticator.get()));
 }
 
 // Tests that `GetDeviceAuthenticator` returns a valid device authenticator.
@@ -314,6 +344,14 @@ TEST_F(IOSChromePasswordManagerClientTest, GetDeviceAuthenticator) {
   std::unique_ptr<device_reauth::DeviceAuthenticator> authenticator =
       client->GetDeviceAuthenticator();
   EXPECT_TRUE(authenticator);
+}
+
+// Tests that `GetDeviceAuthAvailabilityChecker` returns a valid checker.
+TEST_F(IOSChromePasswordManagerClientTest, GetDeviceAuthAvailabilityChecker) {
+  PasswordManagerClient* client = passwordController_.passwordManagerClient;
+  std::unique_ptr<device_reauth::DeviceAuthAvailabilityChecker> checker =
+      client->GetDeviceAuthAvailabilityChecker();
+  EXPECT_TRUE(checker);
 }
 
 // Tests that `AutomaticPasswordSave` displays the password saved infobar.
@@ -547,4 +585,24 @@ TEST_F(IOSChromePasswordManagerClientTest, TestTouchToFillConsecutiveFills) {
       ukm::builders::TouchToFill_TimeToSuccessfulLogin::
           kTimeToSuccessfulLoginName,
       ukm::GetExponentialBucketMinForUserTiming(3000));
+}
+
+// Tests that `IsActorTaskActive` reflects the actuation state of the tab's
+// `ActorTabHelper`.
+TEST_F(IOSChromePasswordManagerClientTest, TestIsActorTaskActive) {
+  PasswordManagerClient* client = passwordController_.passwordManagerClient;
+  EXPECT_FALSE(client->IsActorTaskActive());
+
+  ActorTabHelper::CreateForWebState(web_state());
+  ActorTabHelper* actor_tab_helper = ActorTabHelper::FromWebState(web_state());
+  ASSERT_TRUE(actor_tab_helper);
+
+  actor_tab_helper->SetControlState(ActorControlState::kInactive);
+  EXPECT_FALSE(client->IsActorTaskActive());
+
+  actor_tab_helper->SetControlState(ActorControlState::kActorControlled);
+  EXPECT_TRUE(client->IsActorTaskActive());
+
+  actor_tab_helper->SetControlState(ActorControlState::kInactive);
+  EXPECT_FALSE(client->IsActorTaskActive());
 }

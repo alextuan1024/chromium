@@ -71,6 +71,10 @@ BASE_FEATURE_PARAM(size_t,
                    &kMemoryBanks,
                    20);
 
+BASE_FEATURE_PARAM(size_t, kMaxMemoryBankChatImages, &kMemoryBanks, 10);
+
+BASE_FEATURE_PARAM(int, kMaxMemoryBankChatImageDimension, &kMemoryBanks, 1024);
+
 BASE_FEATURE_PARAM(int,
                    kMaxTabGroups,
                    &browser::context_hub::mojom::kAutoTabGroups,
@@ -93,5 +97,17 @@ BASE_FEATURE_PARAM(base::TimeDelta,
                    &browser::context_hub::mojom::kSmartSearch,
                    "smart_search_timeout",
                    base::Seconds(15));
+
+BASE_FEATURE_PARAM(bool,
+                   kTopicsFishfoodFeedback,
+                   &browser::context_hub::mojom::kTopics,
+                   "fishfood_feedback",
+                   false);
+
+BASE_FEATURE_PARAM(std::string,
+                   kTopicsFeedbackFormUrl,
+                   &browser::context_hub::mojom::kTopics,
+                   "feedback_form_url",
+                   "https://goto.google.com/jbi-fishfood-feedback-form");
 
 }  // namespace context_hub::features

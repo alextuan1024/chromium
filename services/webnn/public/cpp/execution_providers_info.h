@@ -24,12 +24,6 @@ struct OfflineCompilationSupport {
   // Supported device IDs corresponding to the device type. An empty span means
   // all device IDs of `device_type` are supported.
   base::raw_span<const uint32_t> device_ids;
-  // Libraries that must be preloaded before sandbox lockdown. This list should
-  // only contain workarounds when compiling a graph has issues to load a
-  // particular library.
-  // TODO(crbug.com/529544314): Remove once EPs load all required libraries
-  // internally by compiling a trivial graph.
-  base::raw_span<const std::string_view> preload_libraries_workaround;
 };
 
 namespace internal {
@@ -42,15 +36,6 @@ inline constexpr OfflineCompilationSupport kOpenVINOOfflineCompilation[] = {
                 0x643E,  // Lunarlake
                 0xB03E,  // Pantherlake
                 0xFD3E,  // Wildcatlake
-            },
-        .preload_libraries_workaround =
-            (const std::string_view[]){
-                // This library is loaded on a worker thread internally in the
-                // NPU compiler, which triggers an ERROR_ACCESS_DENIED error
-                // since the worker thread runs on a lockdown token. Preloading
-                // this library before sandbox lockdown is a workaround for this
-                // issue.
-                "openvino_intel_npu_compiler.dll",
             },
     },
 };
@@ -110,12 +95,23 @@ struct EpWorkarounds {
   // respect this limit.
   bool resample2d_limit_to_nchw = false;
 
+  // By default ONNX GatherND/ScatterND ops support negative indices (indexing
+  // from the end of an axis), but some EPs do not support them. When set, the
+  // graph builder shifts negative indices to their equivalent non-negative
+  // value: where(indices < 0, indices + input_shape[axis], indices).
+  bool gather_scatter_nd_indices_require_nonnegative = false;
+
   // Whether the EP may report the NPU driver version in legacy concatenated
-  // format (e.g., "1004404") instead of 4-part dot-separated format.
+  // format (e.g., "1004404") instead of 4-part dot-separated format. This is
+  // a per-EP reporting format statement queried directly by
+  // IsNpuDriverVersionBlocked(), so it is intentionally not merged in
+  // operator|=.
   bool npu_concatenated_driver_version = false;
 
   EpWorkarounds& operator|=(const EpWorkarounds& other) {
     resample2d_limit_to_nchw |= other.resample2d_limit_to_nchw;
+    gather_scatter_nd_indices_require_nonnegative |=
+        other.gather_scatter_nd_indices_require_nonnegative;
     return *this;
   }
 };
@@ -211,13 +207,11 @@ inline constexpr auto kKnownEPs = base::MakeFixedFlatMap<std::string_view,
     {
         kOpenVINOExecutionProvider,
         {
-            // The package version 1.8.69.0 maps to the EP
-            // version 1.3.0+b130ce1.
             .min_package_version =
                 {
                     .Major = 1,
                     .Minor = 8,
-                    .Build = 69,
+                    .Build = 95,
                     .Revision = 0,
                 },
             .vendor_id = 0x8086,
@@ -225,6 +219,7 @@ inline constexpr auto kKnownEPs = base::MakeFixedFlatMap<std::string_view,
             .workarounds =
                 {
                     .resample2d_limit_to_nchw = true,
+                    .gather_scatter_nd_indices_require_nonnegative = true,
                     // The OpenVINO EP currently reports NPU driver versions in
                     // legacy concatenated format (e.g., "1004404").
                     .npu_concatenated_driver_version = true,
@@ -306,15 +301,15 @@ inline constexpr auto kKnownEPs = base::MakeFixedFlatMap<std::string_view,
             .min_package_version =
                 {
                     .Major = 0,
-                    .Minor = 2,
+                    .Minor = 4,
                     .Build = 0,
-                    .Revision = 26194,
+                    .Revision = 0,
                 },
             // The WebGPU EP is vendor-agnostic, so the vendor ID is set to 0
             // to match ORT's convention.
             // https://github.com/microsoft/onnxruntime/blob/a91b0b4/onnxruntime/core/providers/webgpu/ep/factory.cc#L66
             .vendor_id = 0,
-            .enabled = false,
+            .enabled = true,
             // The WebGPU EP does not enable int64 ops by default. WebNN
             // requires int64 support, so enable it explicitly. Key and value
             // must align with the ORT WebGPU EP implementation. See:

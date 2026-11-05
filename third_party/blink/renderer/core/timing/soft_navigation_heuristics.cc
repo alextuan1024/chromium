@@ -4,6 +4,7 @@
 
 #include "third_party/blink/renderer/core/timing/soft_navigation_heuristics.h"
 
+#include <algorithm>
 #include <cstdint>
 #include <iterator>
 #include <utility>
@@ -183,6 +184,16 @@ void GroupLcpCandidatesByContext(const HeapVector<Member<T>>& records,
     candidates->MaybeUpdateCandidate(record);
   }
 }
+
+struct ContextRecords : public GarbageCollected<ContextRecords> {
+  void Trace(Visitor* visitor) const {
+    visitor->Trace(image_records);
+    visitor->Trace(text_records);
+  }
+
+  HeapVector<Member<ImageRecord>> image_records;
+  HeapVector<Member<TextRecord>> text_records;
+};
 
 }  // namespace
 
@@ -466,42 +477,58 @@ void SoftNavigationHeuristics::EmitSoftNavigation(
   UpdateSoftLcpMetricsForContext(context);
 }
 
-void SoftNavigationHeuristics::OnElementLastContentfulPaint(
-    ImageRecord* record) {
-  OnContentfulPaintImpl(record);
+PaintTimingClient::Type SoftNavigationHeuristics::GetType() const {
+  return Type::kSoftNavigationHeuristics;
 }
 
-void SoftNavigationHeuristics::OnElementLastContentfulPaint(
-    TextRecord* record,
-    bool was_previously_reported) {
-  OnContentfulPaintImpl(record);
-}
-
-template <IsDerivedFromPaintTimingRecord T>
-void SoftNavigationHeuristics::OnContentfulPaintImpl(T* record) const {
-  Node* node = record->GetNode();
-  // TODO(crbug.com/441914208, crbug.com/557111456): `node` can be null here,
-  // which is unexpected. Change this back to a CHECK when the root cause is
-  // understood and fixed.
-  if (!node) {
-    return;
+OptionalPaintTimingCallback SoftNavigationHeuristics::OnPaintFinished(
+    const HeapVector<Member<ImageRecord>>& image_records,
+    const HeapVector<Member<TextRecord>>& text_records) {
+  if (interaction_id_to_context_.empty() ||
+      (image_records.empty() && text_records.empty())) {
+    return std::nullopt;
   }
 
-  SoftNavigationContext* context =
-      paint_attribution_tracker_->GetSoftNavigationContextForNode(node);
-  if (!context || !context->ShouldTrackForPaintTiming(*record)) {
-    return;
-  }
-  record->SetSoftNavigationContext(context);
-  context->AddPaintedArea(record);
-}
+  HeapHashMap<Member<SoftNavigationContext>, Member<ContextRecords>>
+      records_per_context;
+  auto get_records_for_record =
+      [&](const PaintTimingRecord& record) -> ContextRecords* {
+    Node* node = record.GetNode();
+    // TODO(crbug.com/454082773): `node` can be null if it's removed from the
+    // DOM and GCed between queuing `record` for processing and the end of the
+    // subsequent paint. This can happen for <video> since first video frame is
+    // queued for processing out side of paint. We should either support these
+    // records or filter them at the PaintTiming layer.
+    if (!node) {
+      return nullptr;
+    }
+    SoftNavigationContext* context =
+        paint_attribution_tracker_->GetSoftNavigationContextForNode(node);
+    if (!context || !context->IsRecordingLargestContentfulPaint()) {
+      return nullptr;
+    }
+    auto add_result = records_per_context.insert(context, nullptr);
+    if (add_result.is_new_entry) {
+      add_result.stored_value->value = MakeGarbageCollected<ContextRecords>();
+    }
+    return add_result.stored_value->value.Get();
+  };
 
-void SoftNavigationHeuristics::OnPaintFinished() {
-  for (const auto& context : interaction_id_to_context_.Values()) {
-    if (context->OnPaintFinished()) {
-      MaybeCommitNavigationOrEmitSoftNavigation(context);
+  for (const auto& record : image_records) {
+    if (ContextRecords* records = get_records_for_record(*record)) {
+      records->image_records.push_back(record);
     }
   }
+  for (const auto& record : text_records) {
+    if (ContextRecords* records = get_records_for_record(*record)) {
+      records->text_records.push_back(record);
+    }
+  }
+
+  for (auto& [context, records] : records_per_context) {
+    context->OnPaintFinished(records->image_records, records->text_records);
+  }
+  return std::nullopt;
 }
 
 void SoftNavigationHeuristics::OnInputOrScroll() {
@@ -516,7 +543,6 @@ void SoftNavigationHeuristics::OnInputOrScroll() {
 void SoftNavigationHeuristics::OnFramePresented(
     const HeapVector<Member<ImageRecord>>& image_records,
     const HeapVector<Member<TextRecord>>& text_records,
-    const HeapVector<Member<ElementTimingInfo>>&,
     const DOMPaintTimingInfo&) {
   // First, group the records by context, ignoring records that aren't needed.
   ContextToCandidatesMap candidates_per_context;
@@ -792,6 +818,11 @@ void SoftNavigationHeuristics::OnVideoSrcChanged(HTMLVideoElement* element) {
       PaintTimingDetector::NotifyInteractionTriggeredVideoSrcChange(*object);
     }
   }
+}
+
+void SoftNavigationHeuristics::SetContextForTest(SoftNavigationContext* context,
+                                                 Node* node) {
+  paint_attribution_tracker_->SetContextForTest(context, node);
 }
 
 }  // namespace blink

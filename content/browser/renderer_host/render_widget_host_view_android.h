@@ -14,6 +14,7 @@
 
 #include "base/android/jni_android.h"
 #include "base/callback_list.h"
+#include "base/containers/flat_set.h"
 #include "base/containers/queue.h"
 #include "base/functional/callback.h"
 #include "base/gtest_prod_util.h"
@@ -92,7 +93,7 @@ class SelectionPopupController;
 class SynchronousCompositorHost;
 class SynchronousCompositorClient;
 class TouchSelectionControllerClientManagerAndroid;
-class WebContentsAccessibilityAndroid;
+class WebContentsAccessibilityBase;
 struct ContextMenuParams;
 
 BASE_FEATURE(kTooltips, base::FEATURE_ENABLED_BY_DEFAULT);
@@ -116,6 +117,17 @@ class CONTENT_EXPORT RenderWidgetHostViewAndroid
  public:
   static RenderWidgetHostViewAndroid* FromRenderWidgetHostView(
       RenderWidgetHostView* view);
+
+  // Returns whether a keyboard lock request for `codes` (std::nullopt means
+  // all keys) needs OS-level keyboard capture. Android keyboard capture is
+  // all-or-nothing: while enabled, capturable system shortcuts such as Alt+Tab
+  // and Meta+<key> are routed to the window instead of the system. Those
+  // shortcuts are generally Alt/Ctrl/Meta chords (or Meta alone), so, like
+  // Windows' ModifierKeyboardHookWin, OS capture is only requested when the
+  // page locks all keys or one of those modifiers. Other locked keys are
+  // handled in-browser via `skip_if_unhandled`.
+  static bool ShouldCaptureSystemKeys(
+      const std::optional<base::flat_set<ui::DomCode>>& codes);
 
   // Note: The tree of `gfx::NativeView` might not match the tree of
   // `cc::slim::Layer`.
@@ -175,12 +187,6 @@ class CONTENT_EXPORT RenderWidgetHostViewAndroid
   void SetInsets(const gfx::Insets& insets) override;
   gfx::Size GetCompositorViewportPixelSize() override;
   bool IsSurfaceAvailableForCopy() override;
-  void CopyFromSurface(
-      const gfx::Rect& src_rect,
-      const gfx::Size& output_size,
-      base::TimeDelta timeout,
-      base::OnceCallback<void(const content::CopyFromSurfaceResult&)> callback)
-      override;
   ui::FilteredGestureProvider* GetFilteredGestureProviderForTesting() override;
   // Identical to `CopyFromSurface()`, except that this method issues the
   // `viz::CopyOutputRequest` against the exact `viz::Surface` currently
@@ -214,10 +220,7 @@ class CONTENT_EXPORT RenderWidgetHostViewAndroid
   void DestroyImpl() override;
   void OnDestroyOrDefer() override;
   void CreateUnboundedSurface(
-      mojo::PendingAssociatedReceiver<blink::mojom::UnboundedSurfaceHost> host,
-      mojo::PendingAssociatedRemote<blink::mojom::UnboundedSurfaceClient>
-          client,
-      const gfx::Rect& bounds_in_dips,
+      const gfx::Rect& bounds_in_screen,
       base::WeakPtr<RenderWidgetHostViewBase> subframe_view) override;
   void UpdateTooltipUnderCursor(const std::u16string& tooltip_text) override;
   void UpdateTooltip(const std::u16string& tooltip_text) override;
@@ -303,7 +306,6 @@ class CONTENT_EXPORT RenderWidgetHostViewAndroid
   void OnWindowPositionChanged() override;
   void NotifyVirtualKeyboardOverlayRect(
       const gfx::Rect& keyboard_rect) override;
-  void ShowInterestInElement(int) override;
   void OnPointerLockRelease() override;
 
   // ui::ViewAndroidObserver implementation:
@@ -446,7 +448,7 @@ class CONTENT_EXPORT RenderWidgetHostViewAndroid
   bool IsClosing() const { return in_shutdown_; }
 
   void SetWebContentsAccessibility(
-      WebContentsAccessibilityAndroid* web_contents_accessibility);
+      WebContentsAccessibilityBase* web_contents_accessibility);
 
   base::android::ScopedJavaLocalRef<jobject> GetJavaObject();
 
@@ -506,6 +508,12 @@ class CONTENT_EXPORT RenderWidgetHostViewAndroid
   void SetInputTransferHandlerForTesting(InputTransferHandlerAndroid* handler);
 
  protected:
+  // Allows tests to choose between the browser compositor and the synchronous
+  // (WebView) compositor, rather than using `CompositorImpl::IsInitialized()`.
+  RenderWidgetHostViewAndroid(RenderWidgetHostImpl* widget,
+                              gfx::NativeView parent_native_view,
+                              cc::slim::Layer* parent_layer,
+                              bool using_browser_compositor);
   ~RenderWidgetHostViewAndroid() override;
 
   void CleanUpHostObservers() override;
@@ -514,6 +522,13 @@ class CONTENT_EXPORT RenderWidgetHostViewAndroid
   void UpdateFrameSinkIdRegistration() override;
   void UpdateBackgroundColor() override;
   bool HasFallbackSurface() const override;
+  void CopyFromSurfaceImpl(
+      const gfx::Rect& src_rect,
+      const gfx::Size& output_size,
+      bool is_copy_request_secure,
+      base::TimeDelta timeout,
+      base::OnceCallback<void(const content::CopyFromSurfaceResult&)> callback)
+      override;
   std::optional<DisplayFeature> GetDisplayFeature() override;
   void DisableDisplayFeatureOverrideForEmulation() override;
   void OverrideDisplayFeatureForEmulation(
@@ -549,7 +564,6 @@ class CONTENT_EXPORT RenderWidgetHostViewAndroid
   FRIEND_TEST_ALL_PREFIXES(SitePerProcessBrowserTest,
                            GestureManagerListensToChildFrames);
   FRIEND_TEST_ALL_PREFIXES(RenderWidgetHostViewAndroidTest, DisplayFeature);
-  FRIEND_TEST_ALL_PREFIXES(RenderWidgetHostViewAndroidTest, UpdateControls);
   FRIEND_TEST_ALL_PREFIXES(RenderWidgetHostViewAndroidFluidResizeBrowserTest,
                            ResizeDefersSynchronizationToNextFrame);
 
@@ -612,16 +626,27 @@ class CONTENT_EXPORT RenderWidgetHostViewAndroid
   void UpdateTouchSelectionController(
       const viz::Selection<gfx::SelectionBound>& selection,
       float page_scale_factor,
-      float top_controls_height,
-      float top_controls_shown_ratio,
+      float top_content_offset,
       const gfx::SizeF& scrollable_viewport_size_dip);
-  bool UpdateControls(float dip_scale,
-                      float top_controls_height,
-                      float top_controls_shown_ratio,
-                      float top_controls_min_height_offset,
-                      float bottom_controls_height,
-                      float bottom_controls_shown_ratio,
-                      float bottom_controls_min_height_offset);
+
+  // Renderer-reported browser controls offsets, in physical pixels, clamped to
+  // the control heights the browser is currently laying out. The renderer is
+  // untrusted and must not be able to place web content under the browser
+  // controls by reporting a bogus height (see crbug.com/579587136).
+  struct ClampedBrowserControls {
+    float top_translate = 0.f;
+    float top_content_offset = 0.f;
+    float top_min_height_offset = 0.f;
+    float bottom_translate = 0.f;
+    float bottom_min_height_offset = 0.f;
+  };
+  ClampedBrowserControls ClampBrowserControls(
+      const cc::BrowserControlsMetadata& metadata) const;
+
+  // Returns whether `renderer_metadata` differs from the renderer's previous
+  // report, in which case `clamped` has been applied to the view.
+  bool UpdateControls(const cc::BrowserControlsMetadata& renderer_metadata,
+                      const ClampedBrowserControls& clamped);
   void OnDidUpdateVisualPropertiesComplete(
       const cc::RenderFrameMetadata& metadata);
 
@@ -662,7 +687,7 @@ class CONTENT_EXPORT RenderWidgetHostViewAndroid
                         float mousedown_x,
                         float mouse_down_y);
 
-  WebContentsAccessibilityAndroid* GetWebContentsAccessibilityAndroid() const;
+  WebContentsAccessibilityBase* GetWebContentsAccessibilityBase() const;
 
   void OnFocusInternal();
   void LostFocusInternal();
@@ -773,19 +798,13 @@ class CONTENT_EXPORT RenderWidgetHostViewAndroid
 
   bool observing_root_window_;
 
-  bool controls_initialized_ = false;
+  // The renderer's last browser controls report, or nullopt if none has been
+  // forwarded to the view since it was last shown. See UpdateControls().
+  std::optional<cc::BrowserControlsMetadata> last_renderer_controls_;
 
   std::unique_ptr<input::CursorManager> cursor_manager_;
   std::u16string tooltip_text_;
 
-  float prev_top_shown_pix_;
-  float prev_top_controls_pix_;
-  float prev_top_controls_translate_;
-  float prev_top_controls_min_height_offset_pix_;
-  float prev_bottom_shown_pix_;
-  float prev_bottom_controls_pix_;
-  float prev_bottom_controls_translate_;
-  float prev_bottom_controls_min_height_offset_pix_;
   float page_scale_;
   float min_page_scale_;
   float max_page_scale_;
@@ -834,8 +853,7 @@ class CONTENT_EXPORT RenderWidgetHostViewAndroid
 
   bool in_destroy_ = false;
 
-  raw_ptr<WebContentsAccessibilityAndroid> web_contents_accessibility_ =
-      nullptr;
+  raw_ptr<WebContentsAccessibilityBase> web_contents_accessibility_ = nullptr;
 
   // Represents a feature of the physical display whose offset and mask_length
   // are expressed in DIPs relative to the view. See display_feature.h for more

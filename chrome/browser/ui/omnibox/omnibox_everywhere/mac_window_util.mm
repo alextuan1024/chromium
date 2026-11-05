@@ -27,11 +27,15 @@ void ActivateBrowserWindowOnMac(BrowserWindowInterface* bwi) {
     return;
   }
 
-  // Activate the application before ordering the window front to ensure
-  // NSWindowDidBecomeKeyNotification is properly delivered and to switch Spaces
-  // if the target browser window resides on a different Space than the
-  // dismissed auxiliary popup.
-  [NSApp activateIgnoringOtherApps:YES];
+  // Activate Chrome without NSApplicationActivateAllWindows so only the
+  // targeted window is brought to the front rather than all Chrome windows.
+  NSApplicationActivationOptions options = 0;
+  // NSApplicationActivateIgnoringOtherApps is deprecated and has no effect on
+  // macOS 14+.
+  if (!@available(macOS 14, *)) {
+    options = NSApplicationActivateIgnoringOtherApps;
+  }
+  [[NSRunningApplication currentApplication] activateWithOptions:options];
 
   NSWindow* window = bwi->GetWindow()->GetNativeWindow().GetNativeNSWindow();
   if (window) {

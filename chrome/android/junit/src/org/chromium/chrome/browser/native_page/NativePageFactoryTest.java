@@ -27,6 +27,7 @@ import org.junit.runner.RunWith;
 import org.mockito.Mock;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
+import org.robolectric.Robolectric;
 import org.robolectric.annotation.Config;
 
 import org.chromium.base.test.BaseRobolectricTestRunner;
@@ -46,6 +47,8 @@ import org.chromium.chrome.browser.ui.native_page.NativePage.NativePageType;
 import org.chromium.chrome.browser.ui.native_page.NativePageTest.UrlCombo;
 import org.chromium.chrome.browser.url_constants.ExtensionsUrlOverrideRegistry;
 import org.chromium.components.embedder_support.util.UrlConstants;
+import org.chromium.url.JUnitTestOrigins;
+import org.chromium.url.Origin;
 
 /** Tests public methods in NativePageFactory. */
 @RunWith(BaseRobolectricTestRunner.class)
@@ -56,7 +59,7 @@ public class NativePageFactoryTest {
     @Mock private Tab mTab;
     @Mock private BrowserControlsManager mBrowserControlsManager;
     @Mock private TabModelSelector mTabModelSelector;
-    @Mock private Activity mActivity;
+    private Activity mActivity;
     private NativePageFactory mNativePageFactory;
     private PdfInfo mPdfInfo;
     private static final String PDF_LINK = "https://www.foo.com/testfiles/pdf/sample.pdf";
@@ -157,6 +160,7 @@ public class NativePageFactoryTest {
 
     @Before
     public void setUp() {
+        mActivity = Robolectric.buildActivity(Activity.class).get();
         mNativePageFactory =
                 new NativePageFactory(
                         null, null, null, null, null, null, null, null, null, null, null, null,
@@ -287,17 +291,20 @@ public class NativePageFactoryTest {
                         mActivity);
         Assert.assertNull("Only pdf native page is supported on custom tab.", page);
 
+        Origin initiatorOrigin = JUnitTestOrigins.createTuple("https", "initiator.example", 443);
+        PdfInfo pdfInfoWithInitiator = PdfInfo.initReuse(/* preferReuse= */ false, initiatorOrigin);
         page =
                 NativePageFactory.createNativePageForCustomTab(
                         PDF_LINK,
                         mCandidatePage,
                         mTab,
-                        mPdfInfo,
+                        pdfInfoWithInitiator,
                         mBrowserControlsManager,
                         mTabModelSelector,
                         mActivity);
         Assert.assertEquals(
                 "Candidate page should be reused when the url matches.", mCandidatePage, page);
+        verify(mCandidatePage).setInitiatorOrigin(initiatorOrigin);
 
         page =
                 NativePageFactory.createNativePageForCustomTab(
@@ -309,6 +316,48 @@ public class NativePageFactoryTest {
                         mTabModelSelector,
                         mActivity);
         Assert.assertEquals("A new pdf page should be created.", mPdfPage, page);
+    }
+
+    @Test
+    public void testCreateNativePageForURL_ReusedPdfUpdatesInitiatorOrigin() {
+        Origin initiatorOrigin = JUnitTestOrigins.createTuple("https", "initiator.example", 443);
+        PdfInfo pdfInfoWithInitiator = PdfInfo.initReuse(/* preferReuse= */ true, initiatorOrigin);
+        doReturn(true).when(mCandidatePage).isPdf();
+        doReturn(true)
+                .when(mCandidatePage)
+                .shouldReusePage(PDF_LINK, PDF_LINK, /* preferReuse= */ true);
+
+        NativePage page =
+                mNativePageFactory.createNativePageForURL(
+                        PDF_LINK,
+                        mCandidatePage,
+                        mTab,
+                        /* isIncognito= */ false,
+                        pdfInfoWithInitiator);
+        Assert.assertSame(mCandidatePage, page);
+        verify(mCandidatePage).setInitiatorOrigin(initiatorOrigin);
+    }
+
+    @Test
+    public void testCreateNativePageForCustomTab_doesNotReuseFrozenCandidate() {
+        doReturn(true).when(mCandidatePage).isFrozen();
+
+        NativePage page =
+                NativePageFactory.createNativePageForCustomTab(
+                        PDF_LINK,
+                        mCandidatePage,
+                        mTab,
+                        mPdfInfo,
+                        mBrowserControlsManager,
+                        mTabModelSelector,
+                        mActivity);
+
+        // crbug.com/568278676: a frozen page has no view and must never be handed back.
+        Assert.assertEquals(
+                "A frozen candidate page must not be reused even when the url matches.",
+                mPdfPage,
+                page);
+        verify(mCandidatePage, never()).updateForUrl(PDF_LINK);
     }
 
     @Test

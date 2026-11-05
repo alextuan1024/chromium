@@ -9,12 +9,12 @@ import type {OrganizerListSectionItemElement} from './organizer_list_section_ite
 export function getHtml(this: OrganizerListSectionItemElement) {
   // clang-format off
   return html`<!--_html_template_start_-->
-<cr-url-list-item id="crUrlListItem"
-    .itemAriaLabel="${this.getAriaLabel_()}"
+<cr-url-list-item id="crUrlListItem" .itemAriaLabel="${this.getAriaLabel_()}"
     .itemAriaDescription="${this.getAriaDescription_() || nothing}"
     .url="${this.item.prefixIcon?.url || nothing}"
     ?always-show-suffix="${this.hasSuffix_()}"
-    .size="${this.item.size || nothing}">
+    .size="${this.item.size || nothing}" @contextmenu="${this.onContextmenu_}"
+    @keydown="${this.onItemKeydown_}">
   <div id="content" slot="content">
     <organizer-list-section-item-title id="title"
         .titleParts="${this.item.title}"
@@ -46,10 +46,12 @@ export function getHtml(this: OrganizerListSectionItemElement) {
     </cr-icon>
   ` : ''}
   ${this.item.hoveredActionButton ? html`
-    <cr-icon-button id="actionButton" slot="suffix"
+    <cr-icon-button id="actionButton" slot="suffix" tabindex="-1"
         iron-icon="${this.item.hoveredActionButton.icon}"
         aria-label="${this.item.hoveredActionButton.ariaLabel}"
-        @click="${this.onActionButtonClick_}">
+        title="${this.item.hoveredActionButton.tooltip || nothing}"
+        @click="${this.onActionButtonClick_}"
+        @keydown="${this.onActionButtonKeydown_}">
     </cr-icon-button>
   ` : ''}
 </cr-url-list-item>

@@ -22,8 +22,8 @@
 #include "components/translate/core/common/translate_errors.h"
 #include "ui/base/base_window.h"
 #include "ui/base/interaction/element_identifier.h"
+#include "ui/base/mojom/window_open_disposition.mojom-forward.h"
 #include "ui/base/mojom/window_show_state.mojom-forward.h"
-#include "ui/base/window_open_disposition.h"
 #include "ui/gfx/geometry/point_f.h"
 #include "ui/gfx/native_ui_types.h"
 #include "url/origin.h"
@@ -39,6 +39,7 @@ class ExclusiveAccessContext;
 class FindBar;
 class GURL;
 class LocationBar;
+class PinnedToolbarActions;
 class StatusBubble;
 
 namespace autofill {
@@ -264,6 +265,12 @@ class BrowserWindow : public ui::BaseWindow {
   // does not provide accelerators (notably TestBrowserWindow).
   virtual ui::AcceleratorProvider* GetAcceleratorProvider() = 0;
 
+  // Returns the PinnedToolbarActions for this window, or null if the window
+  // has no pinned toolbar actions, which is the case for non-normal browser
+  // windows (e.g. web apps and popups), windows with a custom tab toolbar, and
+  // window types that have no toolbar at all.
+  virtual PinnedToolbarActions* GetPinnedToolbarActions() = 0;
+
   // Tries to focus the location bar.  Clears the window focus (to avoid
   // inconsistent state) if this fails.
   virtual void SetFocusToLocationBar(bool is_user_initiated) = 0;
@@ -299,7 +306,8 @@ class BrowserWindow : public ui::BaseWindow {
   // Link will be opened with |disposition|.
   // TODO(crbug.com/40719979): see if this can't be piped through TabStripModel
   // events instead.
-  virtual void LinkOpeningFromGesture(WindowOpenDisposition disposition) = 0;
+  virtual void LinkOpeningFromGesture(
+      ui::mojom::WindowOpenDisposition disposition) = 0;
 
   // Focuses the app menu like it was a menu bar.
   //
@@ -422,20 +430,6 @@ class BrowserWindow : public ui::BaseWindow {
                       bool in_tab_dragging);
 
   virtual void ShowAvatarBubbleFromAvatarButton(bool is_source_accelerator) = 0;
-
-  // Attempts showing the In-Product-Help for profile Switching. This is called
-  // after creating a new profile or opening an existing profile. If the profile
-  // customization bubble is shown, the IPH should be shown after.
-  virtual void MaybeShowProfileSwitchIPH() = 0;
-
-  // Attempts showing the In-Product-Help for supervised user profiles.
-  // This should be invoked for new signed-in supervised profiles created
-  // by FRE, the profile picker, profile menu or chrome menu.
-  // If the profile customization bubble is shown, the IPH should be shown
-  // after.
-  // TODO(351333491): To specify if this will be invoked on signing-in/turning
-  // on sync for an existing profile.
-  virtual void MaybeShowSupervisedUserProfileSignInIPH() = 0;
 
   // Shows User Happiness Tracking Survey's dialog after the survey associated
   // with |site_id| has been successfully loaded. Failure to load the survey

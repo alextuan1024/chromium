@@ -14,6 +14,7 @@
 #include "base/trace_event/trace_event.h"
 #include "components/viz/common/gpu/raster_context_provider.h"
 #include "gpu/command_buffer/client/raster_interface.h"
+#include "gpu/config/gpu_feature_info.h"
 #include "media/base/video_frame_converter.h"
 #include "media/base/video_frame_converter_internals.h"
 #include "media/base/video_frame_pool.h"
@@ -26,8 +27,6 @@
 #include "third_party/blink/renderer/platform/graphics/gpu/shared_gpu_context.h"
 #include "third_party/blink/renderer/platform/graphics/web_graphics_context_3d_provider_util.h"
 #include "third_party/blink/renderer/platform/heap/cross_thread_handle.h"
-#include "third_party/blink/renderer/platform/wtf/cross_thread_copier_base.h"
-#include "third_party/blink/renderer/platform/wtf/cross_thread_copier_gfx.h"
 #include "third_party/blink/renderer/platform/wtf/cross_thread_functional.h"
 #include "third_party/blink/renderer/platform/wtf/functional.h"
 #include "third_party/blink/renderer/platform/wtf/thread_safe_ref_counted.h"
@@ -49,8 +48,19 @@ bool CanUseRgbReadback(const media::VideoFrame& frame,
   return frame.format() == dest_frame.format() && CanUseRgbReadback(frame);
 }
 
+// Controls whether async YUV VideoFrame.copyTo() uses
+// RasterInterface::ReadbackYUVPixelsAsync() on the main thread instead of
+// synchronous plane readback on the background worker thread.
+// Disabled by default because ReadbackYUVPixelsAsync() currently performs slow
+// YUVA->RGB->I420 shader passes and requires main-thread UV interleaving for
+// NV12 frames (see crbug.com/565210897).
+BASE_FEATURE(kWebCodecsAsyncYuvReadback, base::FEATURE_DISABLED_BY_DEFAULT);
+
 bool CanUseYuvReadback(const media::VideoFrame& frame,
                        const media::VideoFrame& dest_frame) {
+  if (!base::FeatureList::IsEnabled(kWebCodecsAsyncYuvReadback)) {
+    return false;
+  }
   if (!frame.HasSharedImage()) {
     return false;
   }
@@ -64,6 +74,21 @@ bool CanUseYuvReadback(const media::VideoFrame& frame,
   if (visible_rect.x() % 2 != 0 || visible_rect.y() % 2 != 0 ||
       visible_rect.width() % 2 != 0 || visible_rect.height() % 2 != 0) {
     return false;
+  }
+  // On Skia Ganesh, multiplanar SharedImages without external sampling are
+  // wrapped as SkImage_GaneshYUVA, which does not implement
+  // onAsyncRescaleAndReadPixelsYUV420 and always fails with
+  // GL_INVALID_OPERATION.
+  if (frame.shared_image()->format().is_multi_plane() &&
+      !PrefersExternalSampler(frame)) {
+    auto wrapper = blink::SharedGpuContext::ContextProviderWrapper();
+    if (!wrapper ||
+        wrapper->ContextProvider()
+                .GetGpuFeatureInfo()
+                .status_values[gpu::GPU_FEATURE_TYPE_SKIA_GRAPHITE] !=
+            gpu::kGpuFeatureStatusEnabled) {
+      return false;
+    }
   }
   return true;
 }
@@ -82,6 +107,15 @@ gpu::raster::RasterInterface* GetSharedGpuRasterInterface() {
     return wrapper->ContextProvider().RasterInterface();
   }
   return nullptr;
+}
+
+void ClearGLError() {
+  auto wrapper = blink::SharedGpuContext::GetExistingContextProviderWrapper();
+  if (wrapper && !wrapper->ContextProvider().IsContextLost()) {
+    if (auto* ri = wrapper->ContextProvider().RasterInterface()) {
+      ri->GetError();
+    }
+  }
 }
 
 bool ReadbackTextureBackedFrameSyncImpl(media::VideoFrame& src_frame,
@@ -310,6 +344,7 @@ void BackgroundReadback::OnARGBPixelsFrameReadCompleted(
                                                     txt_frame.get()),
                   "success", success);
   if (!success) {
+    ClearGLError();
     ReadbackOnThread(std::move(txt_frame), std::move(result_cb));
     return;
   }
@@ -395,6 +430,7 @@ void BackgroundReadback::OnARGBPixelsReadCompleted(
                                                     txt_frame.get()),
                   "success", success);
   if (!success) {
+    ClearGLError();
     ReadbackOnThread(std::move(txt_frame), std::move(dest_frame),
                      std::move(done_cb));
     return;
@@ -476,6 +512,7 @@ void BackgroundReadback::OnYUVReadCompleted(
                                                     txt_frame.get()),
                   "success", success);
   if (!success) {
+    ClearGLError();
     ReadbackOnThread(std::move(txt_frame), std::move(dest_frame),
                      std::move(done_cb));
     return;

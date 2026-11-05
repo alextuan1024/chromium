@@ -126,13 +126,18 @@ export function getHtml(this: ContextualTasksInternalsAppElement) {
             ${!this.eligibilityState_?.isDefaultSearchEngineGoogle ? html`<li>Google is not the default search engine. <strong>Tip:</strong> Set Google as your default search engine in settings.</li>` : html`
               ${!this.eligibilityState_?.isAimEligible ? html`<li>User is not eligible for AI mode. <strong>Tip:</strong> Are you in a region when AIM is not allowed?</li>` : ''}
             `}
-            ${!this.eligibilityState_?.isCobrowseEligible ? html`<li>User is not eligible for Co-Browse. <strong>Tip:</strong> The AimEligibilityService is disabling Cobrowsing. Debug at <a href="chrome://omnibox/aim-eligibility" target="_blank">chrome://omnibox/aim-eligibility</a></li>` : ''}
+            ${!this.eligibilityState_?.isCobrowseEligible ? html`<li>User is not eligible for Co-Browse. <strong>Tip:</strong> The AimEligibilityService is disabling Cobrowsing. Debug at <a href="chrome://omnibox-internals/aim-eligibility" target="_blank">chrome://omnibox-internals/aim-eligibility</a></li>` : ''}
             ${!this.eligibilityState_?.isAimAllowedByPolicy ? html`<li>AIM is not allowed by enterprise policy.</li>` : ''}
             ${!this.eligibilityState_?.isContextSharingEnabled ? html`<li>Page context sharing enterprise policy is disabled.</li>` : ''}
           </ul>
         </div>
       ` : ''}
     </div>
+  </div>
+  <div slot="tab">Session &amp; User Data</div>
+  <div slot="panel">
+    <contextual-tasks-session-state-tab id="sessionStateTab">
+    </contextual-tasks-session-state-tab>
   </div>
 </cr-tab-box>
 `;

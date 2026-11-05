@@ -18,6 +18,7 @@ import './sections/page_metadata.js';
 import './sections/additional_context.js';
 import './sections/interaction.js';
 import './sections/skills.js';
+import './sections/tools.js';
 import './sections/stress.js';
 
 import type {OpenSettingsOptions} from '/glic/glic_api/glic_api.js';
@@ -62,7 +63,7 @@ $.syncCookiesBn.addEventListener('click', async () => {
   $.syncCookieStatus!.innerText = 'Requesting';
   try {
     await getBrowser()!.refreshSignInCookies!();
-    $.syncCookieStatus!.innerText = `Done!`;
+    $.syncCookieStatus!.innerText = 'Done!';
   } catch (e) {
     $.syncCookieStatus!.innerText = `Caught error: ${e}`;
   }
@@ -318,3 +319,5 @@ async function releaseScreenWakeLock(): Promise<void> {
     $.screenWakeLockStatus.setAttribute('lockStatus', 'released');
   }
 }
+
+performance.mark('gemini.interactive');

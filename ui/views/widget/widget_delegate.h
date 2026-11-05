@@ -71,7 +71,6 @@ class ArcVmDataMigrationConfirmationDialog;
 }  // namespace arc
 
 namespace ash {
-class AccessibilityPanel;
 class ActiveSessionAuthControllerImpl;
 class AmbientWidgetDelegate;
 class AppListView;
@@ -80,6 +79,7 @@ class AuthDialogContentsViewPixelTest;
 class AuthDialogContentsViewTest;
 class BootingAnimationController;
 class CaptureModeSessionFocusCycler;
+class ChromeVoxPanel;
 class ClientControlledStateTestWidgetDelegate;
 class ConnectionErrorDialogDelegateView;
 class DeferredUpdateDialog;
@@ -389,13 +389,13 @@ class VIEWS_EXPORT WidgetDelegate {
                              AnchoredWidgetHidesOnScroll);
     friend class ::arc::ArcTaskWindowBuilder;
     friend class ::arc::ArcVmDataMigrationConfirmationDialog;
-    friend class ::ash::AccessibilityPanel;
     friend class ::ash::ActiveSessionAuthControllerImpl;
     friend class ::ash::AmbientWidgetDelegate;
     friend class ::ash::AuthDialogContentsViewPixelTest;
     friend class ::ash::AuthDialogContentsViewTest;
     friend class ::ash::BootingAnimationController;
     friend class ::ash::CaptureModeSessionFocusCycler;
+    friend class ::ash::ChromeVoxPanel;
     friend class ::ash::DeferredUpdateDialog;
     friend class ::ash::DisclaimerView;
     friend class ::ash::InSessionAuthDialog;
@@ -681,7 +681,7 @@ class VIEWS_EXPORT WidgetDelegate {
   // NULL for no overlay. The overlay View will fill the Widget and sit on top
   // of the ClientView and FrameView (both visually and wrt click
   // targeting).
-  virtual View* CreateOverlayView();
+  virtual std::unique_ptr<View> CreateOverlayView();
 
   // Returns true if window has a hit-test mask.
   virtual bool WidgetHasHitTestMask() const;

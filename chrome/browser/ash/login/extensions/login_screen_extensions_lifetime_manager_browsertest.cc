@@ -14,7 +14,6 @@
 #include "chrome/browser/ash/login/lock/screen_locker_tester.h"
 #include "chrome/browser/ash/login/test/device_state_mixin.h"
 #include "chrome/browser/ash/login/test/login_manager_mixin.h"
-#include "chrome/browser/ash/profiles/profile_helper.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/policy/extension_force_install_mixin.h"
 #include "chrome/browser/profiles/profile.h"
@@ -23,8 +22,8 @@
 #include "chromeos/ash/components/browser_context_helper/browser_context_helper.h"
 #include "chromeos/ash/components/browser_context_helper/browser_context_types.h"
 #include "components/account_id/account_id.h"
-#include "components/user_manager/user.h"
-#include "components/user_manager/user_manager.h"
+#include "components/session_manager/core/session.h"
+#include "components/session_manager/core/session_manager.h"
 #include "content/public/test/browser_test.h"
 #include "extensions/browser/extension_host_test_helper.h"
 #include "extensions/browser/test_extension_registry_observer.h"
@@ -94,8 +93,10 @@ class LoginScreenExtensionsLifetimeManagerTest
 
   void UnlockSession() {
     const std::string kPassword = "pass";
-    const AccountId account_id =
-        user_manager::UserManager::Get()->GetPrimaryUser()->GetAccountId();
+    const session_manager::Session* primary_session =
+        session_manager::SessionManager::Get()->GetPrimarySession();
+    ASSERT_TRUE(primary_session);
+    const AccountId account_id = primary_session->account_id();
     ScreenLockerTester screen_locker_tester;
     screen_locker_tester.SetUnlockPassword(account_id, kPassword);
     screen_locker_tester.UnlockWithPassword(account_id, kPassword);
@@ -211,7 +212,7 @@ IN_PROC_BROWSER_TEST_F(LoginScreenExtensionsLifetimeManagerTest, LockScreen) {
   // Ensure that the lock profile exits.
   base::test::TestFuture<Profile*> profile_future;
   g_browser_process->profile_manager()->CreateProfileAsync(
-      ash::ProfileHelper::GetLockScreenProfileDir(),
+      ash::BrowserContextHelper::Get()->GetLockScreenBrowserContextPath(),
       profile_future.GetCallback());
   ASSERT_TRUE(profile_future.Get()) << "Lock profile wasn't created";
 

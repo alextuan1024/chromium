@@ -74,8 +74,8 @@ bool SupportedAudioVideoChecker::SupportsFileType(const base::FilePath& path) {
 
 void SupportedAudioVideoChecker::StartPreWriteValidation(
     storage::CopyOrMoveFileValidator::ResultCallback result_callback) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::IO);
-  DCHECK(callback_.is_null());
+  CHECK_CURRENTLY_ON(content::BrowserThread::IO, base::NotFatalUntil::M161);
+  CHECK(callback_.is_null(), base::NotFatalUntil::M161);
   callback_ = std::move(result_callback);
 
   base::ThreadPool::PostTaskAndReplyWithResult(
@@ -85,22 +85,12 @@ void SupportedAudioVideoChecker::StartPreWriteValidation(
                      weak_factory_.GetWeakPtr()));
 }
 
-void SupportedAudioVideoChecker::StartPostWriteValidation(
-    const base::FilePath& dest_platform_path,
-    ResultCallback result_callback) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::IO);
-
-  // StartPostWriteValidation() implementation is required. So effectively do
-  // nothing here.
-  std::move(result_callback).Run(base::File::FILE_OK);
-}
-
 SupportedAudioVideoChecker::SupportedAudioVideoChecker(
     const base::FilePath& path)
     : path_(path) {}
 
 void SupportedAudioVideoChecker::OnFileOpen(base::File file) {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::IO);
+  CHECK_CURRENTLY_ON(content::BrowserThread::IO, base::NotFatalUntil::M161);
   if (!file.IsValid()) {
     std::move(callback_).Run(base::File::FILE_ERROR_SECURITY);
     return;

@@ -18,7 +18,6 @@
 #include "chrome/browser/sync/sessions/sync_sessions_web_contents_router_factory.h"
 #include "chrome/browser/ui/android/tab_model/tab_model_list.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
-#include "components/omnibox/browser/location_bar_model_impl.h"
 #include "components/sessions/core/session_id.h"
 #include "components/sync_sessions/open_tabs_ui_delegate.h"
 #include "components/sync_sessions/session_sync_service.h"
@@ -42,7 +41,7 @@ TabModel::TabModel(Profile* profile,
                        custom_tab_profile_type,
                    TabModelType tab_model_type)
     : live_tab_context_(new AndroidLiveTabContext(this)),
-      synced_window_delegate_(new browser_sync::SyncedWindowDelegateAndroid(
+      synced_window_delegate_(new SyncedWindowDelegateAndroid(
           this,
           activity_type == ActivityType::kTabbed)),
       profile_(profile),
@@ -120,7 +119,8 @@ void TabModel::RecordActualSyncedTabsHistogram() {
   }
 
   // This check will early exit if there are no tabs in the local model.
-  if (GetTabCount() == 0) {
+  const int tab_count = GetTabCount();
+  if (tab_count == 0) {
     return;
   }
 
@@ -130,7 +130,7 @@ void TabModel::RecordActualSyncedTabsHistogram() {
   }
 
   int eligible_tabs_count = 0;
-  for (int i = 0; i < GetTabCount(); i++) {
+  for (int i = 0; i < tab_count; ++i) {
     if (SessionSyncServiceFactory::ShouldSyncURL(GetTabAt(i)->GetURL())) {
       eligible_tabs_count++;
     }
@@ -161,17 +161,17 @@ bool TabModel::IsEmptyRegularModelForEphemeralOrIncognitoCct() const {
 // static
 // From //chrome/browser/tab_list/tab_list_interface.h
 bool TabListInterface::CanEditTabList(Profile& profile) {
-  for (TabModel* model : TabModelList::models()) {
-    if (model->GetProfile() != &profile ||
-        model->GetTabModelType() != TabModel::TabModelType::kStandard ||
+  bool can_edit = true;
+  TabModelList::ForEach(&profile, [&](TabModel* model) {
+    if (model->GetTabModelType() != TabModel::TabModelType::kStandard ||
         model->IsEmptyRegularModelForEphemeralOrIncognitoCct()) {
-      continue;
+      return true;
     }
-
     if (!model->IsThisTabListEditable()) {
+      can_edit = false;
       return false;
     }
-  }
-
-  return true;
+    return true;
+  });
+  return can_edit;
 }

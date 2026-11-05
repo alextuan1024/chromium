@@ -6,10 +6,10 @@
 
 #include <algorithm>
 #include <memory>
+#include <ranges>
 #include <vector>
 
 #include "base/auto_reset.h"
-#include "base/containers/adapters.h"
 #include "base/logging.h"
 #include "base/metrics/histogram.h"
 #include "base/metrics/histogram_functions.h"
@@ -579,7 +579,8 @@ void LayerTreeImpl::GenerateCompositorFrame(
        /*parent_transform_to_target=*/gfx::Transform(),
        /*parent_clip_in_target=*/nullptr, gfx::RectF(device_viewport_rect_),
        /*opacity=*/1.0f);
-  render_pass->filters = root_->GetFilters();
+  // The root layer should not have any filters applied.
+  CHECK(root_->GetFilters().IsEmpty());
 
   bool background_opaque = background_color_.isOpaque();
   bool viewport_fully_occluded =
@@ -742,8 +743,7 @@ void LayerTreeImpl::Draw(Layer& layer,
   {
     const int num_drawing_layers_in_subtree =
         layer.GetNumDrawingLayersInSubtree();
-    const bool is_root = root_.get() == &layer;
-    const bool filters_needs_pass = layer.HasFilters() && !is_root;
+    const bool filters_needs_pass = layer.HasFilters();
     // There is no way to merge 2 rounded corners, so create a render pass so
     // existing rounded corners can go into RenderPassDrawQuad, and the layer's
     // rounded corners can go into quad its own pass.
@@ -751,6 +751,7 @@ void LayerTreeImpl::Draw(Layer& layer,
         layer.HasNonTrivialMaskFilterInfo() &&
         (data.mask_filter_info_in_target.HasRoundedCorners() ||
          data.mask_filter_info_in_target.HasGradientMask());
+    const bool is_root = root_.get() == &layer;
     const bool clip_needs_pass =
         !is_root && mask_to_bounds &&
         !transform_to_target.Preserves2dAxisAlignment();
@@ -920,10 +921,12 @@ void LayerTreeImpl::Draw(Layer& layer,
                /*filters_origin=*/gfx::PointF(),
                /*force_anti_aliasing_off=*/false,
                /*backdrop_filter_quality=*/1.f,
-               /*intersects_damage_under=*/true);
+               /*intersects_damage_under=*/true,
+               /*pass_filters=*/layer.GetFilters(),
+               /*pass_backdrop_filters=*/cc::FilterOperations(),
+               /*pass_backdrop_filter_bounds=*/std::nullopt);
 
   new_pass->output_rect = content_rect;
-  new_pass->filters = layer.GetFilters();
 
   ProcessDamageForRenderPass(*new_pass, data);
   parent_pass_damage.emplace_back(
@@ -960,7 +963,7 @@ void LayerTreeImpl::DrawChildrenAndAppendQuads(
   {
     base::AutoReset reset(&data.subtree_property_changed_from_parent,
                           subtree_property_changed);
-    for (auto& child : base::Reversed(layer.children())) {
+    for (auto& child : std::views::reverse(layer.children())) {
       Draw(*child, render_pass, data, transform_to_root, transform_to_target,
            clip_in_target, clip_in_layer, opacity);
     }

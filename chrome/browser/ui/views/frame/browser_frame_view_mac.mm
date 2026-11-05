@@ -337,7 +337,9 @@ void BrowserFrameViewMac::UpdateThrobber(bool running) {}
 
 void BrowserFrameViewMac::PaintAsActiveChanged() {
   UpdateCaptionButtonPlaceholderContainerBackground();
-  BrowserFrameView::PaintAsActiveChanged();
+  if (!is_glass_frame_eligible_) {
+    BrowserFrameView::PaintAsActiveChanged();
+  }
 }
 
 void BrowserFrameViewMac::OnThemeChanged() {
@@ -362,6 +364,14 @@ gfx::RoundedCornersF BrowserFrameViewMac::GetWindowRoundedCorners() const {
   return gfx::RoundedCornersF();
 }
 
+int BrowserFrameViewMac::GetRestoredWindowCornerRadius() const {
+  // These values are determined empirically.
+  if (@available(macOS 26, *)) {
+    return 20;
+  }
+  return 16;
+}
+
 ///////////////////////////////////////////////////////////////////////////////
 // BrowserFrameViewMac, views::FrameView implementation:
 
@@ -378,7 +388,7 @@ gfx::Rect BrowserFrameViewMac::GetWindowBoundsForClientBounds(
   // explicitly add it. If a custom titlebar is being drawn, this calculation
   // will be zero.
   NSWindow* window = GetWidget()->GetNativeWindow().GetNativeNSWindow();
-  DCHECK(window);
+  CHECK(window, base::NotFatalUntil::M162);
   top_inset += window.frame.size.height -
                [window contentRectForFrameRect:window.frame].size.height;
 

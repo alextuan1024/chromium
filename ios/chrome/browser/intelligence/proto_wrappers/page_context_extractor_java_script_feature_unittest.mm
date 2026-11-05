@@ -217,7 +217,7 @@ TEST_F(PageContextExtractorJavaScriptFeatureTest, ExtractPageContext) {
 
   base::Value expected_value(
       base::DictValue()
-          .Set("currentNodeInnerText", "Main frame text\n\n")
+          .Set("currentNodeInnerText", "Main frame text")
           .Set("title", "Main")
           .Set("sourceUrl", test_server_.GetURL(kMainPagePath).spec())
           .Set(
@@ -1403,6 +1403,10 @@ TEST_F(PageContextExtractorJavaScriptFeatureTest,
       "  <div role=\"button\">Button</div>"
       "  <div role=\"random_unknown_role\" tabindex=\"0\">Unknown</div>"
       "  <div tabindex=\"0\">No Role</div>"
+      "  <div role=\"\" tabindex=\"0\">Empty Role</div>"
+      "  <div role=\"none\" tabindex=\"0\">None</div>"
+      "  <div role=\"presentation\" tabindex=\"0\">Presentation</div>"
+      "  <div role=\"invalid BUTTON link\">Fallback Button</div>"
       "</body></html>";
   web::test::LoadHtml(base::SysUTF8ToNSString(html),
                       test_server_.GetURL(kMainPagePath), web_state());
@@ -1422,7 +1426,7 @@ TEST_F(PageContextExtractorJavaScriptFeatureTest,
   const base::ListValue* children = root_node->FindList("childrenNodes");
   ASSERT_TRUE(children);
 
-  ASSERT_EQ(children->size(), 3u);
+  ASSERT_EQ(children->size(), 7u);
 
   // Check the button node structure.
   const base::DictValue& button_node = (*children)[0].GetDict();
@@ -1442,12 +1446,11 @@ TEST_F(PageContextExtractorJavaScriptFeatureTest,
   ASSERT_TRUE(button_text);
   EXPECT_EQ(*button_text, "Button");
 
-  // Check the unknown role node structure.
+  // Keep the focusable node, but omit unrecognized explicit role metadata.
   const base::DictValue& unknown_node = (*children)[1].GetDict();
   std::optional<double> unknown_role =
       unknown_node.FindDoubleByDottedPath("contentAttributes.ariaRole");
-  ASSERT_TRUE(unknown_role.has_value());
-  EXPECT_EQ(static_cast<int>(unknown_role.value()), 181);  // AX_ROLE_UNKNOWN
+  EXPECT_FALSE(unknown_role.has_value());
 
   const base::ListValue* unknown_content_children =
       unknown_node.FindList("childrenNodes");
@@ -1460,12 +1463,29 @@ TEST_F(PageContextExtractorJavaScriptFeatureTest,
   ASSERT_TRUE(unknown_text);
   EXPECT_EQ(*unknown_text, "Unknown");
 
-  // Check the node with NO role (Preserved due to tabindex)
+  // Missing and empty roles also leave the field unset.
   const base::DictValue& no_role_node = (*children)[2].GetDict();
   std::optional<double> missing_role =
       no_role_node.FindDoubleByDottedPath("contentAttributes.ariaRole");
-  ASSERT_TRUE(missing_role.has_value());
-  EXPECT_EQ(static_cast<int>(missing_role.value()), 181);  // AX_ROLE_UNKNOWN
+  EXPECT_FALSE(missing_role.has_value());
+  EXPECT_FALSE(
+      (*children)[3].GetDict().FindByDottedPath("contentAttributes.ariaRole"));
+
+  // Presentational roles are recognized and both serialize as AX_ROLE_NONE.
+  for (size_t i : {4u, 5u}) {
+    SCOPED_TRACE(i);
+    const auto role = (*children)[i].GetDict().FindDoubleByDottedPath(
+        "contentAttributes.ariaRole");
+    ASSERT_TRUE(role.has_value());
+    EXPECT_EQ(static_cast<int>(*role), optimization_guide::proto::AX_ROLE_NONE);
+  }
+
+  // Skip invalid tokens and use the first recognized role, ignoring case.
+  const auto fallback_role = (*children)[6].GetDict().FindDoubleByDottedPath(
+      "contentAttributes.ariaRole");
+  ASSERT_TRUE(fallback_role.has_value());
+  EXPECT_EQ(static_cast<int>(*fallback_role),
+            optimization_guide::proto::AX_ROLE_BUTTON);
 }
 
 // Test the extraction of label elements and their associated control IDs.
@@ -1600,21 +1620,10 @@ TEST_F(PageContextExtractorJavaScriptFeatureTest,
   ASSERT_TRUE(visible_h.has_value());
   EXPECT_EQ(static_cast<int>(visible_h.value()), 100);
 
-  std::optional<double> visible_t = visible_area->FindDouble("top");
-  ASSERT_TRUE(visible_t.has_value());
-  EXPECT_EQ(static_cast<int>(visible_t.value()), 70);
-
-  std::optional<double> visible_l = visible_area->FindDouble("left");
-  ASSERT_TRUE(visible_l.has_value());
-  EXPECT_EQ(static_cast<int>(visible_l.value()), 50);
-
-  std::optional<double> visible_b = visible_area->FindDouble("bottom");
-  ASSERT_TRUE(visible_b.has_value());
-  EXPECT_EQ(static_cast<int>(visible_b.value()), 170);
-
-  std::optional<double> visible_r = visible_area->FindDouble("right");
-  ASSERT_TRUE(visible_r.has_value());
-  EXPECT_EQ(static_cast<int>(visible_r.value()), 150);
+  EXPECT_FALSE(visible_area->FindDouble("top").has_value());
+  EXPECT_FALSE(visible_area->FindDouble("left").has_value());
+  EXPECT_FALSE(visible_area->FindDouble("bottom").has_value());
+  EXPECT_FALSE(visible_area->FindDouble("right").has_value());
 
   std::optional<bool> user_scrollable_horizontal =
       scroller_info->FindBool("userScrollableHorizontal");
@@ -2304,6 +2313,129 @@ TEST_F(PageContextExtractorJavaScriptFeatureTest,
                interaction_info3->FindDouble("documentScopedZOrder"));
 }
 
+// Tests that `documentScopedZOrder` inside a same-origin iframe is computed
+// within the iframe's own document and is not overwritten by the parent
+// frame's z-order pass.
+TEST_F(PageContextExtractorJavaScriptFeatureTest,
+       ExtractPageContext_RichExtraction_ZOrder_SameOriginIframe) {
+  const std::string html = R"(
+    <html>
+      <body style="margin: 0; padding: 0;">
+        <button id="main_btn" style="width: 80px; height: 40px;">Main</button>
+        <iframe style="width: 200px; height: 200px; border: none;" srcdoc="
+          <html>
+            <body style='margin: 0; padding: 0;'>
+              <button id='iframe_top' style='position: absolute; top: 10px; left: 10px; width: 80px; height: 40px; z-index: 2;'>Top</button>
+              <button id='iframe_bottom' style='position: absolute; top: 10px; left: 10px; width: 80px; height: 40px; z-index: 1;'>Bottom</button>
+            </body>
+          </html>
+        "></iframe>
+      </body>
+    </html>
+  )";
+  web::test::LoadHtml(base::SysUTF8ToNSString(html),
+                      test_server_.GetURL(kMainPagePath), web_state());
+
+  std::optional<base::Value> result_value = RunExtraction(
+      web_state()->GetPageWorldWebFramesManager()->GetMainWebFrame(),
+      /*include_cross_origin_frame_content=*/false,
+      /*use_rich_extraction=*/true,
+      /*use_rich_extraction_with_actionable=*/true,
+      /*extract_paid_content=*/false,
+      /*attempt_paid_content_json_fixing=*/false, "nonce", base::Seconds(1));
+
+  ASSERT_TRUE(result_value);
+
+  const base::DictValue& dict = result_value->GetDict();
+  const base::DictValue* root_node = dict.FindDict("rootNode");
+  ASSERT_TRUE(root_node);
+  const base::ListValue* children = root_node->FindList("childrenNodes");
+  ASSERT_TRUE(children);
+  ASSERT_EQ(children->size(), 2u);
+
+  const base::DictValue& main_btn = (*children)[0].GetDict();
+  EXPECT_EQ(main_btn.FindDoubleByDottedPath(
+                "contentAttributes.nodeInteractionInfo.documentScopedZOrder"),
+            1.0);
+
+  const base::DictValue& iframe_node = (*children)[1].GetDict();
+  const base::ListValue* iframe_children =
+      iframe_node.FindList("childrenNodes");
+  ASSERT_TRUE(iframe_children);
+  ASSERT_EQ(iframe_children->size(), 1u);
+
+  const base::DictValue& iframe_root = (*iframe_children)[0].GetDict();
+  const base::ListValue* iframe_body_children =
+      iframe_root.FindList("childrenNodes");
+  ASSERT_TRUE(iframe_body_children);
+  ASSERT_EQ(iframe_body_children->size(), 2u);
+
+  // `iframe_top` appears first in DOM order with `z-index: 2` over
+  // `iframe_bottom` (`z-index: 1`), so within the iframe document
+  // `iframe_bottom` gets Z-order 1 and `iframe_top` gets Z-order 2.
+  const base::DictValue& iframe_top = (*iframe_body_children)[0].GetDict();
+  const base::DictValue& iframe_bottom = (*iframe_body_children)[1].GetDict();
+  EXPECT_EQ(iframe_bottom.FindDoubleByDottedPath(
+                "contentAttributes.nodeInteractionInfo.documentScopedZOrder"),
+            1.0);
+  EXPECT_EQ(iframe_top.FindDoubleByDottedPath(
+                "contentAttributes.nodeInteractionInfo.documentScopedZOrder"),
+            2.0);
+}
+
+// Tests that an actionable `rootNode` (`ROOT`) stays at `documentScopedZOrder`
+// 1 even when a negative `z-index` descendant paints behind `<body>` and is
+// hit-tested against an overlapping element.
+TEST_F(PageContextExtractorJavaScriptFeatureTest,
+       ExtractPageContext_RichExtraction_ZOrder_ActionableRootNode) {
+  const std::string html = R"(
+    <html>
+      <body onclick="void(0);" style="margin: 0; padding: 0;">
+        <button id="standalone_btn" style="position: absolute; top: 10px; left: 10px; width: 80px; height: 40px;">Standalone</button>
+        <button id="overlay_btn" style="position: absolute; top: 100px; left: 10px; width: 80px; height: 40px; z-index: 2;">Overlay</button>
+        <button id="neg_btn" style="position: absolute; top: 100px; left: 10px; width: 80px; height: 40px; z-index: -1;">Negative</button>
+      </body>
+    </html>
+  )";
+  web::test::LoadHtml(base::SysUTF8ToNSString(html),
+                      test_server_.GetURL(kMainPagePath), web_state());
+
+  std::optional<base::Value> result_value = RunExtraction(
+      web_state()->GetPageWorldWebFramesManager()->GetMainWebFrame(),
+      /*include_cross_origin_frame_content=*/false,
+      /*use_rich_extraction=*/true,
+      /*use_rich_extraction_with_actionable=*/true,
+      /*extract_paid_content=*/false,
+      /*attempt_paid_content_json_fixing=*/false, "nonce", base::Seconds(1));
+
+  ASSERT_TRUE(result_value);
+
+  const base::DictValue& dict = result_value->GetDict();
+  const base::DictValue* root_node = dict.FindDict("rootNode");
+  ASSERT_TRUE(root_node);
+  EXPECT_EQ(root_node->FindDoubleByDottedPath(
+                "contentAttributes.nodeInteractionInfo.documentScopedZOrder"),
+            1.0);
+
+  const base::ListValue* children = root_node->FindList("childrenNodes");
+  ASSERT_TRUE(children);
+  ASSERT_EQ(children->size(), 3u);
+
+  const base::DictValue& standalone_btn = (*children)[0].GetDict();
+  const base::DictValue& overlay_btn = (*children)[1].GetDict();
+  const base::DictValue& neg_btn = (*children)[2].GetDict();
+
+  EXPECT_EQ(standalone_btn.FindDoubleByDottedPath(
+                "contentAttributes.nodeInteractionInfo.documentScopedZOrder"),
+            2.0);
+  EXPECT_EQ(neg_btn.FindDoubleByDottedPath(
+                "contentAttributes.nodeInteractionInfo.documentScopedZOrder"),
+            3.0);
+  EXPECT_EQ(overlay_btn.FindDoubleByDottedPath(
+                "contentAttributes.nodeInteractionInfo.documentScopedZOrder"),
+            4.0);
+}
+
 TEST_F(PageContextExtractorJavaScriptFeatureTest,
        ExtractPageContext_FormDisabledWithPollution) {
   // A form element containing an input with name="disabled".
@@ -2566,7 +2698,29 @@ TEST_F(PageContextExtractorJavaScriptFeatureTest,
   const base::DictValue* offscreen_interaction_info =
       offscreen_button.FindDictByDottedPath(
           "contentAttributes.nodeInteractionInfo");
-  EXPECT_FALSE(offscreen_interaction_info);
+  ASSERT_TRUE(offscreen_interaction_info);
+  const base::ListValue* disabled_reasons =
+      offscreen_interaction_info->FindList("interactionDisabledReasons");
+  ASSERT_TRUE(disabled_reasons);
+  bool has_visually_unreachable = false;
+  for (const base::Value& reason : *disabled_reasons) {
+    if (reason.is_int() &&
+        reason.GetInt() ==
+            static_cast<int>(
+                optimization_guide::proto::
+                    INTERACTION_DISABLED_REASON_VISUALLY_UNREACHABLE)) {
+      has_visually_unreachable = true;
+      break;
+    }
+  }
+  EXPECT_TRUE(has_visually_unreachable);
+  const base::ListValue* clickability_reasons =
+      offscreen_interaction_info->FindList("clickabilityReasons");
+  if (clickability_reasons) {
+    EXPECT_TRUE(clickability_reasons->empty());
+  }
+  EXPECT_FALSE(
+      offscreen_interaction_info->FindBool("isFocusable").value_or(false));
 }
 
 // Test fieldset extraction logic.

@@ -46,7 +46,6 @@
 #include "chrome/browser/ash/guest_os/public/guest_os_service_factory.h"
 #include "chrome/browser/ash/login/demo_mode/demo_components.h"
 #include "chrome/browser/ash/login/demo_mode/demo_session.h"
-#include "chrome/browser/ash/profiles/profile_helper.h"
 #include "chrome/browser/policy/profile_policy_connector.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/ash/multi_user/multi_user_util.h"
@@ -56,6 +55,7 @@
 #include "chromeos/ash/components/cryptohome/cryptohome_parameters.h"
 #include "chromeos/ash/components/dbus/dlcservice/dlcservice_client.h"
 #include "chromeos/ash/components/dbus/session_manager/session_manager_client.h"
+#include "chromeos/ash/components/dbus/vm_concierge/concierge_service.pb.h"
 #include "chromeos/ash/components/demo_mode/utils/demo_session_utils.h"
 #include "chromeos/ash/components/install_attributes/install_attributes.h"
 #include "chromeos/ash/components/memory/swap_configuration.h"
@@ -79,7 +79,7 @@
 #include "components/prefs/pref_service.h"
 #include "components/services/app_service/public/cpp/intent_util.h"
 #include "components/session_manager/core/session_manager.h"
-#include "components/user_manager/user_manager.h"
+#include "components/user_manager/user.h"
 #include "content/public/browser/browser_thread.h"
 #include "content/public/common/content_features.h"
 #include "content/public/common/content_switches.h"
@@ -635,7 +635,9 @@ void ArcSessionManager::OnProvisioningFinished(
   if (provisioning_reported_) {
     // We don't expect success ArcProvisioningResult to be reported twice
     // or reported after an error.
-    CHECK(!provisioning_successful, base::NotFatalUntil::M160);
+    // TODO(crbug.com/569778608): CHECK-exclusion: Convert to a CHECK once we
+    // are confident it won't be triggered.
+    DCHECK(!provisioning_successful);
     // TODO(khmel): Consider changing LOG to NOTREACHED once we guaranty that
     // no double message can happen in production.
     LOG(WARNING) << "Provisioning result was already reported. Ignoring "
@@ -736,10 +738,12 @@ void ArcSessionManager::OnProvisioningFinished(
     }
 
     // On low-end (4GB RAM) devices, shut down ARCVM after post-OOBE
-    // provisioning to free system resources. ARCVM will be re-activated
-    // on-demand when the user launches an ARC app.
+    // provisioning for unmanaged users to free system resources. ARCVM will be
+    // re-activated on-demand when the user launches an ARC app.
+    // Managed users are excluded because post-provisioning tasks (such as
+    // installing force-installed apps) require ARCVM to stay running.
     if (base::FeatureList::IsEnabled(arc::kShutDownArcPostOobeProvisioning) &&
-        was_provisioning_initiated_from_oobe && IsArcVmEnabled() &&
+        !managed && was_provisioning_initiated_from_oobe && IsArcVmEnabled() &&
         base::SysInfo::Is4GbDevice()) {
       VLOG(1) << "Shutting down ARCVM post-OOBE provisioning on 4GB device.";
       activation_is_allowed_ = false;
@@ -822,7 +826,7 @@ void ArcSessionManager::SetUserInfo() {
   const AccountId account(multi_user_util::GetAccountIdFromProfile(profile_));
   const cryptohome::Identification cryptohome_id(account);
   const std::string user_id_hash =
-      ash::ProfileHelper::GetUserIdHashFromProfile(profile_);
+      ash::BrowserContextHelper::GetUserIdHashFromBrowserContext(profile_);
 
   std::string serialno = GetSerialNumber();
   arc_session_runner_->SetUserInfo(cryptohome_id, user_id_hash, serialno);
@@ -847,7 +851,7 @@ std::string ArcSessionManager::GetSerialNumber() const {
 
   const AccountId account(multi_user_util::GetAccountIdFromProfile(profile_));
   const std::string user_id_hash =
-      ash::ProfileHelper::GetUserIdHashFromProfile(profile_);
+      ash::BrowserContextHelper::GetUserIdHashFromBrowserContext(profile_);
 
   std::string serialno;
   // ARC container doesn't need the serial number.
@@ -860,9 +864,13 @@ std::string ArcSessionManager::GetSerialNumber() const {
   return serialno;
 }
 
-void ArcSessionManager::Initialize() {
+void ArcSessionManager::Initialize(
+    consent_auditor::ConsentAuditor* consent_auditor) {
   CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M160);
   CHECK(profile_, base::NotFatalUntil::M160);
+  if (!consent_auditor) {
+    CHECK_IS_TEST();
+  }
 
   CHECK_EQ(state_, State::NOT_INITIALIZED, base::NotFatalUntil::M160);
   state_ = State::STOPPED;
@@ -881,8 +889,12 @@ void ArcSessionManager::Initialize() {
   // TODO(hidehiko): Revisit to think about lazy initialization.
   if (ShouldUseErrorDialog()) {
     CHECK(!support_host_, base::NotFatalUntil::M160);
+    // ArcSupportHost outlives neither `profile_` nor its keyed services:
+    // ArcServiceLauncher::Shutdown() tears this down before the profiles are
+    // destroyed.
     support_host_ = std::make_unique<ArcSupportHost>(
-        &local_state_.get(), &application_locale_storage_.get(), profile_);
+        &local_state_.get(), &application_locale_storage_.get(), profile_,
+        consent_auditor);
     support_host_->SetErrorDelegate(this);
   }
   auto* prefs = profile_->GetPrefs();
@@ -1235,7 +1247,9 @@ void ArcSessionManager::OnVmStopped(
 void ArcSessionManager::RequestEnableImpl() {
   CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M160);
   CHECK(profile_, base::NotFatalUntil::M160);
-  CHECK(enable_requested_, base::NotFatalUntil::M160);
+  // TODO(crbug.com/579330989): CHECK-exclusion: Convert to a CHECK once we are
+  // confident it won't be triggered.
+  DCHECK(enable_requested_);
   DCHECK(state_ == State::STOPPED || state_ == State::STOPPING ||
          state_ == State::REMOVING_DATA_DIR ||
          state_ == State::CHECKING_DATA_MIGRATION_NECESSITY)
@@ -1438,8 +1452,10 @@ void ArcSessionManager::RequestArcDataRemoval() {
   }
 
   CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M160);
-  CHECK(profile_, base::NotFatalUntil::M160);
-  CHECK(data_remover_, base::NotFatalUntil::M160);
+  // TODO(crbug.com/569688161): CHECK-exclusion: Convert to a CHECK once we are
+  // confident it won't be triggered.
+  DCHECK(profile_);
+  DCHECK(data_remover_);
   VLOG(1) << "Scheduling ARC data removal.";
 
   // TODO(hidehiko): DCHECK the previous state. This is called for four cases;
@@ -1478,7 +1494,9 @@ void ArcSessionManager::MaybeStartTermsOfServiceNegotiation() {
   // be skipped, too. See also RequestEnableImpl().
   CHECK(!IsArcOptInVerificationDisabled(), base::NotFatalUntil::M160);
 
-  CHECK_EQ(state_, State::STOPPED, base::NotFatalUntil::M160);
+  // TODO(crbug.com/576105295): CHECK-exclusion: Convert to a CHECK once we are
+  // confident it won't be triggered.
+  DCHECK_EQ(state_, State::STOPPED);
   state_ = State::CHECKING_REQUIREMENTS;
 
   // TODO(hidehiko): In kArcSignedIn = true case, this method should never
@@ -1642,8 +1660,9 @@ void ArcSessionManager::StartArc() {
 
   // ARC must be started only if no pending data removal request exists.
   CHECK(profile_, base::NotFatalUntil::M160);
-  CHECK(!profile_->GetPrefs()->GetBoolean(prefs::kArcDataRemoveRequested),
-        base::NotFatalUntil::M160);
+  // TODO(crbug.com/578013746): CHECK-exclusion: Convert to a CHECK once we are
+  // confident it won't be triggered.
+  DCHECK(!profile_->GetPrefs()->GetBoolean(prefs::kArcDataRemoveRequested));
 
   for (auto& observer : observer_list_) {
     observer.OnArcStarted();
@@ -1690,11 +1709,10 @@ void ArcSessionManager::StartArc() {
   params.preferred_languages = base::SplitString(
       preferred_languages, ",", base::TRIM_WHITESPACE, base::SPLIT_WANT_ALL);
 
-  user_manager::UserManager* user_manager = user_manager::UserManager::Get();
-  CHECK(user_manager->GetPrimaryUser(), base::NotFatalUntil::M160);
-  params.account_id =
-      cryptohome::Identification(user_manager->GetPrimaryUser()->GetAccountId())
-          .id();
+  const user_manager::User* user =
+      ash::BrowserContextHelper::Get()->GetUserByBrowserContext(profile_);
+  CHECK(user);
+  params.account_id = cryptohome::Identification(user->GetAccountId()).id();
 
   params.is_account_managed =
       profile_->GetProfilePolicyConnector()->IsManaged();
@@ -1747,7 +1765,9 @@ void ArcSessionManager::StopArc() {
 
 void ArcSessionManager::MaybeStartArcDataRemoval() {
   CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M160);
-  CHECK(profile_, base::NotFatalUntil::M160);
+  // TODO(crbug.com/579329776): CHECK-exclusion: Convert to a CHECK once we are
+  // confident it won't be triggered.
+  DCHECK(profile_);
 
   // Data removal cannot run in parallel with ARC session.
   // LoginScreen instance does not use data directory, so removing should work.
@@ -1892,10 +1912,11 @@ void ArcSessionManager::OnWindowClosed() {
 
 void ArcSessionManager::OnRetryClicked() {
   CHECK(!g_ui_enabled || support_host_, base::NotFatalUntil::M160);
-  CHECK(!g_ui_enabled ||
-            support_host_->ui_page() == ArcSupportHost::UIPage::ERROR,
-        base::NotFatalUntil::M160);
-  CHECK(!requirement_checker_, base::NotFatalUntil::M160);
+  // TODO(crbug.com/576133120): CHECK-exclusion: Convert to a CHECK once we are
+  // confident it won't be triggered.
+  DCHECK(!g_ui_enabled ||
+         support_host_->ui_page() == ArcSupportHost::UIPage::ERROR);
+  DCHECK(!requirement_checker_);
 
   UpdateOptInActionUMA(OptInActionType::RETRY);
 

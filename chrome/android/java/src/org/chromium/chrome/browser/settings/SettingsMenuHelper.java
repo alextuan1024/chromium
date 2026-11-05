@@ -8,6 +8,7 @@ import static org.chromium.build.NullUtil.assumeNonNull;
 
 import android.annotation.SuppressLint;
 import android.app.Activity;
+import android.text.TextUtils;
 import android.view.Menu;
 import android.view.MenuItem;
 import android.view.View;
@@ -125,7 +126,7 @@ public class SettingsMenuHelper {
 
     /**
      * Removes menu items whose action view is a {@link SearchView}. Used when the fragment's search
-     * UI is hosted somewhere else (see MultiColumnTitleUpdater), to avoid showing a duplicate
+     * UI is hosted somewhere else (see DetailedPaneSearchController), to avoid showing a duplicate
      * search icon in the toolbar.
      */
     private static void removeSearchMenuItems(Menu menu) {
@@ -142,7 +143,7 @@ public class SettingsMenuHelper {
 
     /**
      * Returns whether the detailed page title hosts the fragment's own search UI. In that case the
-     * search icon lives next to the page title (see MultiColumnTitleUpdater) and must not be
+     * search icon lives next to the page title (see DetailedPaneSearchController) and must not be
      * duplicated in the toolbar. The detailed page title is only visible in two-column layouts.
      */
     private static boolean isSearchShownInDetailedPageTitle(
@@ -176,7 +177,7 @@ public class SettingsMenuHelper {
             mainFragment.onCreateOptionsMenu(menu, activity.getMenuInflater());
             mainFragment.onPrepareOptionsMenu(menu);
 
-            // The search icon is handled by MultiColumnTitleUpdater because it appears next to
+            // The search icon is handled by DetailedPaneSearchController because it appears next to
             // the detailed page title in two-column layouts.
             if (isSearchShownInDetailedPageTitle(mainFragment, delegate)) {
                 removeSearchMenuItems(menu);
@@ -196,6 +197,20 @@ public class SettingsMenuHelper {
      */
     public static boolean onOptionsItemSelected(
             MenuItem item, Activity activity, Delegate delegate) {
+        // In single-column mode, a default detail fragment (e.g. GoogleServicesSettings) is still
+        // attached in the hidden detail pane and sets R.id.menu_id_targeted_help on the toolbar.
+        // When the detail pane is closed (showing only MainSettings), open general settings help
+        // instead of forwarding to the hidden detail fragment.
+        MultiColumnSettings multiColumnSettings = delegate.getMultiColumnSettings();
+        boolean isShowingMainSettingsOnly =
+                multiColumnSettings != null && !multiColumnSettings.isLayoutOpen();
+        if (isShowingMainSettingsOnly && item.getItemId() == R.id.menu_id_targeted_help) {
+            RecordUserAction.record("Settings.MobileHelpAndFeedback");
+            delegate.getHelpAndFeedbackLauncher()
+                    .show(activity, activity.getString(R.string.help_context_settings), null);
+            return true;
+        }
+
         Fragment mainFragment = delegate.getMainFragment();
         if (mainFragment != null && mainFragment.onOptionsItemSelected(item)) {
             if (item.getItemId() == R.id.menu_id_targeted_help) {
@@ -282,6 +297,12 @@ public class SettingsMenuHelper {
                             }
                         });
             } else {
+                // Compute whether the navigation icon was a back button before changing it.
+                boolean wasBackButton =
+                        TextUtils.equals(
+                                toolbar.getNavigationContentDescription(),
+                                activity.getString(R.string.back));
+
                 // Show a back button.
                 toolbar.setNavigationIcon(R.drawable.ic_arrow_back_24dp);
                 toolbar.setNavigationOnClickListener(v -> activity.onBackPressed());
@@ -292,8 +313,14 @@ public class SettingsMenuHelper {
                 navigationButton.setClickable(true);
                 navigationButton.setFocusable(true);
                 ViewCompat.setAccessibilityDelegate(navigationButton, null);
-                if (shownInTab) {
-                    requestAccessibilityFocus(navigationButton);
+
+                // Move focus to the back button only when the user navigates to a subpage, that is,
+                // when the toolbar is already on screen and it was showing a different icon. Do not
+                // move focus while the toolbar is being built (e.g. on Activity recreation) or on
+                // repeated layout, title and search updates, because that overrides where the
+                // screen reader wants focus. See crbug.com/556140901.
+                if (shownInTab && !wasBackButton && navigationButton.isAttachedToWindow()) {
+                    focusAndSendAccessibilityEvent(navigationButton);
                 }
             }
         } else {
@@ -339,7 +366,8 @@ public class SettingsMenuHelper {
     private static View getNavigationButtonView(Toolbar toolbar) {
         for (int i = 0; i < toolbar.getChildCount(); i++) {
             View child = toolbar.getChildAt(i);
-            if (child instanceof ImageButton) {
+            if (child instanceof ImageButton imageButton
+                    && imageButton.getDrawable() == toolbar.getNavigationIcon()) {
                 return child;
             }
         }

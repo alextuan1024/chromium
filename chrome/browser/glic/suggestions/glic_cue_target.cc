@@ -17,9 +17,11 @@
 #include "chrome/browser/glic/glic_pref_names_internal.h"
 #include "chrome/browser/glic/public/features.h"
 #include "chrome/browser/glic/public/glic_enabling.h"
+#include "chrome/browser/glic/public/glic_feature.h"
 #include "chrome/browser/glic/public/glic_invoke_options.h"
 #include "chrome/browser/glic/public/glic_keyed_service.h"
 #include "chrome/browser/glic/public/glic_passkeys.h"
+#include "chrome/browser/glic/public/glic_provider_spec.h"
 #include "chrome/browser/glic/resources/grit/glic_browser_resources.h"
 #include "chrome/browser/glic/suggestions/glic_cue_tab_state.h"
 #include "chrome/browser/optimization_guide/optimization_guide_keyed_service.h"
@@ -29,7 +31,6 @@
 #include "chrome/browser/tab_list/tab_list_interface.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_features.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
-#include "chrome/browser/ui/tabs/public/tab_features.h"
 #include "components/optimization_guide/proto/features/contextual_cueing.pb.h"
 #include "components/pdf/common/constants.h"
 #include "components/prefs/pref_service.h"
@@ -74,7 +75,7 @@ void GlicCueTarget::Register(tabs::TabInterface& tab) {
   }
 
   auto* contextual_cueing_controller =
-      tab.GetTabFeatures()->contextual_cueing_controller();
+      contextual_cueing::ContextualCueingController::From(&tab);
   CHECK(contextual_cueing_controller);
   contextual_cueing_controller->RegisterCueTarget(
       contextual_cueing::CueTargetType::kGlic,
@@ -146,12 +147,15 @@ bool GlicCueTarget::IsPageEligible(
   bool passes_shopping = false;
   for (const page_content_annotations::Category& category :
        result.GetCategoryResults()) {
-    if (category.category_type ==
+    if (base::FeatureList::IsEnabled(features::kGlicContextualCuesHandleEdu) &&
+        category.category_type ==
             page_content_annotations::CategoryType::kEducation &&
         category.score > contextual_cueing::kEduClassifierThreshold.Get()) {
       passes_edu = true;
     }
-    if (category.category_type ==
+    if (base::FeatureList::IsEnabled(
+            features::kGlicContextualCuesHandleShopping) &&
+        category.category_type ==
             page_content_annotations::CategoryType::kShopping &&
         category.score >
             contextual_cueing::kShoppingClassifierThreshold.Get()) {
@@ -172,6 +176,14 @@ bool GlicCueTarget::IsPageEligible(
 }
 
 bool GlicCueTarget::IsEligible() const {
+  if (!base::FeatureList::IsEnabled(features::kGlicContextualCuesHandleEdu) &&
+      !base::FeatureList::IsEnabled(
+          features::kGlicContextualCuesHandleShopping)) {
+    CUEING_LOG(
+        "GlicCueTarget::IsEligible failed: Both Edu and Shopping cues "
+        "disabled.");
+    return false;
+  }
   auto* window = tab_->GetBrowserWindowInterface();
   if (!window) {
     CUEING_LOG("GlicCueTarget::IsEligible failed: No window.");
@@ -197,6 +209,8 @@ bool GlicCueTarget::IsEligible() const {
     }
   }
   return GlicEnabling::IsEnabledForProfile(tab_->GetProfile()) &&
+         GetGlicProviderSpec(tab_->GetProfile())
+             .SupportsFeature(GlicFeature::kContextualCueing) &&
          tab_->GetProfile()->GetPrefs()->GetBoolean(
              prefs::kGlicPinnedToTabstrip) &&
          !glic_keyed_service_->IsPanelShowingForBrowser(*window);

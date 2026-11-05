@@ -49,7 +49,6 @@
 #include "chrome/browser/profiles/profile_manager.h"
 #include "chrome/browser/ui/ash/login/login_display_host.h"
 #include "chrome/browser/ui/webui/about/about_ui.h"
-#include "chrome/browser/ui/webui/ash/login/account_selection_screen_handler.h"
 #include "chrome/browser/ui/webui/ash/login/add_child_screen_handler.h"
 #include "chrome/browser/ui/webui/ash/login/ai_intro_screen_handler.h"
 #include "chrome/browser/ui/webui/ash/login/app_downloading_screen_handler.h"
@@ -140,7 +139,6 @@
 #include "chrome/browser/ui/webui/ash/login/wrong_hwid_screen_handler.h"
 #include "chrome/browser/ui/webui/metrics_handler.h"
 #include "chrome/browser/ui/webui/theme_source.h"
-#include "chrome/common/chrome_constants.h"
 #include "chrome/grit/browser_resources.h"
 #include "chrome/grit/chrome_unscaled_resources.h"
 #include "chrome/grit/component_extension_resources.h"
@@ -316,8 +314,6 @@ void CreateAndAddOobeUIDataSource(const PrefService& local_state,
   source->AddBoolean("isOsInstallAllowed", switches::IsOsInstallAllowed());
   source->AddBoolean("isOobeFlow", is_oobe_flow);
   source->AddBoolean("isOobeAiIntroEnabled", features::IsOobeAiIntroEnabled());
-  source->AddBoolean("isJellyEnabled", features::IsOobeJellyEnabled());
-  source->AddBoolean("isOobeJellyEnabled", features::IsOobeJellyEnabled());
   source->AddBoolean("isBootAnimationEnabled",
                      features::IsBootAnimationEnabled());
   source->AddBoolean("isChoobeEnabled", features::IsOobeChoobeEnabled());
@@ -353,9 +349,6 @@ void CreateAndAddOobeUIDataSource(const PrefService& local_state,
   source->AddBoolean("isSplitModifierKeyboardInfoEnabled",
                      features::IsOobeSplitModifierKeyboardInfoEnabled());
 
-  source->AddBoolean("isOobeAddUserDuringEnrollmentEnabled",
-                     features::IsOobeAddUserDuringEnrollmentEnabled());
-
   source->AddBoolean("isOobeDevOverlayEnabled",
                      command_line->HasSwitch(switches::kShowOobeDevOverlay));
 
@@ -380,17 +373,18 @@ void CreateAndAddOobeUIDataSource(const PrefService& local_state,
       network::mojom::CSPDirectiveName::ObjectSrc, "object-src chrome:;");
 }
 
-std::string GetDisplayType(const GURL& url) {
-  std::string path = url.GetPath().size() ? url.GetPath().substr(1) : "";
+std::string_view GetDisplayType(const GURL& url) {
+  std::string_view path = url.path().size() ? url.path().substr(1) : "";
 
   constexpr auto kKnownDisplayTypes = base::MakeFixedFlatSet<std::string_view>(
       {OobeUI::kAppLaunchSplashDisplay, OobeUI::kGaiaSigninDisplay,
        OobeUI::kOobeDisplay, OobeUI::kOobeTestLoader});
 
-  if (!kKnownDisplayTypes.contains(path)) {
+  auto it = kKnownDisplayTypes.find(path);
+  if (it == kKnownDisplayTypes.end()) {
     NOTREACHED() << "Unknown display type '" << path << "'. Setting default.";
   }
-  return path;
+  return *it;
 }
 
 }  // namespace
@@ -602,10 +596,6 @@ void OobeUI::ConfigureOobeDisplay(
   AddScreenHandler(std::make_unique<CryptohomeRecoveryScreenHandler>());
 
   AddScreenHandler(std::make_unique<SplitModifierKeyboardInfoScreenHandler>());
-
-  if (features::IsOobeAddUserDuringEnrollmentEnabled()) {
-    AddScreenHandler(std::make_unique<AccountSelectionScreenHandler>());
-  }
 
   AddScreenHandler(std::make_unique<RemoteActivityNotificationScreenHandler>());
 
@@ -851,8 +841,9 @@ base::DictValue OobeUI::GetLocalizedStrings() {
     handler->GetLocalizedStrings(&localized_strings);
   }
 
-  const std::string& app_locale = application_locale_storage_->Get();
-  webui::SetLoadTimeDataDefaults(app_locale, &localized_strings);
+  std::string_view app_locale =
+      application_locale_storage_->GetTag().tag_string();
+  webui::SetLoadTimeDataDefaults(std::string(app_locale), &localized_strings);
   localized_strings.Set("app_locale", app_locale);
 
 #if BUILDFLAG(GOOGLE_CHROME_BRANDING)
@@ -862,10 +853,6 @@ base::DictValue OobeUI::GetLocalizedStrings() {
 #endif
 
   std::string oobeClasses = "";
-  // TODO (b/268463435) Cleanup OobeJelly
-  if (features::IsOobeJellyEnabled()) {
-    oobeClasses += "jelly-enabled ";
-  }
   if (features::IsBootAnimationEnabled()) {
     oobeClasses += "boot-animation-enabled ";
   }

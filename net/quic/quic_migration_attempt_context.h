@@ -6,38 +6,21 @@
 #define NET_QUIC_QUIC_MIGRATION_ATTEMPT_CONTEXT_H_
 
 #include <memory>
-#include <string>
+#include <optional>
+#include <string_view>
 #include <variant>
 
 #include "base/functional/callback.h"
+#include "net/base/net_errors.h"
 #include "net/base/net_export.h"
 #include "net/base/network_handle.h"
+#include "net/quic/quic_socket_config_step.h"
 #include "net/third_party/quiche/src/quiche/quic/platform/api/quic_socket_address.h"
 
 namespace net {
 
 class QuicChromiumPacketReader;
 class QuicChromiumPacketWriter;
-
-// The cause of connection migration.
-//
-// Deprecated: To be removed. Use QuicMigrationAttemptCause instead.
-enum MigrationCause {
-  UNKNOWN_CAUSE,
-  ON_NETWORK_CONNECTED,                       // Direct migration.
-  ON_NETWORK_DISCONNECTED,                    // Direct migration.
-  ON_WRITE_ERROR,                             // Direct migration.
-  ON_NETWORK_MADE_DEFAULT,                    // With probing.
-  ON_MIGRATE_BACK_TO_DEFAULT_NETWORK,         // With probing.
-  CHANGE_NETWORK_ON_PATH_DEGRADING,           // With probing.
-  CHANGE_PORT_ON_PATH_DEGRADING,              // With probing.
-  NEW_NETWORK_CONNECTED_POST_PATH_DEGRADING,  // With probing.
-  ON_SERVER_PREFERRED_ADDRESS_AVAILABLE,      // With probing.
-  MULTI_PORT_PATH,
-  MIGRATION_CAUSE_MAX
-};
-
-NET_EXPORT_PRIVATE std::string MigrationCauseToString(MigrationCause cause);
 
 // The cause of a connection migration attempt.
 // These values are persisted to logs. Entries should not be renumbered and
@@ -55,12 +38,14 @@ enum class QuicMigrationAttemptCause {
   kNewNetworkConnectedPostPathDegrading = 7,
   kOnServerPreferredAddressAvailable = 8,
   kMultiPortPath = 9,
-  kMaxValue = kMultiPortPath,
+  kWaitForNewNetworkPostNetworkDisconnected = 10,
+  kWaitForNewNetworkPostWriteError = 11,
+  kMaxValue = kWaitForNewNetworkPostWriteError,
 };
 // LINT.ThenChange(//tools/metrics/histograms/metadata/net/enums.xml:QuicMigrationAttemptCause,//tools/metrics/histograms/metadata/net/histograms.xml:QuicMigrationAttemptCause)
 
-NET_EXPORT_PRIVATE QuicMigrationAttemptCause
-ToQuicMigrationAttemptCause(MigrationCause cause);
+NET_EXPORT_PRIVATE std::string_view QuicMigrationAttemptCauseToString(
+    QuicMigrationAttemptCause cause);
 
 // Reasons why an eligible migration attempt failed.
 // These values are persisted to logs. Entries should not be renumbered and
@@ -72,8 +57,14 @@ enum class QuicMigrationAttemptFailureReason {
   kProbeTimeout = 1,
   kNoUnusedConnectionId = 2,
   kStatelessReset = 3,
-  kProbeFailed = 4,
-  kMaxValue = kProbeFailed,
+  // Catch-all for a probe that failed without QUICHE, or Chromium, giving a
+  // usable reason. Every known cause now has its own value, so this should
+  // never be recorded.
+  kProbeUnknownFailure = 4,
+  // A write error on the probing socket caused Chromium to cancel the
+  // validation.
+  kProbeWriteError = 5,
+  kMaxValue = kProbeWriteError,
 };
 // LINT.ThenChange(//tools/metrics/histograms/metadata/net/enums.xml:QuicMigrationAttemptFailureReason)
 
@@ -116,8 +107,19 @@ class NET_EXPORT_PRIVATE QuicMigrationAttemptContext {
 
   // Records an ineligible migration when an attempt is classified as such
   // without a context having been created.
-  static void RecordIneligible(MigrationCause cause,
+  static void RecordIneligible(QuicMigrationAttemptCause cause,
                                QuicMigrationAttemptIneligibleReason reason);
+
+  // Records a superseded migration attempt when an attempt is superseded
+  // without a context having been created (e.g. while waiting for a new
+  // network).
+  static void RecordSuperseded(QuicMigrationAttemptCause cause,
+                               QuicMigrationAttemptCause superseded_by_cause);
+
+  // Records the time elapsed while waiting for a new network when a new network
+  // connects before timing out.
+  static void RecordWaitForNewNetworkDuration(QuicMigrationAttemptCause cause,
+                                              base::TimeDelta duration);
 
   // Note: This does not accept a `self_address` because that is not known until
   // the underlying datagram socket has been configured and connected. This
@@ -129,29 +131,45 @@ class NET_EXPORT_PRIVATE QuicMigrationAttemptContext {
   // explicit dependency on QuicChromiumClientSession, which simplifies unit
   // testing this class.
   QuicMigrationAttemptContext(
-      MigrationCause cause,
+      QuicMigrationAttemptCause cause,
       handles::NetworkHandle from_network,
       handles::NetworkHandle target_network,
       const quic::QuicSocketAddress& target_peer_address,
       std::unique_ptr<QuicChromiumPacketReader> reader,
       std::unique_ptr<QuicChromiumPacketWriter> writer,
-      base::RepeatingCallback<bool()> is_session_alive);
+      base::RepeatingCallback<bool()> is_session_alive,
+      bool is_google_host);
   ~QuicMigrationAttemptContext();
 
   QuicMigrationAttemptContext(const QuicMigrationAttemptContext&) = delete;
   QuicMigrationAttemptContext& operator=(const QuicMigrationAttemptContext&) =
       delete;
 
+  struct SocketConfigFailureDetails {
+    QuicSocketConfigStep step;
+    int net_error;
+  };
+
   void SetSuccess();
   void SetFailure(QuicMigrationAttemptFailureReason reason);
+  void SetSocketConfigFailure(QuicSocketConfigStep step, int net_error);
   void SetIneligible(QuicMigrationAttemptIneligibleReason reason);
   void SetSuperseded(QuicMigrationAttemptCause cause);
 
-  MigrationCause cause() const { return cause_; }
+  QuicMigrationAttemptCause cause() const { return cause_; }
   handles::NetworkHandle from_network() const { return from_network_; }
   handles::NetworkHandle target_network() const { return target_network_; }
   const quic::QuicSocketAddress& target_peer_address() const {
     return target_peer_address_;
+  }
+  bool is_google_host() const { return is_google_host_; }
+
+  const QuicMigrationAttemptFailureReason* failure_reason() const {
+    return std::get_if<QuicMigrationAttemptFailureReason>(&outcome_details_);
+  }
+
+  const SocketConfigFailureDetails* socket_config_failure_details() const {
+    return std::get_if<SocketConfigFailureDetails>(&outcome_details_);
   }
 
   QuicChromiumPacketReader* reader() const { return reader_.get(); }
@@ -165,7 +183,7 @@ class NET_EXPORT_PRIVATE QuicMigrationAttemptContext {
   }
 
  private:
-  const MigrationCause cause_;
+  const QuicMigrationAttemptCause cause_;
   const handles::NetworkHandle from_network_;
   const handles::NetworkHandle target_network_;
   const quic::QuicSocketAddress target_peer_address_;
@@ -173,6 +191,7 @@ class NET_EXPORT_PRIVATE QuicMigrationAttemptContext {
   Outcome outcome_ = Outcome::kUnknown;
   std::variant<std::monostate,
                QuicMigrationAttemptFailureReason,
+               SocketConfigFailureDetails,
                QuicMigrationAttemptIneligibleReason,
                QuicMigrationAttemptCause>
       outcome_details_;
@@ -184,6 +203,7 @@ class NET_EXPORT_PRIVATE QuicMigrationAttemptContext {
   std::unique_ptr<QuicChromiumPacketWriter> writer_;
 
   base::RepeatingCallback<bool()> is_session_alive_;
+  const bool is_google_host_;
 };
 
 }  // namespace net

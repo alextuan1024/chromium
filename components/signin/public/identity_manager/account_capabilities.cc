@@ -126,13 +126,6 @@ AccountCapabilities::can_override_account_info() const {
   return GetCapabilityByName(kCanOverrideAccountInfoCapabilityName);
 }
 
-#if !BUILDFLAG(IS_IOS)
-signin::Tribool AccountCapabilities::can_run_chrome_privacy_sandbox_trials()
-    const {
-  return GetCapabilityByName(kCanRunChromePrivacySandboxTrialsCapabilityName);
-}
-#endif
-
 signin::Tribool AccountCapabilities::
     can_show_history_sync_opt_ins_without_minor_mode_restrictions() const {
 #if BUILDFLAG(IS_IOS)
@@ -258,12 +251,6 @@ AccountCapabilities::is_subject_to_account_level_enterprise_policies() const {
       kIsSubjectToAccountLevelEnterprisePoliciesCapabilityName);
 }
 
-signin::Tribool AccountCapabilities::
-    is_subject_to_chrome_privacy_sandbox_restricted_measurement_notice() const {
-  return GetCapabilityByName(
-      kIsSubjectToChromePrivacySandboxRestrictedMeasurementNotice);
-}
-
 signin::Tribool AccountCapabilities::is_subject_to_enterprise_features() const {
   return GetCapabilityByName(kIsSubjectToEnterprisePoliciesCapabilityName);
 }
@@ -289,12 +276,36 @@ signin::Tribool AccountCapabilities::must_fetch_apple_age_range_in_chrome()
 }
 #endif
 
+signin::Tribool AccountCapabilities::
+    must_show_equally_weighted_buttons_for_private_passes_in_chrome_autofill()
+        const {
+  return GetCapabilityByName(
+      kMustShowEquallyWeightedButtonsForPrivatePassesInChromeAutofillCapabilityName);
+}
+
 #if BUILDFLAG(IS_IOS)
 signin::Tribool AccountCapabilities::must_skip_apple_age_range_in_chrome()
     const {
   return GetCapabilityByName(kMustSkipAppleAgeRangeInChromeCapabilityName);
 }
 #endif
+
+signin::Tribool
+AccountCapabilities::should_be_addressed_in_feminine_grammatical_gender()
+    const {
+  return GetCapabilityByName(kShouldBeAddressedInFeminineGrammaticalGender);
+}
+
+signin::Tribool
+AccountCapabilities::should_be_addressed_in_masculine_grammatical_gender()
+    const {
+  return GetCapabilityByName(kShouldBeAddressedInMasculineGrammaticalGender);
+}
+
+signin::Tribool
+AccountCapabilities::should_be_addressed_in_neuter_grammatical_gender() const {
+  return GetCapabilityByName(kShouldBeAddressedInNeuterGrammaticalGender);
+}
 
 signin::Tribool
 AccountCapabilities::supports_wallet_private_passes_in_autofill() const {

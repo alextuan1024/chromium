@@ -20,6 +20,7 @@
 #include "components/sync/model/model_error.h"
 #include "components/sync/model/mutable_data_batch.h"
 #include "components/sync/protocol/entity_data.h"
+#include "components/sync/protocol/entity_metadata.pb.h"
 #include "components/sync/protocol/entity_specifics.pb.h"
 #include "components/sync/protocol/skill_specifics.pb.h"
 
@@ -169,6 +170,12 @@ std::optional<syncer::ModelError> SkillsSyncBridge::ApplyIncrementalSyncChanges(
         if (!skill_specifics.has_simple_skill()) {
           // This is a new type of skill, ignore it in the bridge but its
           // metadata should still be stored.
+          continue;
+        }
+
+        // First-party skills are never synced.
+        if (skill_specifics.skill_source() ==
+            sync_pb::SKILL_SOURCE_FIRST_PARTY) {
           continue;
         }
 
@@ -325,6 +332,12 @@ bool SkillsSyncBridge::IsEntityDataValid(
     return false;
   }
 
+  // First-party skills are never synced.
+  if (entity_data.specifics.skill().skill_source() ==
+      sync_pb::SKILL_SOURCE_FIRST_PARTY) {
+    return false;
+  }
+
   // Do not validate the presence of `simple_skill` for forward compatibility
   // with the newer version which may contain other skill types. The bridge will
   // not propagate those changes to the server but it would be stored in sync
@@ -404,24 +417,40 @@ void SkillsSyncBridge::OnReadAllDataAndMetadata(
     return;
   }
 
+  const syncer::EntityMetadataMap& sync_metadata =
+      metadata_batch->GetAllMetadata();
   std::vector<std::unique_ptr<Skill>> loaded_skills;
   for (const syncer::DataTypeStore::Record& record : *entries) {
     proto::SkillLocalData local_data;
     if (!local_data.ParseFromString(record.value)) {
       continue;
     }
-    if (!IsEntityDataValid(SpecificsToEntityData(local_data.specifics()))) {
+
+    // Merge stored specifics with `possibly_trimmed_base_specifics` from sync
+    // metadata so that any fields that were unknown when the entity was stored
+    // (and have since become supported after a browser upgrade) are recovered.
+    // Note: In production, the two protos have disjoint sets of fields, so the
+    // merge order does not matter; merging `possibly_trimmed_base_specifics` on
+    // top of `local_data` allows tests to simulate browser upgrades by setting
+    // already-known fields in `possibly_trimmed_base_specifics`.
+    sync_pb::SkillSpecifics specifics = local_data.specifics();
+    if (auto it = sync_metadata.find(record.id); it != sync_metadata.end()) {
+      specifics.MergeFrom(
+          it->second->possibly_trimmed_base_specifics().skill());
+    }
+
+    if (!IsEntityDataValid(SpecificsToEntityData(specifics))) {
       continue;
     }
-    if (!local_data.specifics().has_simple_skill()) {
+    if (!specifics.has_simple_skill()) {
       // Verify this explicitly as `IsEntityDataValid()` does not check for it.
       continue;
     }
-    if (record.id != local_data.specifics().guid()) {
+    if (record.id != specifics.guid()) {
       continue;
     }
 
-    loaded_skills.push_back(SpecificsToSkill(local_data.specifics()));
+    loaded_skills.push_back(SpecificsToSkill(specifics));
   }
 
   skills_service_->LoadInitialSkills(std::move(loaded_skills));

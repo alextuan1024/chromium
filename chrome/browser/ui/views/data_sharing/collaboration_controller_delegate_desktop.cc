@@ -32,8 +32,8 @@
 #include "components/signin/public/base/signin_metrics.h"
 #include "components/signin/public/identity_manager/account_info.h"
 #include "ui/base/base_window.h"
+#include "ui/base/mojom/window_open_disposition.mojom-shared.h"
 #include "ui/base/page_transition_types.h"
-#include "ui/base/window_open_disposition.h"
 #include "ui/views/bubble/bubble_dialog_model_host.h"
 #include "ui/views/widget/widget.h"
 
@@ -141,7 +141,7 @@ DialogText GetPromptDialogTextFromStatus(
 
 void ShowSignInAndSyncUi(Profile* profile,
                          signin_metrics::AccessPoint access_point) {
-  signin_ui_util::EnableSyncFromSingleAccountPromo(
+  signin_ui_util::EnableHistorySyncFromSingleAccountPromo(
       profile, GetAccountInfoFromProfile(profile).GetCoreAccountInfo(),
       access_point);
 }
@@ -649,9 +649,10 @@ void CollaborationControllerDelegateDesktop::OnErrorDialogOk() {
 
 void CollaborationControllerDelegateDesktop::OnErrorDialogOkForUpdate() {
   if (browser_) {
-    NavigateParams params(browser_, GURL("chrome://settings/help"),
+    NavigateParams params(browser_,
+                          chrome::GetSettingsUrl(chrome::kHelpSubPage),
                           ui::PAGE_TRANSITION_LINK);
-    params.disposition = WindowOpenDisposition::NEW_FOREGROUND_TAB;
+    params.disposition = ui::mojom::WindowOpenDisposition::kNewForegroundTab;
     Navigate(&params);
   }
 

@@ -163,7 +163,9 @@ enum ShellWindowId {
   // notifier elements such as notification popups, toasts and system nudges.
   kShellWindowId_SettingBubbleContainer,
 
-  // The container for the live caption window.
+  // The container for the live caption window. Unlike its neighbors in this
+  // enum, it is a child of kShellWindowId_NonLockScreenContainersContainer, so
+  // the live caption bubble is not displayed on top of the lock screen.
   kShellWindowId_LiveCaptionContainer,
 
   // The container for help bubbles which are anchored to views for the purpose
@@ -179,9 +181,10 @@ enum ShellWindowId {
 
   // The container for accessibility bubbles that overlay the work area and any
   // other menus and bubbles, but appear under the Autoclick mouse UX in
-  // kShellWindowId_OverlayContainer. Both Autoclick and Switch Access have
-  // bubbles that appear in this layer. These features need to work with dialogs
-  // and menus, so they must be shown above
+  // kShellWindowId_OverlayContainer. Hosts BELOW_ACCESSIBILITY_BUBBLES focus
+  // rings and interactive bubbles (Autoclick, Switch Access), unlike the
+  // non-interactive cursor overlays in OverlayContainer. These features need
+  // to work with dialogs and menus, so they must be shown above
   // kShellWindowId_SettingBubbleContainer to allow the user to access these
   // settings. However, these bubbles may have buttons with tooltips which must
   // be shown above the bubbles, so it must be under
@@ -191,7 +194,9 @@ enum ShellWindowId {
   kShellWindowId_AccessibilityBubbleContainer,
 
   // The container for special components overlaid onscreen, such as the
-  // region selector for partial screenshots.
+  // region selector for partial screenshots, Alt-Tab window cycle list,
+  // Autoclick mouse UX, and ABOVE_ACCESSIBILITY_BUBBLES focus rings (which
+  // restack to top on each focus update).
   kShellWindowId_OverlayContainer,
 
   // The container for ambient mode screen saver.

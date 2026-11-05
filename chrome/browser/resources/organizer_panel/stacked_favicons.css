@@ -12,34 +12,47 @@
 }
 
 .favicons {
-  --stacked-favicons-overlap_: -2px;
+  /* With 16px icons, a 4px layout overlap (-4px margin) and 4px gap require an
+   * 8px clip on the first icon, yielding an 8px + 4px + 16px = 28px footprint. */
+  --stacked-favicons-clip_:
+      calc(var(--stacked-favicons-gap_) + var(--stacked-favicons-overlap_));
+  --stacked-favicons-gap_: 4px;
+  --stacked-favicons-overlap_: 4px;
+  --stacked-favicons-size_: 16px;
   align-items: center;
   display: flex;
-  isolation: isolate;
   justify-content: center;
 }
 
 .favicons .favicon {
-  background-color: var(--color-list-item-url-favicon-background,
-      var(--cr-fallback-color-neutral-container));
   background-position: center center;
   background-repeat: no-repeat;
-  border-radius: 100%;
-  box-shadow: 0 0 0 2px var(--color-list-item-url-favicon-background,
-      var(--cr-fallback-color-neutral-container));
-  height: 16px;
+  box-sizing: border-box;
+  height: var(--stacked-favicons-size_);
   position: relative;
-  width: 16px;
+  width: var(--stacked-favicons-size_);
 }
 
-:host(:not([stack-vertically])) .favicons .favicon:not(:first-child) {
-  margin-inline-start: var(--stacked-favicons-overlap_);
+:host(:not([stack-vertically])) #firstFavicon {
+  clip-path: inset(0 var(--stacked-favicons-clip_) 0 0);
+}
+
+:host-context([dir=rtl]):host(:not([stack-vertically])) #firstFavicon {
+  clip-path: inset(0 0 0 var(--stacked-favicons-clip_));
+}
+
+:host(:not([stack-vertically])) #secondFavicon {
+  margin-inline-start: calc(-1 * var(--stacked-favicons-overlap_));
 }
 
 :host([stack-vertically]) .favicons {
   flex-direction: column;
 }
 
-:host([stack-vertically]) .favicons .favicon:not(:first-child) {
-  margin-block-start: var(--stacked-favicons-overlap_);
+:host([stack-vertically]) #firstFavicon {
+  clip-path: inset(0 0 var(--stacked-favicons-clip_) 0);
+}
+
+:host([stack-vertically]) #secondFavicon {
+  margin-block-start: calc(-1 * var(--stacked-favicons-overlap_));
 }

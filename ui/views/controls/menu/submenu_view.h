@@ -159,6 +159,12 @@ class VIEWS_EXPORT SubmenuView : public View,
   // Returns the container for the SubmenuView.
   MenuScrollViewContainer* GetScrollViewContainer();
 
+  // Like GetScrollViewContainer(), but returns null instead of creating the
+  // container if it doesn't exist yet.
+  MenuScrollViewContainer* scroll_view_container() const {
+    return scroll_view_container_;
+  }
+
   // Returns the last MenuItemView in this submenu.
   MenuItemView* GetLastItem();
   const MenuItemView* GetLastItem() const;
@@ -176,7 +182,6 @@ class VIEWS_EXPORT SubmenuView : public View,
   int label_start() const { return label_start_; }
   int trailing_padding() const { return trailing_padding_; }
   int content_start() const { return content_start_; }
-  int item_horizontal_border() const { return item_horizontal_border_; }
 
   // Max width of minor text (accelerator or subtitle) in child menu items. This
   // doesn't include children's children, only direct children.
@@ -195,6 +200,12 @@ class VIEWS_EXPORT SubmenuView : public View,
   }
   MenuHost* host() { return host_; }
   const MenuHost* host() const { return host_; }
+
+  void set_use_scroll_bar(bool use_scroll_bar) {
+    CHECK(!scroll_view_container_);
+    use_scroll_bar_ = use_scroll_bar;
+  }
+  bool use_scroll_bar() const { return use_scroll_bar_; }
 
   void SetBorderColorId(std::optional<ui::ColorId> color_id);
 
@@ -262,9 +273,6 @@ class VIEWS_EXPORT SubmenuView : public View,
   // X-coordinate of where the content (icon / gutter) starts.
   int content_start_ = 0;
 
-  // Additional horizontal border padding for child items in this submenu.
-  int item_horizontal_border_ = 0;
-
   // See description above getter.
   mutable int max_minor_text_width_ = 0;
 
@@ -287,6 +295,8 @@ class VIEWS_EXPORT SubmenuView : public View,
   PrefixSelector prefix_selector_{this, this};
 
   std::optional<ui::ColorId> border_color_id_;
+
+  bool use_scroll_bar_ = false;
 
   base::WeakPtrFactory<SubmenuView> weak_ptr_factory_{this};
 };

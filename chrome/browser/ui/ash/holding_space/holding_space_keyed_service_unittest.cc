@@ -59,8 +59,6 @@
 #include "chrome/browser/ui/ash/holding_space/holding_space_test_util.h"
 #include "chrome/browser/ui/ash/holding_space/holding_space_util.h"
 #include "chrome/browser/ui/ash/holding_space/scoped_test_mount_point.h"
-#include "chrome/browser/ui/browser_window/public/create_browser_window.h"
-#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/webui/print_preview/pdf_printer_handler.h"
 #include "chrome/test/base/browser_with_test_window_test.h"
 #include "chrome/test/base/testing_browser_process.h"
@@ -778,20 +776,6 @@ class HoldingSpaceKeyedServiceWithExperimentalFeatureForGuestTest
     profile_ =
         profile_manager()->CreateGuestProfile(std::move(guest_profile_builder));
     return profile_;
-  }
-
-  std::unique_ptr<BrowserWindow> CreateBrowserWindow() override {
-    // Do not create browser window.
-    return nullptr;
-  }
-
-  std::unique_ptr<BrowserWindowInterface> CreateBrowser(
-      Profile* profile,
-      BrowserWindowInterface::Type browser_type,
-      bool hosted_app,
-      BrowserWindow* browser_window) override {
-    // Do not create browser.
-    return nullptr;
   }
 
  private:
@@ -2855,7 +2839,7 @@ TEST_P(HoldingSpaceKeyedServiceAddAndRemoveItemTest, AddAndRemoveItem) {
   }
 
   // Attempt to add a holding space item of the same type and `file_path`.
-  const std::string& id2 = AddItem(profile, GetType(), file_path);
+  const std::string id2 = AddItem(profile, GetType(), file_path);
 
   ASSERT_EQ(model->items().size(), 1u);
 
@@ -3167,33 +3151,19 @@ class HoldingSpaceKeyedServicePrintToPdfIntegrationTest
     HoldingSpaceKeyedServiceTest::SetUp();
 
     // Create the PDF printer handler.
-    BrowserWindowInterface* browser = GetBrowserForPdfPrinterHandler();
     pdf_printer_handler_ = std::make_unique<::printing::PdfPrinterHandler>(
-        browser->GetProfile(),
-        browser->GetTabStripModel()->GetActiveWebContents(),
+        GetProfileForPdfPrinterHandler(),
+        /*preview_web_contents=*/nullptr,
         /*sticky_settings=*/nullptr);
   }
 
-  void TearDown() override {
-    incognito_browser_.reset();
-    HoldingSpaceKeyedServiceTest::TearDown();
-  }
-
-  BrowserWindowInterface* GetBrowserForPdfPrinterHandler() {
-    if (!UseIncognitoBrowser()) {
-      return browser();
-    }
-    if (!incognito_browser_) {
-      incognito_browser_ =
-          CreateBrowserWithTestWindowForParams(BrowserWindowCreateParams(
-              profile()->GetPrimaryOTRProfile(/*create_if_needed=*/true),
-              /*user_gesture=*/true));
-    }
-    return incognito_browser_.get();
+  Profile* GetProfileForPdfPrinterHandler() {
+    return UseIncognitoBrowser()
+               ? profile()->GetPrimaryOTRProfile(/*create_if_needed=*/true)
+               : profile();
   }
 
   std::unique_ptr<::printing::PdfPrinterHandler> pdf_printer_handler_;
-  std::unique_ptr<BrowserWindowInterface> incognito_browser_;
 };
 
 INSTANTIATE_TEST_SUITE_P(All,

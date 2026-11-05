@@ -8,7 +8,6 @@
 #include <GLES2/gl2.h>
 
 #include "base/compiler_specific.h"
-#include "base/containers/flat_map.h"
 #include "base/containers/span.h"
 #include "base/functional/callback.h"
 #include "base/memory/scoped_refptr.h"
@@ -28,13 +27,12 @@ namespace cc {
 class DisplayItemList;
 class ImageProvider;
 class PaintRecord;
-struct ElementId;
+struct RasterInducingValues;
 }  // namespace cc
 
 namespace gfx {
 class ColorSpace;
 class Point;
-class PointF;
 class Rect;
 class Size;
 class Vector2dF;
@@ -137,7 +135,6 @@ class RasterInterface : public InterfaceBase {
                                    GLuint msaa_sample_count,
                                    MsaaMode msaa_mode,
                                    GLboolean can_use_lcd_text,
-                                   GLboolean visible,
                                    const gfx::ColorSpace& color_space,
                                    float hdr_headroom,
                                    const GLbyte* mailbox) = 0;
@@ -145,7 +142,6 @@ class RasterInterface : public InterfaceBase {
   // Heuristic decided on UMA data. This covers 85% of the cases where we need
   // to serialize ops > 512k.
   static constexpr size_t kDefaultMaxOpSizeHint = 600 * 1024;
-  using ScrollOffsetMap = base::flat_map<cc::ElementId, gfx::PointF>;
   virtual void RasterCHROMIUM(
       const cc::DisplayItemList* list,
       cc::ImageProvider* provider,
@@ -155,7 +151,7 @@ class RasterInterface : public InterfaceBase {
       const gfx::Vector2dF& post_translate,
       const gfx::Vector2dF& post_scale,
       bool requires_clear,
-      const ScrollOffsetMap* raster_inducing_scroll_offsets,
+      const cc::RasterInducingValues* raster_inducing_values,
       size_t* max_op_size_hint,
       base::RepeatingCallback<void(SkCanvas*, uint32_t)>
           custom_raster_callback) = 0;
@@ -212,8 +208,10 @@ class RasterInterface : public InterfaceBase {
   // from |source_mailbox| into caller-owned memory |dst_pixels|. |plane_index|
   // applies to multiplanar textures in mailboxes, for example YUV images
   // produced by the VideoDecoder. |plane_index| as 0 should be passed for known
-  // single-plane textures.
+  // single-plane textures. |source_size| specifies the dimensions of the plane
+  // identified by |plane_index|.
   virtual bool ReadbackImagePixels(const gpu::Mailbox& source_mailbox,
+                                   const gfx::Size& source_size,
                                    const SkImageInfo& dst_info,
                                    GLuint dst_row_bytes,
                                    int src_x,

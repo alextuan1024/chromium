@@ -7,6 +7,7 @@
 
 #include <type_traits>
 
+#include "base/feature_list.h"
 #include "base/functional/callback.h"
 #include "base/memory/weak_ptr.h"
 #include "base/scoped_observation.h"
@@ -27,11 +28,13 @@
 #include "components/webapps/isolated_web_apps/types/source.h"
 #include "components/webapps/isolated_web_apps/types/storage_location.h"
 #include "content/public/browser/web_contents.h"
-#include "third_party/blink/public/mojom/manifest/manifest.mojom.h"
+#include "third_party/blink/public/common/manifest/manifest.h"
 
 class Profile;
 
 namespace web_app {
+
+BASE_DECLARE_FEATURE(kIsolatedWebAppIsolateInstallPageProcess);
 
 // Loads the manifest from the bundle and assembles `WebAppInstallInfo`.
 class PrepareInstallInfoJob : public ProfileObserver {
@@ -112,16 +115,16 @@ class PrepareInstallInfoJob : public ProfileObserver {
                         webapps::WebAppUrlLoaderResult result);
 
   void CheckInstallabilityAndRetrieveManifest(
-      base::OnceCallback<void(blink::mojom::ManifestPtr)> next_step_callback);
+      base::OnceCallback<void(blink::Manifest)> next_step_callback);
   void OnCheckInstallabilityAndRetrieveManifest(
-      base::OnceCallback<void(blink::mojom::ManifestPtr)> next_step_callback,
-      blink::mojom::ManifestPtr opt_manifest,
+      base::OnceCallback<void(blink::Manifest)> next_step_callback,
+      std::optional<blink::Manifest> opt_manifest,
       bool valid_manifest_for_web_app,
       webapps::InstallableStatusCode error_code);
 
   void ValidateManifestAndGetVersion(
       base::OnceCallback<void(IwaVersion)> next_step_callback,
-      blink::mojom::ManifestPtr manifest);
+      blink::Manifest manifest);
 
   void ParseInstallInfoFromManifest(
       base::OnceCallback<void(WebAppInstallInfo)> next_step_callback,
@@ -145,7 +148,7 @@ class PrepareInstallInfoJob : public ProfileObserver {
   std::unique_ptr<ManifestToWebAppInstallInfoJob> manifest_to_install_info_job_;
   base::DictValue manifest_to_info_debug_data_;
 
-  blink::mojom::ManifestPtr manifest_;
+  std::optional<blink::Manifest> manifest_;
 
   ResultCallback callback_;
 

@@ -6,29 +6,26 @@
 
 #include <utility>
 
-#include "base/check.h"
-#include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/read_anything/read_anything_controller.h"
-#include "chrome/browser/ui/read_anything/read_anything_enums.h"
-#include "components/find_in_page/find_tab_helper.h"
+#include "chrome/browser/ui/webui/webui_embedding_context.h"
 #include "components/input/native_web_keyboard_event.h"
 #include "components/tabs/public/tab_interface.h"
+#include "components/web_modal/web_contents_modal_dialog_manager.h"
 #include "content/public/browser/context_menu_params.h"
 #include "content/public/browser/web_contents.h"
-#include "third_party/blink/public/common/input/web_input_event.h"
+#include "ui/accessibility/accessibility_features.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
 
 ReadAnythingImmersiveWebView::ReadAnythingImmersiveWebView(
     base::OnceClosure on_show_ui_callback,
     std::unique_ptr<WebUIContentsWrapperT<ReadAnythingUntrustedUI>>
-        contents_wrapper,
-    ReadAnythingOpenTrigger trigger)
+        contents_wrapper)
     : on_show_ui_callback_(std::move(on_show_ui_callback)),
-      contents_wrapper_(std::move(contents_wrapper)),
-      trigger_(trigger) {
+      contents_wrapper_(std::move(contents_wrapper)) {
   SetWebContents(contents_wrapper_->web_contents());
   contents_wrapper_->SetHost(weak_factory_.GetWeakPtr());
+  SetAcceleratorHandling(views::WebContentsAcceleratorHandling::kEnabled);
 }
 
 ReadAnythingImmersiveWebView::~ReadAnythingImmersiveWebView() = default;
@@ -64,45 +61,23 @@ bool ReadAnythingImmersiveWebView::HandleKeyboardEvent(
       glue->controller()->HandleEscapeKey(event)) {
     return true;
   }
-  // Call the unhandled keyboard event handler to allow for default handling
-  // and propagation.
-  return unhandled_keyboard_event_handler_.HandleKeyboardEvent(
-      event, GetFocusManager());
-}
-
-void ReadAnythingImmersiveWebView::FindReply(content::WebContents* web_contents,
-                                             int request_id,
-                                             int number_of_matches,
-                                             const gfx::Rect& selection_rect,
-                                             int active_match_ordinal,
-                                             bool final_update) {
-  find_in_page::FindTabHelper* find_tab_helper =
-      find_in_page::FindTabHelper::FromWebContents(web_contents);
-  if (!find_tab_helper) {
-    return;
-  }
-  find_tab_helper->HandleFindReply(request_id, number_of_matches,
-                                   selection_rect, active_match_ordinal,
-                                   final_update);
+  return WebView::HandleKeyboardEvent(source, event);
 }
 
 std::unique_ptr<WebUIContentsWrapperT<ReadAnythingUntrustedUI>>
-ReadAnythingImmersiveWebView::CloseAndTakeContentsWrapper() {
-  SetWebContents(nullptr);  // This is necessary to reset the web contents.
-  // SetHost cannot be called on a crashed WebContents and will throw a DCHECK
-  // crash if it is.
-  if (!contents_wrapper_->web_contents()->IsCrashed()) {
-    contents_wrapper_->SetHost(nullptr);
+ReadAnythingImmersiveWebView::TakeContentsWrapper() {
+  // Close tab-modal dialogs (e.g. Print Preview) anchored through this view
+  // before it stops hosting them.
+  if (features::IsImmersiveReadAnythingPrintEnabled()) {
+    auto* manager = web_modal::WebContentsModalDialogManager::FromWebContents(
+        contents_wrapper_->web_contents());
+    if (manager) {
+      manager->CloseAllDialogs();
+    }
   }
+  SetWebContents(nullptr);  // This is necessary to reset the web contents.
+  contents_wrapper_->SetHost(nullptr);
   SetVisible(false);
-
-  // Call OnEntryHidden on the Controller
-  auto* read_anything_controller = ReadAnythingControllerGlue::FromWebContents(
-                                       contents_wrapper_->web_contents())
-                                       ->controller();
-  CHECK(read_anything_controller);
-  read_anything_controller->OnEntryHidden();
-
   return std::move(contents_wrapper_);
 }
 
@@ -116,11 +91,6 @@ void ReadAnythingImmersiveWebView::ShowUI() {
   if (on_show_ui_callback_) {
     std::move(on_show_ui_callback_).Run();
   }
-  auto* read_anything_controller = ReadAnythingControllerGlue::FromWebContents(
-                                       contents_wrapper_->web_contents())
-                                       ->controller();
-  CHECK(read_anything_controller);
-  read_anything_controller->OnEntryShown(trigger_);
 }
 
 // Called by the WebUI on its embedder (this class) when the WebUI is ready to
@@ -129,6 +99,20 @@ void ReadAnythingImmersiveWebView::CloseUI() {
   // This currently does not do anything and is never called because the
   // ReadAnythingController is currently the one that owns the WebUI by the time
   // it is closed.
+}
+
+// Tab-modal dialogs initiated from IRM (e.g. Print Preview) are hosted over
+// the tab's contents area in the browser window.
+web_modal::WebContentsModalDialogHost*
+ReadAnythingImmersiveWebView::GetWebContentsModalDialogHost(
+    content::WebContents* web_contents) {
+  if (!features::IsImmersiveReadAnythingPrintEnabled()) {
+    return nullptr;
+  }
+  tabs::TabInterface* tab = webui::GetTabInterface(web_contents);
+  BrowserWindowInterface* browser =
+      tab ? tab->GetBrowserWindowInterface() : nullptr;
+  return browser ? browser->GetWebContentsModalDialogHostForTab(tab) : nullptr;
 }
 
 BEGIN_METADATA(ReadAnythingImmersiveWebView)

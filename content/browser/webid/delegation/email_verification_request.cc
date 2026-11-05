@@ -22,6 +22,7 @@
 #include "content/browser/webid/delegation/evt_verifier.h"
 #include "content/browser/webid/delegation/jwt_signer.h"
 #include "content/browser/webid/delegation/sd_jwt.h"
+#include "content/browser/webid/flags.h"
 #include "content/browser/webid/mappers.h"
 #include "content/browser/webid/webid_utils.h"
 #include "content/public/browser/browser_context.h"
@@ -30,7 +31,6 @@
 #include "content/public/browser/webid/federated_identity_permission_context_delegate.h"
 #include "crypto/hash.h"
 #include "crypto/keypair.h"
-#include "net/base/schemeful_site.h"
 #include "net/http/http_request_headers.h"
 #include "net/http/structured_headers.h"
 #include "third_party/blink/public/mojom/devtools/inspector_issue.mojom.h"
@@ -52,8 +52,17 @@ std::string CreateContentDigestHeader(const std::string& post_data) {
   dict["sha-256"] = net::structured_headers::ParameterizedMember(
       net::structured_headers::Item(
           net::structured_headers::Item::byte_sequence,
-          base::as_string_view(digest)),
-      {});
+          base::as_string_view(digest)));
+  std::optional<std::string> val =
+      net::structured_headers::SerializeDictionary(dict);
+  CHECK(val);
+  return *std::move(val);
+}
+
+std::string SerializeSigDictionary(
+    net::structured_headers::ParameterizedMember member) {
+  net::structured_headers::Dictionary dict;
+  dict["sig"] = std::move(member);
   std::optional<std::string> val =
       net::structured_headers::SerializeDictionary(dict);
   CHECK(val);
@@ -61,9 +70,15 @@ std::string CreateContentDigestHeader(const std::string& post_data) {
 }
 
 std::string CreateMessageSignatureKey(const sdjwt::Jwk& public_key) {
+  // draft-hardt-httpbis-signature-key-08 Section 3.4 requires `alg` to be
+  // present and fully specified: the verifier takes the algorithm from it
+  // rather than deriving it from `kty` and `crv`. `ExportPublicKey()` populates
+  // it, so the whole JWK is emitted verbatim here, less the private parameter.
+  CHECK(!public_key.alg.empty())
+      << "Missing alg for the hwk scheme: " << public_key.kty;
   net::structured_headers::Parameters params;
   for (auto [key, value] : public_key.ToDict()) {
-    if (key == "alg" || key == "d") {
+    if (key == "d") {
       continue;
     }
     std::string* str = value.GetIfString();
@@ -75,16 +90,10 @@ std::string CreateMessageSignatureKey(const sdjwt::Jwk& public_key) {
                  net::structured_headers::Item::string, std::move(*str)));
   }
 
-  net::structured_headers::Dictionary dict;
-  dict["sig"] = net::structured_headers::ParameterizedMember(
+  return SerializeSigDictionary(net::structured_headers::ParameterizedMember(
       net::structured_headers::Item(net::structured_headers::Item::token,
                                     "hwk"),
-      std::move(params));
-
-  std::optional<std::string> signature_key_val_opt =
-      net::structured_headers::SerializeDictionary(dict);
-  CHECK(signature_key_val_opt);
-  return *std::move(signature_key_val_opt);
+      std::move(params)));
 }
 
 net::structured_headers::ParameterizedMember CreateMessageSignatureParams(
@@ -116,16 +125,6 @@ net::structured_headers::ParameterizedMember CreateMessageSignatureParams(
 
   return net::structured_headers::ParameterizedMember(std::move(list_items),
                                                       std::move(params_input));
-}
-
-std::string SerializeSignatureInput(
-    const net::structured_headers::ParameterizedMember& params) {
-  net::structured_headers::Dictionary dict_input;
-  dict_input["sig"] = params;
-  std::optional<std::string> signature_input_val_opt =
-      net::structured_headers::SerializeDictionary(dict_input);
-  CHECK(signature_input_val_opt);
-  return *signature_input_val_opt;
 }
 
 std::string CreateMessageSignature(
@@ -191,16 +190,10 @@ std::string CreateMessageSignature(
       std::move(http_signer).Run(signature_base);
   CHECK(signature_opt);
 
-  net::structured_headers::Dictionary dict;
-  dict["sig"] = net::structured_headers::ParameterizedMember(
+  return SerializeSigDictionary(net::structured_headers::ParameterizedMember(
       net::structured_headers::Item(
           net::structured_headers::Item::byte_sequence,
-          base::as_string_view(*signature_opt)),
-      net::structured_headers::Parameters());
-  std::optional<std::string> signature_val_opt =
-      net::structured_headers::SerializeDictionary(dict);
-  CHECK(signature_val_opt);
-  return *std::move(signature_val_opt);
+          base::as_string_view(*signature_opt))));
 }
 
 net::HttpRequestHeaders CreateMessageSignatureHeaders(
@@ -216,7 +209,7 @@ net::HttpRequestHeaders CreateMessageSignatureHeaders(
   std::string signature_key_val = CreateMessageSignatureKey(*public_key);
   net::structured_headers::ParameterizedMember signature_params =
       CreateMessageSignatureParams(created_time);
-  std::string signature_input_val = SerializeSignatureInput(signature_params);
+  std::string signature_input_val = SerializeSigDictionary(signature_params);
   std::string signature_val = CreateMessageSignature(
       issuance_endpoint, content_digest_val, signature_key_val,
       std::move(signature_params), private_key);
@@ -231,7 +224,7 @@ net::HttpRequestHeaders CreateMessageSignatureHeaders(
 
 }  // namespace
 
-std::optional<std::string_view> GetDomainFromEmail(std::string_view email) {
+std::optional<std::string> GetDomainFromEmail(std::string_view email) {
   auto parts = base::RSplitStringOnce(email, "@");
 
   if (!parts) {
@@ -246,11 +239,12 @@ std::optional<std::string_view> GetDomainFromEmail(std::string_view email) {
   // TODO(crbug.com/380367784): consider better ways to validate if
   // the email domain is well formed.
   GURL url(base::StrCat({"https://", parts->second}));
-  if (!url.is_valid() || !url.has_host() || url.GetHost() != parts->second) {
+  if (!url.is_valid() || !url.has_host() ||
+      !base::EqualsCaseInsensitiveASCII(url.GetHost(), parts->second)) {
     return std::nullopt;
   }
 
-  return parts->second;
+  return url.GetHost();
 }
 
 EmailVerificationRequest::EmailVerificationRequest(
@@ -317,7 +311,7 @@ void EmailVerificationRequest::CheckIfVerifiable(
   // Step 3.1: the browser extracts the domain from the email address and
   // asks the DNS server who the issuer is:
 
-  std::optional<std::string_view> domain = GetDomainFromEmail(email);
+  std::optional<std::string> domain = GetDomainFromEmail(email);
   if (!domain) {
     CompleteIsVerifiableRequest(std::move(callback), std::nullopt,
                                 EmailVerificationRequestResult::kInvalidEmail);
@@ -369,12 +363,32 @@ void EmailVerificationRequest::OnDnsRequestComplete(
     return;
   }
 
+  // The record carries `iss=` followed by a host name (§3.1), and the issuer
+  // identifier is "https://" followed by that host, with no port, path or
+  // trailing slash (§3.2):
+  // https://dickhardt.github.io/email-verification/draft-hardt-email-verification.html#name-dns-delegation
+  // https://dickhardt.github.io/email-verification/draft-hardt-email-verification.html#name-issuer-identifier
+  // Reject anything that is not exactly a canonical host, e.g. one with a
+  // port, path, query, userinfo or uppercase letters, rather than letting GURL
+  // normalize it into a different identifier.
+  // Tests serve the issuer on an ephemeral port, so a port is allowed there.
+  const std::string issuer_spec = base::StrCat({"https://", iss});
+  GURL issuer(issuer_spec);
+  url::Origin issuer_origin = url::Origin::Create(issuer);
+  const bool is_valid_issuer = IsPreservePortsForTestingEnabled()
+                                   ? (!issuer_origin.opaque() &&
+                                      issuer_origin.Serialize() == issuer_spec)
+                                   : (issuer_origin.host() == iss);
+  if (!is_valid_issuer) {
+    CompleteIsVerifiableRequest(
+        std::move(callback), std::nullopt,
+        EmailVerificationRequestResult::kDnsInvalidRecord);
+    return;
+  }
+
   if (on_dns_resolved_callback) {
     std::move(on_dns_resolved_callback).Run();
   }
-
-  GURL issuer(base::StrCat({"https://", iss}));
-  url::Origin issuer_origin = url::Origin::Create(issuer);
 
   auto well_known = base::MakeRefCounted<WellKnownOrError>();
   auto accounts = base::MakeRefCounted<AccountsOrError>();
@@ -532,7 +546,7 @@ void EmailVerificationRequest::OnAccountStatusFetched(
 
   EmailVerifier::Result result;
   result.email = email;
-  result.issuer_site = net::SchemefulSite(issuer_origin.GetURL());
+  result.issuer_origin = issuer_origin;
   result.issuance_endpoint = well_known->data->issuance_endpoint;
   result.jwks_uri = well_known->data->jwks_uri;
   result.signing_alg_values_supported =
@@ -558,7 +572,14 @@ void EmailVerificationRequest::Verify(
   // preferred over ECDSA here.
   std::unique_ptr<crypto::keypair::PrivateKey> private_key;
   for (const auto& supported_alg : result.signing_alg_values_supported) {
-    if (supported_alg == "EdDSA") {
+    // The Email Verification Protocol requires issuers to advertise
+    // fully-specified identifiers, so "Ed25519" is the spelling to expect
+    // here.
+    //
+    // TODO(crbug.com/561405995): drop "EdDSA" once no deployed issuer
+    // advertises it. It is accepted alongside "Ed25519" only while deployed
+    // issuers migrate off it.
+    if (supported_alg == "Ed25519" || supported_alg == "EdDSA") {
       private_key = std::make_unique<crypto::keypair::PrivateKey>(
           crypto::keypair::PrivateKey::GenerateEd25519());
       break;
@@ -573,6 +594,15 @@ void EmailVerificationRequest::Verify(
     }
     // TODO(crbug.com/380367784): figure out what to do if we get an unsupported
     // algorithm here (should we reject? ignore?).
+  }
+
+  // `signing_alg_values_supported` is optional, and the Email Verification
+  // Protocol defaults it to Ed25519 when the issuer does not advertise
+  // anything. An issuer that does advertise algorithms, but none that are
+  // supported here, is still an error rather than a silent fallback.
+  if (!private_key && result.signing_alg_values_supported.empty()) {
+    private_key = std::make_unique<crypto::keypair::PrivateKey>(
+        crypto::keypair::PrivateKey::GenerateEd25519());
   }
 
   if (!private_key) {
@@ -704,6 +734,8 @@ void EmailVerificationRequest::OnTokenAndKeysFetchComplete(
   CHECK(holder_pub_key);
 
   sdjwt::Header header;
+  // Matches what the browser conveyed in the Signature-Key header, and so what
+  // the issuer echoes back in `cnf.jwk`.
   header.alg = holder_pub_key->alg;
   header.typ = "kb+jwt";
 

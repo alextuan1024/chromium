@@ -10,12 +10,9 @@ import os
 from pathlib import Path
 import re
 import shutil
-import socket
-import struct
 import subprocess
 import sys
 import tempfile
-import threading
 import time
 import zipfile
 
@@ -24,7 +21,7 @@ STARVIEW_DIR = os.path.dirname(os.path.abspath(__file__))
 
 # Setup import path for common testing utils
 sys.path.append(os.path.abspath(os.path.join(STARVIEW_DIR, '..', 'test')))
-import common
+import common  # noqa: E402
 
 AVBTOOL = os.path.join(STARVIEW_DIR, 'avbtool.py')
 CVD_AVB_TESTKEY = os.path.join(STARVIEW_DIR, 'cvd_avb_testkey_rsa4096.pem')
@@ -42,9 +39,9 @@ if (
 
 
 sys.path.append(STARVIEW_DIR)
-import partition_creator
-import simg2img
-from hvc_mock import start_hvc_mock_responder
+import partition_creator  # noqa: E402
+import simg2img  # noqa: E402
+from hvc_mock import start_hvc_mock_responder  # noqa: E402
 
 
 IS_HEADLESS_BY_DEFAULT = not (
@@ -52,6 +49,10 @@ IS_HEADLESS_BY_DEFAULT = not (
     or 'WAYLAND_DISPLAY' in os.environ
     or 'XDG_CURRENT_DESKTOP' in os.environ
 )
+
+# Standard Android phone display metrics (matching standard Chromium test bots).
+_DISPLAY_SIZE = '1080x1920'
+_DISPLAY_DENSITY = 480
 
 
 def sign_uboot_env_image(image_path, partition_size=73728):
@@ -118,12 +119,14 @@ def boot_cuttlefish(args, cuttlefish_zip, bootloader, temp_dir):
         f.truncate(f.seek(0, os.SEEK_END) + 8 * 1024 * 1024 * 1024)
 
     userdata_img = os.path.join(temp_dir, 'userdata.img')
-    assert os.path.exists(userdata_img), f"userdata.img not found in {temp_dir}"
-    simg2img.unsparse_in_place(userdata_img)
-    # Ensure sufficient capacity on /data for installing large APKs (such as
-    # Chrome) and writing runtime dex caches.
-    with open(userdata_img, 'r+b') as f:
-        f.truncate(f.seek(0, os.SEEK_END) + 16 * 1024 * 1024 * 1024)
+    # Generate a fresh, blank userdata partition with 16GB capacity for
+    # installing large test APKs (such as components_unittests) and writing
+    # runtime dex caches. Because userdata is flagged with formattable in
+    # Android's fstab, Android fs_mgr will format the partition to fill the full
+    # disk size on first boot. Overwriting the prebuilt userdata.img avoids
+    # inheriting a fixed-size ext4 filesystem that truncate cannot expand without
+    # resize2fs.
+    partition_creator.create_zero_image(userdata_img, 16384)
 
     partition_creator.create_zero_image(
         os.path.join(temp_dir, 'metadata.img'), 16
@@ -207,7 +210,7 @@ def boot_cuttlefish(args, cuttlefish_zip, bootloader, temp_dir):
         '-smp',
         '6',
         '-machine',
-        'pc',
+        'q35',
         '-cpu',
         'host',
         '-enable-kvm',
@@ -217,17 +220,23 @@ def boot_cuttlefish(args, cuttlefish_zip, bootloader, temp_dir):
         # Load U-Boot vars flash (read-write environment)
         '-drive',
         f'if=pflash,format=raw,file={os.path.join(temp_dir, "u-boot-vars.img")}',
+        # Disable default VGA so we can configure VGA at slot 1.0 with multifunction=on,
+        # allowing virtio-net to attach to function 1.2 matching Fuchsia/Starnix network slot spec.
+        '-vga',
+        'none',
+        '-device',
+        'VGA,addr=1.0,multifunction=on',
         # Shift our main system disk to virtio 1 (second slot) by mapping a dummy disk
         # to virtio 0, since Cuttlefish U-Boot and fstab expect Android on virtio 1.
         '-drive',
         f'file={os.path.join(temp_dir, "dummy.img")},format=raw,if=none,id=drive-disk0',
         '-device',
-        'virtio-blk-pci-non-transitional,drive=drive-disk0,id=virtio-disk0,bootindex=1',
+        'virtio-blk-pci-non-transitional,drive=drive-disk0,id=virtio-disk0,bootindex=1,addr=3.0',
         # Map our partitioned VMDK disk as virtio 1
         '-drive',
         f'file={os.path.join(temp_dir, "disk.vmdk")},format=vmdk,if=none,id=drive-disk1',
         '-device',
-        'virtio-blk-pci-non-transitional,drive=drive-disk1,id=virtio-disk1',
+        'virtio-blk-pci-non-transitional,drive=drive-disk1,id=virtio-disk1,addr=4.0',
         # User-mode networking with static hostfwd for ADB and SSH
         '-netdev',
         f'user,id=net0,hostfwd=tcp::2222-:22,hostfwd=tcp::{args.adb_port}-:5555',
@@ -258,7 +267,7 @@ def _wait_adb_shell(adb_path, adb_port, cmd, pattern):
     """Waits for an ADB shell command output to match regex pattern or times out."""
     target = f'127.0.0.1:{adb_port}'
     start_time = time.time()
-    while time.time() - start_time < 300:
+    while time.time() - start_time < 480:
         res = subprocess.run(
             [adb_path, '-s', target, 'shell'] + cmd,
             capture_output=True,
@@ -269,7 +278,125 @@ def _wait_adb_shell(adb_path, adb_port, cmd, pattern):
         ):
             return True
         time.sleep(10)
+        subprocess.run([adb_path, 'connect', target])
     return False
+
+
+def _configure_display(adb_path, adb_port):
+    """Configures guest Android display size and density."""
+    target = f'127.0.0.1:{adb_port}'
+    logging.info(f"Configuring display size to {_DISPLAY_SIZE}...")
+    res = subprocess.run(
+        [
+            adb_path,
+            '-s',
+            target,
+            'shell',
+            'wm',
+            'size',
+            _DISPLAY_SIZE,
+        ],
+        capture_output=True,
+        text=True,
+    )
+    if res.stdout.strip():
+        logging.info(f"wm size output: {res.stdout.strip()}")
+    if res.stderr.strip():
+        logging.warning(f"wm size stderr: {res.stderr.strip()}")
+
+    logging.info(f"Configuring display density to {_DISPLAY_DENSITY}...")
+    res = subprocess.run(
+        [
+            adb_path,
+            '-s',
+            target,
+            'shell',
+            'wm',
+            'density',
+            str(_DISPLAY_DENSITY),
+        ],
+        capture_output=True,
+        text=True,
+    )
+    if res.stdout.strip():
+        logging.info(f"wm density output: {res.stdout.strip()}")
+    if res.stderr.strip():
+        logging.warning(f"wm density stderr: {res.stderr.strip()}")
+
+
+def _bind_mount_test_data_root(adb_path, adb_port):
+    """Configures a bind mount for /sdcard/chromium_tests_root.
+
+    On Starnix emulators, file-backed mmap() is unsupported over Android's
+    FUSE filesystem (/sdcard). Bind-mounting the test data root directly
+    from underlying media storage bypasses FUSE while ensuring unprivileged
+    test processes have permissions for both mmap() and creating temporary
+    directories. Also ensures standard Download directories exist for test
+    output XML artifacts.
+    """
+    target = f'127.0.0.1:{adb_port}'
+    logging.info("Configuring mmap-capable test data root on Starnix...")
+    logging.info("Waiting for /sdcard to be mounted...")
+    if not _wait_adb_shell(
+        adb_path,
+        adb_port,
+        [
+            'grep -q /storage/emulated /proc/mounts && '
+            'test -d /mnt/pass_through/0/emulated/0 && echo ready'
+        ],
+        'ready',
+    ):
+        logging.error("Timed out waiting for /sdcard to be mounted.")
+        return False
+
+    def _run_shell_cmd(cmd):
+        res = subprocess.run(
+            [adb_path, '-s', target, 'shell'] + cmd,
+            capture_output=True,
+            text=True,
+        )
+        if res.returncode != 0 or res.stderr.strip():
+            logging.warning(
+                f"{' '.join(cmd)} failed (code {res.returncode}): "
+                f"{res.stdout.strip()} {res.stderr.strip()}"
+            )
+            return False
+        return True
+
+    source_root = '/mnt/pass_through/0/emulated/0/chromium_tests_root'
+    _run_shell_cmd(['mkdir', '-p', source_root])
+    _run_shell_cmd(['chmod', '777', source_root])
+    _run_shell_cmd(
+        ['chcon', '-R', 'u:object_r:media_rw_data_file:s0', source_root]
+    )
+    _run_shell_cmd(['mkdir', '-p', '/sdcard/chromium_tests_root'])
+    if _run_shell_cmd(
+        ['mount', '--bind', source_root, '/sdcard/chromium_tests_root']
+    ):
+        logging.info(
+            f"Successfully bind-mounted {source_root} "
+            "over /sdcard/chromium_tests_root"
+        )
+
+    # Ensure Download directories exist and are writable so test runners can
+    # write gtest output XML files and adb pull succeeds during list_tests.
+    download_root = '/mnt/pass_through/0/emulated/0/Download'
+    _run_shell_cmd(['mkdir', '-p', download_root])
+    _run_shell_cmd(['chmod', '777', download_root])
+    _run_shell_cmd(
+        ['chcon', '-R', 'u:object_r:media_rw_data_file:s0', download_root]
+    )
+    _run_shell_cmd(
+        [
+            'mkdir',
+            '-p',
+            '/storage/emulated/0/Download',
+            '/sdcard/Download',
+        ]
+    )
+    _run_shell_cmd(['chmod', '777', '/storage/emulated/0/Download'])
+    _run_shell_cmd(['chmod', '777', '/sdcard/Download'])
+    return True
 
 
 def main():
@@ -361,7 +488,7 @@ def main():
         f"No Cuttlefish guest image ZIP found in {cuttlefish_dir}"
     )
 
-    bootloader = args.packages / 'uboot' / 'u-boot.rom'
+    bootloader = args.packages / 'uboot_q35' / 'u-boot.rom'
     assert bootloader.exists(), f"Bootloader not found at {bootloader}"
 
     hvc_stop_event = None
@@ -428,6 +555,11 @@ def main():
                 'package:.*',
             ):
                 logging.error("Timed out waiting for package manager.")
+                return 1
+
+            _configure_display(args.adb_path, args.adb_port)
+
+            if not _bind_mount_test_data_root(args.adb_path, args.adb_port):
                 return 1
 
             logging.info("Successfully connected to guest ADB!")

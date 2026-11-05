@@ -4,6 +4,7 @@
 
 #include "chrome/browser/ui/autofill/autofill_suggestion_controller_utils.h"
 
+#include <algorithm>
 #include <vector>
 
 #include "base/notreached.h"
@@ -40,6 +41,7 @@ SuggestionSection GetSuggestionSection(SuggestionType type) {
     case SuggestionType::kAllLoyaltyCardsEntry:
     case SuggestionType::kAllSavedPasswordsEntry:
     case SuggestionType::kAtMemoryAiDisclosure:
+    case SuggestionType::kAtMemoryShortcutSettingsPromo:
     case SuggestionType::kAutocompleteAtMemoryButton:
     case SuggestionType::kBnplFootnote:
     case SuggestionType::kFreeformFooter:
@@ -55,9 +57,10 @@ SuggestionSection GetSuggestionSection(SuggestionType type) {
     case SuggestionType::kManageOffers:
     case SuggestionType::kOpenGmailForOtps:
     case SuggestionType::kPendingStateSignin:
+    case SuggestionType::kPendingStateTrustedVaultError:
+    case SuggestionType::kPersonalContextNotice:
     case SuggestionType::kRemoveAutofillAi:
     case SuggestionType::kScanCreditCard:
-    case SuggestionType::kSeePromoCodeDetails:
     case SuggestionType::kUndo:
     case SuggestionType::kViewPasswordDetails:
       return SuggestionSection::kFooter;
@@ -108,7 +111,6 @@ SuggestionSection GetSuggestionSection(SuggestionType type) {
     case SuggestionType::kOneTimePasswordEntry:
     case SuggestionType::kPasswordEntry:
     case SuggestionType::kPasswordFieldByFieldFilling:
-    case SuggestionType::kPersonalContextNotice:
     case SuggestionType::kSaveAndFillCreditCardEntry:
     case SuggestionType::kTroubleSigningInEntry:
     case SuggestionType::kVirtualCreditCardEntry:
@@ -149,7 +151,8 @@ bool IsStandaloneSuggestionType(SuggestionType type) {
       return true;
     case SuggestionSection::kFooter:
       return type == SuggestionType::kScanCreditCard ||
-             type == SuggestionType::kWebauthnSignInWithAnotherDevice;
+             type == SuggestionType::kWebauthnSignInWithAnotherDevice ||
+             type == SuggestionType::kPendingStateTrustedVaultError;
     case SuggestionSection::kStructure:
       return false;
   }
@@ -187,6 +190,7 @@ bool ShouldApplyDeactivatedStyle(const Suggestion& suggestion) {
     case SuggestionType::kAtMemoryInactivityNudge:
     case SuggestionType::kAtMemoryOpenGemini:
     case SuggestionType::kAtMemorySearchAffordance:
+    case SuggestionType::kAtMemoryShortcutSettingsPromo:
     case SuggestionType::kAutocompleteAtMemoryButton:
     case SuggestionType::kAutocompleteEntry:
     case SuggestionType::kAutofillAiOtherOrders:
@@ -234,11 +238,11 @@ bool ShouldApplyDeactivatedStyle(const Suggestion& suggestion) {
     case SuggestionType::kPasswordEntry:
     case SuggestionType::kPasswordFieldByFieldFilling:
     case SuggestionType::kPendingStateSignin:
+    case SuggestionType::kPendingStateTrustedVaultError:
     case SuggestionType::kPersonalContextNotice:
     case SuggestionType::kRemoveAutofillAi:
     case SuggestionType::kSaveAndFillCreditCardEntry:
     case SuggestionType::kScanCreditCard:
-    case SuggestionType::kSeePromoCodeDetails:
     case SuggestionType::kSeparator:
     case SuggestionType::kTitle:
     case SuggestionType::kTroubleSigningInEntry:
@@ -371,6 +375,31 @@ std::vector<Suggestion> UpdateSuggestionsFromDataList(
     suggestions[i].labels = {{Suggestion::Text(options[i].text)}};
   }
   return suggestions;
+}
+
+void CleanUpRedundantSeparators(std::vector<Suggestion>& suggestions) {
+  // Collapse any consecutive duplicate separators into a single separator.
+  auto repeated = std::ranges::unique(
+      suggestions, [](const Suggestion& a, const Suggestion& b) {
+        return a.type == SuggestionType::kSeparator &&
+               b.type == SuggestionType::kSeparator;
+      });
+  suggestions.erase(repeated.begin(), repeated.end());
+
+  // A leading separator has no preceding items to separate, so remove it.
+  // Because duplicate separators were already collapsed above, at most one
+  // leading separator can exist.
+  if (!suggestions.empty() &&
+      suggestions.front().type == SuggestionType::kSeparator) {
+    suggestions.erase(suggestions.begin());
+  }
+
+  // A trailing separator has no subsequent items to separate, so remove it.
+  // Likewise, at most one trailing separator can exist after deduplication.
+  if (!suggestions.empty() &&
+      suggestions.back().type == SuggestionType::kSeparator) {
+    suggestions.pop_back();
+  }
 }
 
 }  // namespace autofill

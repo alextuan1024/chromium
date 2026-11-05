@@ -8,6 +8,7 @@
 
 #include "base/check_is_test.h"
 #include "base/functional/bind.h"
+#include "base/i18n/rtl.h"
 #include "base/memory/raw_ref.h"
 #include "chrome/browser/ui/actions/chrome_action_id.h"
 #include "chrome/browser/ui/browser_actions.h"
@@ -18,20 +19,16 @@
 #include "chrome/browser/ui/views/frame/custom_corners_background.h"
 #include "chrome/browser/ui/views/frame/shadow_frame_view.h"
 #include "chrome/browser/ui/views/tabs/organizer/layout_constants.h"
-#include "chrome/browser/ui/views/tabs/organizer/organizer_panel_controls_view.h"
 #include "chrome/browser/ui/views/tabs/organizer/organizer_panel_view.h"
 #include "ui/base/interaction/element_tracker.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/compositor/layer.h"
 #include "ui/events/event_observer.h"
 #include "ui/events/types/event_type.h"
-#include "ui/gfx/animation/animation_delegate.h"
 #include "ui/views/event_monitor.h"
 #include "ui/views/focus/focus_manager.h"
 #include "ui/views/interaction/element_tracker_views.h"
-#include "ui/views/layout/delegating_layout_manager.h"
 #include "ui/views/layout/layout_types.h"
-#include "ui/views/layout/proposed_layout.h"
 #include "ui/views/view_class_properties.h"
 
 namespace {
@@ -68,38 +65,33 @@ class OrganizerTrayView::EventObserver : public ui::EventObserver,
   }
 
   void OnEvent(const ui::Event& event) override {
-    // Ignore mouse events when the panel is closed.
+    // Ignore mouse events when the panel is closed or otherwise hidden.
     if (!tray_->GetVisible()) {
       return;
     }
 
-    if (event.type() == ui::EventType::kMousePressed ||
-        event.type() == ui::EventType::kGestureTapDown) {
-      if (!tray_->GetWidget()) {
-        return;
-      }
-
-      auto point_in_view = event.AsLocatedEvent()->location();
-
-      // Convert the point from the event's target to the panel's coordinates.
-      views::View::ConvertPointFromWidget(&*tray_, &point_in_view);
-
-      if (!tray_->GetLocalBounds().Contains(point_in_view)) {
-        tray_->ClosePanel();
-      }
+    // On Aura platforms, the root_location is the point in the screen.
+    auto point_in_screen = event.AsLocatedEvent()->root_location();
+#if BUILDFLAG(IS_MAC)
+    // On Mac, the root_location is instead the point in the window.
+    point_in_screen +=
+        tray_->GetWidget()->GetWindowBoundsInScreen().OffsetFromOrigin();
+#endif
+    const auto point_in_view =
+        views::View::ConvertPointFromScreen(&*tray_, point_in_screen);
+    if (!tray_->GetLocalBounds().Contains(point_in_view)) {
+      tray_->ClosePanel();
     }
   }
 
   void OnDidChangeFocus(views::View* focused_before,
                         views::View* focused_now) override {
-    if (!tray_->GetVisible() || tray_->Contains(focused_now)) {
+    // On some platforms, transitions go old_view -> none, none -> new_view, so
+    // check for a null focused view. Don't hide the panel until a view outside
+    // the tray is actually focused.
+    if (!focused_now || !tray_->GetVisible() || tray_->Contains(focused_now)) {
       return;
     }
-
-    // If the panel is closing due to focus being lost (e.g., a tab group was
-    // focused or a tab was activated), the last focused view before the panel
-    // was opened should not be refocused.
-    tray_->last_focused_view_before_opening_.SetView(nullptr);
     tray_->ClosePanel();
   }
 
@@ -117,18 +109,9 @@ OrganizerTrayView::OrganizerTrayView(BrowserWindowInterface& browser,
                                      BrowserView* browser_view)
     : browser_(browser),
       focus_search_(this, /*cycle=*/true, /*accessibility_mode=*/true) {
-  // TODO(dfried): Remove once we actually set this value.
-#if BUILDFLAG(IS_MAC)
-  top_leading_exclusion_ = gfx::Size(target_width_ / 2, 0);
-#endif
-
   SetProperty(views::kElementIdentifierKey, kTrayElementId);
   SetPaintToLayer();
   layer()->SetFillsBoundsOpaquely(false);
-
-  SetOrientation(views::LayoutOrientation::kVertical);
-  SetCrossAxisAlignment(views::LayoutAlignment::kStretch);
-  SetMainAxisAlignment(views::LayoutAlignment::kStart);
 
   // Set up the default background.
   if (browser_view) {
@@ -143,41 +126,30 @@ OrganizerTrayView::OrganizerTrayView(BrowserWindowInterface& browser,
       kPanelShadowElevation, kPanelShadowAlpha));
   shadow_frame_->SetProperty(views::kViewIgnoredByLayoutKey, true);
 
-  controls_view_ = AddChildView(std::make_unique<OrganizerPanelControlsView>(
-      BrowserActions::From(&*browser_)->root_action_item()));
-  controls_view_->SetProperty(views::kMarginsKey,
-                              organizer_panel::kOrganizerPanelControlsMargins);
-
-  AddAccelerator(ui::Accelerator(ui::VKEY_ESCAPE, ui::EF_NONE));
   SetVisible(false);
 }
 
 OrganizerTrayView::~OrganizerTrayView() = default;
 
-void OrganizerTrayView::UpdatePanelClip() {
+void OrganizerTrayView::UpdatePanelClipAndShadow() {
   if (!background() || !panel_view_) {
     return;
   }
   const auto* const bg = background()->AsA<CustomCornersBackground>();
   bg->ClipViewToBackground(panel_view_);
+
+  const auto corners = *bg->GetRoundedCornerRadii();
+  shadow_frame_->SetShadowCornerRadii(corners);
+  // Corners are already mirrored for RTL. Decide how strong the shadow should
+  // be by how close the lower trailing corner is to its full size.
+  const double key_corner =
+      base::i18n::IsRTL() ? corners.lower_left() : corners.lower_right();
+  shadow_frame_->SetShadowOpacity(
+      std::min(1.0, key_corner / bg->default_radius()));
 }
 
-bool OrganizerTrayView::IsPositionInWindowCaption(const gfx::Point& point) {
-  const auto in_controls =
-      views::View::ConvertPointToTarget(this, controls_view_, point);
-  return controls_view_->HitTestPoint(in_controls) &&
-         controls_view_->IsPositionInWindowCaption(in_controls);
-}
-
-void OrganizerTrayView::SetTopLeadingExclusion(
-    const gfx::Size& top_leading_exclusion) {
-  if (top_leading_exclusion == top_leading_exclusion_) {
-    return;
-  }
-  top_leading_exclusion_ = top_leading_exclusion;
-  controls_view_->SetMinimumCrossAxisSize(std::max(
-      0, top_leading_exclusion_.height() -
-             controls_view_->GetProperty(views::kMarginsKey)->height()));
+bool OrganizerTrayView::IsPositionInWindowCaption(const gfx::Point&) {
+  return false;
 }
 
 void OrganizerTrayView::SetTargetWidth(int target_width) {
@@ -208,31 +180,6 @@ bool OrganizerTrayView::HasOrganizerPanelView() const {
   return panel_view_;
 }
 
-// ----------------
-// To be removed.
-
-// Set whether the panel should appear elevated with rounded borders.
-void OrganizerTrayView::SetIsElevated(bool elevated) {
-  if (elevated == elevated_) {
-    return;
-  }
-  elevated_ = elevated;
-  if (auto* const bg = background()->AsA<CustomCornersBackground>()) {
-    bg->SetVisible(elevated);
-  }
-  shadow_frame_->SetVisible(elevated);
-}
-
-// ----------------
-
-bool OrganizerTrayView::AcceleratorPressed(const ui::Accelerator& accelerator) {
-  if (accelerator.key_code() == ui::VKEY_ESCAPE) {
-    ClosePanel();
-    return true;
-  }
-  return false;
-}
-
 void OrganizerTrayView::AddedToWidget() {
   // This has to be done after there is a color provider, which happens after
   // attaching to a widget.
@@ -245,21 +192,16 @@ void OrganizerTrayView::AddedToWidget() {
   shadow_frame_->SetShadowVisible(true);
 }
 
+void OrganizerTrayView::RemovedFromWidget() {
+  // This makes sure the event observer is cleaned up during browser teardown.
+  event_observer_.reset();
+}
+
 void OrganizerTrayView::VisibilityChanged(views::View* from, bool visible) {
   if (visible) {
     event_observer_ = std::make_unique<EventObserver>(*this);
-    last_focused_view_before_opening_.SetView(
-        GetFocusManager()->GetFocusedView());
-    GetFocusManager()->SetFocusedView(this);
-    controls_view_->UpdateTooltipText();
-    TooltipTextChanged();
   } else {
     event_observer_.reset();
-    if (last_focused_view_before_opening_) {
-      GetFocusManager()->SetFocusedView(
-          last_focused_view_before_opening_.view());
-      last_focused_view_before_opening_.SetView(nullptr);
-    }
   }
 }
 
@@ -282,44 +224,16 @@ views::View* OrganizerTrayView::GetFocusTraversableParentView() {
 void OrganizerTrayView::Layout(PassKey) {
   LayoutSuperclass<views::View>(this);
 
-  const gfx::Insets controls_margins =
-      *controls_view_->GetProperty(views::kMarginsKey);
-
   // Shadow frame does not participate in normal layout.
   shadow_frame_->SetBoundsRect(GetLocalBounds());
 
-  // Panel view (if present) is laid out below controls, filling remaining
-  // space.
+  // Panel view (if present) is rendered at the top of the tray, filling the
+  // tray.
   if (panel_view_) {
-    const int panel_top =
-        controls_view_->bounds().bottom() + controls_margins.bottom();
-    panel_view_->SetBounds(std::min(0, width() - target_width_), panel_top,
-                           target_width_, height() - panel_top);
+    panel_view_->SetBounds(std::min(0, width() - target_width_), 0,
+                           target_width_, height());
     panel_view_->SetVisible(panel_view_->bounds().Intersects(GetLocalBounds()));
   }
-
-  // If there's an exclusion for caption buttons and the panel is not at its
-  // target open width, may need to fade out the controls to avoid overlapping
-  // the caption buttons.
-  double opacity = 1.0;
-  const int exclusion_width = top_leading_exclusion_.width();
-  const int actual_width = width();
-  if (exclusion_width > 0 && actual_width < target_width_) {
-    const int controls_preferred_width =
-        controls_view_->GetPreferredSize().width();
-    const int required_width =
-        exclusion_width + controls_preferred_width + controls_margins.right();
-    if (actual_width <= required_width) {
-      // Not enough space to show the controls without overlapping buttons.
-      opacity = 0.0;
-    } else {
-      // As the width goes from the required width to full width, scale opacity
-      // from 0 to 1.
-      opacity = (actual_width - required_width) /
-                static_cast<double>(target_width_ - required_width);
-    }
-  }
-  controls_view_->SetButtonOpacity(opacity);
 }
 
 void OrganizerTrayView::ClosePanel() {

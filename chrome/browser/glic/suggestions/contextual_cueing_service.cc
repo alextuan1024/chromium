@@ -14,6 +14,7 @@
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/glic/browser_ui/glic_nudge_controller.h"
 #include "chrome/browser/glic/glic_pref_names.h"
+#include "chrome/browser/glic/host/context/glic_sharing_utils.h"
 #include "chrome/browser/glic/suggestions/contextual_cueing_enums.h"
 #include "chrome/browser/glic/suggestions/contextual_cueing_features.h"
 #include "chrome/browser/glic/suggestions/contextual_cueing_page_data.h"
@@ -30,7 +31,6 @@
 #include "components/prefs/pref_service.h"
 #include "components/search_engines/template_url.h"
 #include "components/search_engines/template_url_service.h"
-#include "components/signin/public/identity_manager/identity_manager.h"
 #include "content/public/browser/web_contents.h"
 #include "net/base/network_anonymization_key.h"
 #include "services/metrics/public/cpp/metrics_utils.h"
@@ -138,23 +138,23 @@ void PopulateSupportedToolsForRequest(
 }  // namespace
 
 ContextualCueingService::ContextualCueingService(
+    bool zero_state_suggestions_enabled,
     page_content_annotations::PageContentExtractionService*
         page_content_extraction_service,
     OptimizationGuideKeyedService* optimization_guide_keyed_service,
     predictors::LoadingPredictor* loading_predictor,
-    signin::IdentityManager* identity_manager,
     PrefService* pref_service,
     TemplateURLService* template_url_service)
     : recent_nudge_tracker_(kNudgeCapCount.Get(), kNudgeCapTime.Get()),
       recent_visited_origins_(kVisitedDomainsLimit.Get()),
+      zero_state_suggestions_enabled_(zero_state_suggestions_enabled),
       page_content_extraction_service_(page_content_extraction_service),
       optimization_guide_keyed_service_(optimization_guide_keyed_service),
       loading_predictor_(loading_predictor),
       pref_service_(pref_service),
       template_url_service_(template_url_service),
-      identity_manager_(identity_manager),
       mes_url_(optimization_guide::GetModelExecutionServiceBaseURL()) {
-  if (optimization_guide_keyed_service_ && IsZeroStateSuggestionsEnabled()) {
+  if (optimization_guide_keyed_service_ && zero_state_suggestions_enabled_) {
     optimization_guide_keyed_service_->RegisterOptimizationTypes(
         {optimization_guide::proto::GLIC_ZERO_STATE_SUGGESTIONS});
   }
@@ -248,7 +248,11 @@ bool ContextualCueingService::IsNudgeBlockedByBackoffRule() const {
 }
 
 bool ContextualCueingService::IsPageTypeEligibleForContextualSuggestions(
-    GURL url) const {
+    const GURL& url) const {
+  if (IsContextHubTopicUrl(url)) {
+    return true;
+  }
+
   // Non-HTTP/HTTPS pages are not eligible.
   if (!url.SchemeIsHTTPOrHTTPS()) {
     return false;
@@ -335,7 +339,7 @@ void ContextualCueingService::PrepareToFetchContextualGlicZeroStateSuggestions(
     content::WebContents* web_contents) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
-  if (!IsZeroStateSuggestionsEnabled()) {
+  if (!zero_state_suggestions_enabled_) {
     return;
   }
 
@@ -356,11 +360,13 @@ void ContextualCueingService::PrepareToFetchContextualGlicZeroStateSuggestions(
   ZeroStateSuggestionsPageData::CreateForPage(web_contents->GetPrimaryPage());
 
   if (loading_predictor_) {
-    net::NetworkAnonymizationKey anonymization_key =
+    const net::NetworkAnonymizationKey anonymization_key =
         net::NetworkAnonymizationKey::CreateSameSite(
             net::SchemefulSite(mes_url_));
+    const bool allow_credentials = !base::FeatureList::IsEnabled(
+        kGlicZeroStateSuggestionsPreconnectWithoutCredentials);
     loading_predictor_->PreconnectURLIfAllowed(
-        mes_url_, /*allow_credentials=*/true, anonymization_key,
+        mes_url_, allow_credentials, anonymization_key,
         network::GetNoOpNetworkRestrictionsId());
   }
 }
@@ -388,8 +394,8 @@ ContextualCueingService::MakeZeroStateSuggestionsRequest(
   }
 
   return std::make_unique<ZeroStateSuggestionsRequest>(
-      optimization_guide_keyed_service_, identity_manager_, request_proto,
-      web_contents_list, focused_tab);
+      optimization_guide_keyed_service_, request_proto, web_contents_list,
+      focused_tab);
 }
 
 void ContextualCueingService::
@@ -400,7 +406,7 @@ void ContextualCueingService::
         GlicSuggestionsCallback callback) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
-  if (!IsZeroStateSuggestionsEnabled()) {
+  if (!zero_state_suggestions_enabled_) {
     std::move(callback).Run({});
     return;
   }
@@ -457,7 +463,7 @@ bool ContextualCueingService::
         const content::WebContents* focused_tab,
         GlicSuggestionsCallback callback) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  if (!IsZeroStateSuggestionsEnabled()) {
+  if (!zero_state_suggestions_enabled_) {
     std::move(callback).Run({});
     return false;
   }

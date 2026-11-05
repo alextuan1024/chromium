@@ -13,6 +13,7 @@
 #include <vector>
 
 #include "base/command_line.h"
+#include "base/containers/to_vector.h"
 #include "base/format_macros.h"
 #include "base/i18n/language_tag.h"
 #include "base/i18n/rtl.h"
@@ -5336,25 +5337,6 @@ TEST_F(TextfieldTest, SecureHasBeenAPasswordInput) {
   EXPECT_FALSE(ui::ScopedPasswordInputEnabler::IsPasswordInputEnabled());
 }
 
-TEST_F(TextfieldTest, SecureHasBeenACustomPasswordInput) {
-  InitTextfield();
-  ASSERT_FALSE(ui::ScopedPasswordInputEnabler::IsPasswordInputEnabled());
-
-  // Shouldn't enable secure input if it's not a password textfield.
-  textfield_->OnFocus();
-  EXPECT_FALSE(ui::ScopedPasswordInputEnabler::IsPasswordInputEnabled());
-
-  textfield_->SetTextInputFlags(textfield_->GetTextInputFlags() |
-                                ui::TEXT_INPUT_FLAG_HAS_BEEN_CUSTOM_PASSWORD);
-
-  // Single matched calls immediately update IsPasswordInputEnabled().
-  textfield_->OnFocus();
-  EXPECT_TRUE(ui::ScopedPasswordInputEnabler::IsPasswordInputEnabled());
-
-  textfield_->OnBlur();
-  EXPECT_FALSE(ui::ScopedPasswordInputEnabler::IsPasswordInputEnabled());
-}
-
 #endif  // BUILDFLAG(IS_MAC)
 
 TEST_F(TextfieldTest, AccessibilitySelectionEvents) {
@@ -5775,8 +5757,9 @@ TEST_F(TextfieldTest, AccessibleGraphemeOffsetsObscured) {
 
   ui::AXNodeData node_data;
   textfield_->GetViewAccessibility().GetAccessibleNodeData(&node_data);
-  std::vector<int32_t> non_obscured_offsets = node_data.GetIntListAttribute(
-      ax::mojom::IntListAttribute::kCharacterOffsets);
+  std::vector<int32_t> non_obscured_offsets =
+      base::ToVector(node_data.GetIntListAttribute(
+          ax::mojom::IntListAttribute::kCharacterOffsets));
 
   textfield_->SetTextInputType(ui::TEXT_INPUT_TYPE_PASSWORD);
   textfield_->GetViewAccessibility().GetAccessibleNodeData(&node_data);

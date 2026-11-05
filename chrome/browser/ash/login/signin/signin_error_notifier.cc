@@ -7,7 +7,6 @@
 #include <memory>
 #include <string>
 
-#include "ash/constants/ash_features.h"
 #include "ash/constants/ash_login_pref_names.h"
 #include "ash/constants/notifier_catalogs.h"
 #include "ash/login/resources/grit/ash_login_strings.h"
@@ -21,11 +20,8 @@
 #include "build/build_config.h"
 #include "chrome/browser/ash/account_manager/account_manager_util.h"
 #include "chrome/browser/ash/login/reauth_stats.h"
-#include "chrome/browser/ash/login/signin/legacy_token_handle_fetcher.h"
 #include "chrome/browser/ash/login/signin/token_handle_store_factory.h"
-#include "chrome/browser/ash/login/signin/token_handle_util.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/signin/identity_manager_factory.h"
 #include "chrome/browser/ui/ash/multi_user/multi_user_util.h"
 #include "chrome/grit/branded_strings.h"
 #include "chrome/grit/generated_resources.h"
@@ -175,34 +171,24 @@ std::u16string GetMessageBodyForDeviceAccountErrors(
   }
 }
 
-std::unique_ptr<LegacyTokenHandleFetcher> CreateTokenHandleFetcher(
-    Profile* profile,
-    TokenHandleStore* token_handle_store) {
-  const AccountId account_id =
-      multi_user_util::GetAccountIdFromProfile(profile);
-  return std::make_unique<LegacyTokenHandleFetcher>(profile, token_handle_store,
-                                                    account_id);
-}
-
 }  // namespace
 
 SigninErrorNotifier::SigninErrorNotifier(
     PrefService* local_state,
     SigninErrorController* controller,
     Profile* profile,
+    signin::IdentityManager* identity_manager,
     supervised_user::SupervisedUserService* supervised_user_service)
     : local_state_(CHECK_DEREF(local_state)),
       error_controller_(controller),
       profile_(profile),
       supervised_user_service_(CHECK_DEREF(supervised_user_service)),
-      identity_manager_(IdentityManagerFactory::GetForProfile(profile_)),
+      identity_manager_(identity_manager),
       account_manager_(AccountManagerFactory::Get()->GetAccountManager(
           profile_->GetPath().value())),
       token_handle_store_(
-          TokenHandleStoreFactory::Get()->GetTokenHandleStore()),
-      token_handle_fetcher_(
-          CreateTokenHandleFetcher(profile_, token_handle_store_)) {
-  DCHECK(account_manager_);
+          TokenHandleStoreFactory::Get()->GetTokenHandleStore()) {
+  CHECK(account_manager_, base::NotFatalUntil::M161);
   // Create unique user-scoped notification IDs for this profile.
   const user_manager::User& user = CHECK_DEREF(
       BrowserContextHelper::Get()->GetUserByBrowserContext(profile));
@@ -228,16 +214,12 @@ SigninErrorNotifier::SigninErrorNotifier(
 void SigninErrorNotifier::OnTokenHandleCheck(const AccountId& account_id,
                                              const std::string& token,
                                              bool reauth_required) {
-  if (ash::features::IsUseTokenHandleStoreEnabled()) {
-    account_manager::AccountManager* account_manager =
-        AccountManagerFactory::Get()->GetAccountManager(
-            profile_->GetPath().value());
+  account_manager::AccountManager* account_manager =
+      AccountManagerFactory::Get()->GetAccountManager(
+          profile_->GetPath().value());
 
-    token_handle_store_->DiagnoseTokenHandleMapping(
-        profile_->GetPrefs(), account_manager, account_id, token);
-  } else {
-    token_handle_fetcher_->DiagnoseTokenHandleMapping(account_id, token);
-  }
+  token_handle_store_->DiagnoseTokenHandleMapping(
+      profile_->GetPrefs(), account_manager, account_id, token);
   if (!reauth_required) {
     return;
   }
@@ -275,9 +257,6 @@ void SigninErrorNotifier::Shutdown() {
     error_controller_->RemoveObserver(this);
   }
   error_controller_ = nullptr;
-  if (token_handle_fetcher_) {
-    token_handle_fetcher_.reset();
-  }
   token_handle_store_ = nullptr;
 }
 
@@ -331,7 +310,7 @@ void SigninErrorNotifier::HandleDeviceAccountError(
   }
 
   // We need to save the flag in the local state because
-  // TokenHandleUtil::IsReauthRequired might fail on the login screen due to
+  // TokenHandleStore::IsReauthRequired might fail on the login screen due to
   // lack of network connectivity.
   SaveForceOnlineSignin(profile_);
   message_center::MessageCenter::Get()->AddNotification(

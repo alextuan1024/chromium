@@ -20,6 +20,7 @@
 #include "base/task/current_thread.h"
 #include "base/task/thread_pool.h"
 #include "base/threading/thread_restrictions.h"
+#include "components/remote_cocoa/app_shim/mouse_capture.h"
 #include "components/remote_cocoa/app_shim/window_move_loop.h"
 #include "components/remote_cocoa/browser/ns_view_ids.h"
 #include "components/remote_cocoa/common/application.mojom.h"
@@ -234,6 +235,13 @@ void WebContentsViewMac::StartDragging(
     web_contents_->SystemDragEnded(source_rwh);
     return;
   }
+  // Likewise, a widget holding mouse capture (e.g. a tab strip during a tab
+  // drag, or an open menu) owns the held mouse button; refuse to start a
+  // dragging session that would interfere with its gesture.
+  if (remote_cocoa::CocoaMouseCapture::GetGlobalCaptureWindow()) {
+    web_contents_->SystemDragEnded(source_rwh);
+    return;
+  }
   url::Origin source_origin = source_rfh.GetLastCommittedOrigin();
   // By allowing nested tasks, the code below also allows Close(),
   // which would deallocate |this|.  The same problem can occur while
@@ -334,7 +342,8 @@ DropData* WebContentsViewMac::GetDropData() const {
 }
 
 void WebContentsViewMac::UpdateDragOperation(ui::mojom::DragOperation operation,
-                                             bool document_is_handling_drag) {
+                                             bool document_is_handling_drag,
+                                             RenderWidgetHostImpl* source_rwh) {
   [drag_dest_ setCurrentOperation:operation
            documentIsHandlingDrag:document_is_handling_drag];
 }

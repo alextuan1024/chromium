@@ -14,6 +14,8 @@
 
 namespace autofill {
 
+class CustomFormControlScriptExecutor;
+
 class AutofillAgentTestApi {
  public:
   explicit AutofillAgentTestApi(AutofillAgent* agent) : agent_(*agent) {}
@@ -48,6 +50,10 @@ class AutofillAgentTestApi {
     agent_->ContentEditableDidChange(element);
   }
 
+  bool is_popup_possibly_visible() const {
+    return agent_->is_popup_possibly_visible_;
+  }
+
   void TextFieldValueChanged(const blink::WebFormControlElement& element) {
     agent_->TextFieldValueChanged(element);
   }
@@ -72,7 +78,27 @@ class AutofillAgentTestApi {
         AutofillAgent::FocusRequiresScroll(focus_requires_scroll);
   }
 
+  void set_uses_keyboard_accessory_for_suggestions(
+      bool uses_keyboard_accessory_for_suggestions) {
+    const_cast<AutofillAgent::Config&>(agent_->config_)
+        .uses_keyboard_accessory_for_suggestions =
+        AutofillAgent::UsesKeyboardAccessoryForSuggestions(
+            uses_keyboard_accessory_for_suggestions);
+  }
+
+  void set_keyboard_accessory_uses_dynamic_positioning(
+      bool keyboard_accessory_uses_dynamic_positioning) {
+    const_cast<AutofillAgent::Config&>(agent_->config_)
+        .keyboard_accessory_uses_dynamic_positioning =
+        AutofillAgent::KeyboardAccessoryUsesDynamicPositioning(
+            keyboard_accessory_uses_dynamic_positioning);
+  }
+
   const FormCache& form_cache() { return agent_->form_cache_; }
+
+  CustomFormControlScriptExecutor* custom_form_control_script_executor() {
+    return agent_->custom_form_control_script_executor_.get();
+  }
 
   PasswordAutofillAgent* password_autofill_agent() {
     return agent_->password_autofill_agent_.get();
@@ -92,6 +118,12 @@ class AutofillAgentTestApi {
 
   base::WeakPtr<AutofillAgent> GetWeakPtr() {
     return agent_->weak_ptr_factory_.GetWeakPtr();
+  }
+
+  void FlushAutofillDriverForTesting() {
+    if (agent_->autofill_driver_) {
+      agent_->autofill_driver_.FlushForTesting();
+    }
   }
 
  private:

@@ -10,15 +10,51 @@ import org.chromium.base.DeviceInfo;
 import org.chromium.base.ResettersForTesting;
 import org.chromium.base.TriState;
 import org.chromium.base.TriStateUtils;
+import org.chromium.base.metrics.RecordHistogram;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.ui.base.DeviceFormFactor;
+import org.chromium.ui.base.WindowAndroid;
+import org.chromium.ui.display.DisplayUtil;
 
 /** Static utilities related to browser controls interfaces. */
 @NullMarked
 public class BrowserControlsUtils {
 
+    private static final String HISTOGRAM_AVAILABLE_WINDOW_HEIGHT =
+            "Android.BrowserControls.AvailableWindowHeight";
+    private static final String HISTOGRAM_PERCENTAGE_MAX_HEIGHT =
+            "Android.BrowserControls.PercentageOfWindowUsedByBrowserControlsAtMaxHeight";
+    private static final String HISTOGRAM_PERCENTAGE_MIN_HEIGHT =
+            "Android.BrowserControls.PercentageOfWindowUsedByBrowserControlsAtMinHeight";
+
     private static @TriState int sSyncMinHeightWithTotalHeightForTesting;
+
+    /**
+     * Returns the height of the window in pixels based on the window's display and context
+     * configuration screenHeightDp.
+     *
+     * @param context The Context to retrieve screen configuration from.
+     * @param windowAndroid The WindowAndroid to retrieve the DisplayAndroid from.
+     * @return The height of the window in pixels.
+     */
+    public static int getWindowHeight(Context context, WindowAndroid windowAndroid) {
+        return DisplayUtil.dpToPx(
+                windowAndroid.getDisplay(),
+                context.getResources().getConfiguration().screenHeightDp);
+    }
+
+    /**
+     * Calculates the percentage of the window's total height used by a controls height [0, 100].
+     *
+     * @param controlsHeight The height of the controls in pixels.
+     * @param windowHeight The height of the window in pixels.
+     * @return The percentage of the window height used, rounded and clamped to [0, 100].
+     */
+    public static int calculatePercentageOfWindowUsed(int controlsHeight, int windowHeight) {
+        if (windowHeight <= 0 || controlsHeight < 0) return 0;
+        return Math.min(100, Math.round(100.f * controlsHeight / windowHeight));
+    }
 
     /**
      * Disallow top browser controls from scrolling off by setting min height equal to overall
@@ -47,6 +83,48 @@ public class BrowserControlsUtils {
         // true always.
         return doSyncMinHeightWithTotalHeightV2(context)
                 && ChromeFeatureList.sLockTopControlsForceAdjustHeightOnStartup.getValue();
+    }
+
+    /**
+     * Returns whether Omnibox expansion is suppressed on same-origin navigations while scrolled
+     * down (Experiment A of {@link ChromeFeatureList#CLANK_OMNIBOX_MINIMIZATION}).
+     */
+    public static boolean isHideOmniboxOnSameOriginNavEnabled() {
+        return ChromeFeatureList.sClankOmniboxMinimization.isEnabled()
+                && "hide_on_same_origin_nav"
+                        .equals(ChromeFeatureList.sClankOmniboxMinimizationArm.getValue());
+    }
+
+    /**
+     * Returns whether the compact Mini-Omnibox toolbar is enabled (Experiment B of {@link
+     * ChromeFeatureList#CLANK_OMNIBOX_MINIMIZATION}).
+     */
+    public static boolean isMinimizeOmniboxEnabled() {
+        return ChromeFeatureList.sClankOmniboxMinimization.isEnabled()
+                && "minimize_omnibox"
+                        .equals(ChromeFeatureList.sClankOmniboxMinimizationArm.getValue());
+    }
+
+    /** Returns the slow-load fallback reveal delay in ms when Experiment A is enabled, or 0. */
+    public static int getSameOriginOmniboxFallbackShowAfterMs() {
+        if (!isHideOmniboxOnSameOriginNavEnabled()) return 0;
+        return ChromeFeatureList.sClankOmniboxMinimizationFallbackShowAfterMs.getValue();
+    }
+
+    /**
+     * Returns whether pull-to-refresh should be suppressed until the Omnibox is revealed when
+     * Experiment A is enabled.
+     */
+    public static boolean shouldSuppressPullToRefreshOnOmniboxReveal() {
+        return isHideOmniboxOnSameOriginNavEnabled()
+                && ChromeFeatureList.sClankOmniboxMinimizationSuppressPullToRefreshReveal
+                        .getValue();
+    }
+
+    /** Returns the compact toolbar height in dp when Experiment B is enabled, or 0 otherwise. */
+    public static int getMiniOmniboxHeightDp() {
+        if (!isMinimizeOmniboxEnabled()) return 0;
+        return ChromeFeatureList.sClankOmniboxMinimizationMiniToolbarHeightDp.getValue();
     }
 
     /** Returns whether the top-controls hairline needs an extra offset to stay hidden. */
@@ -137,6 +215,36 @@ public class BrowserControlsUtils {
                                 == provider.getBottomControlsMinHeight()
                         || BrowserControlsUtils.getBottomContentOffset(provider)
                                 == provider.getBottomControlsHeight());
+    }
+
+    /**
+     * Records metrics for combined top and bottom browser controls, including the available window
+     * height in pixels and the percentage of the window's total height used by controls.
+     */
+    public static void recordCombinedControlsMetrics(
+            BrowserControlsStateProvider stateProvider,
+            Context context,
+            WindowAndroid windowAndroid) {
+        int windowHeight = getWindowHeight(context, windowAndroid);
+        int totalHeight =
+                stateProvider.getTopControlsHeight() + stateProvider.getBottomControlsHeight();
+        int minHeight =
+                stateProvider.getTopControlsMinHeight()
+                        + stateProvider.getBottomControlsMinHeight();
+        if (windowHeight <= 0 || totalHeight < 0 || minHeight < 0) return;
+
+        RecordHistogram.recordCustomCountHistogram(
+                HISTOGRAM_AVAILABLE_WINDOW_HEIGHT,
+                windowHeight,
+                /* min= */ 100,
+                /* max= */ 10000,
+                /* numBuckets= */ 50);
+        RecordHistogram.recordPercentageHistogram(
+                HISTOGRAM_PERCENTAGE_MAX_HEIGHT,
+                calculatePercentageOfWindowUsed(totalHeight, windowHeight));
+        RecordHistogram.recordPercentageHistogram(
+                HISTOGRAM_PERCENTAGE_MIN_HEIGHT,
+                calculatePercentageOfWindowUsed(minHeight, windowHeight));
     }
 
     public static void setsSyncMinHeightWithTotalHeightForTesting(boolean override) {

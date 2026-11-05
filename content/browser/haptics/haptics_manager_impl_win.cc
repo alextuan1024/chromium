@@ -9,7 +9,6 @@
 #include <algorithm>
 #include <vector>
 
-#include "base/notreached.h"
 #include "base/win/core_winrt_util.h"
 #include "content/browser/haptics/haptics_waveforms_statics3_win.h"
 #include "content/public/browser/browser_thread.h"
@@ -71,7 +70,7 @@ HapticsManagerImplWin::SetStaticsProviderForTesting(
       &g_statics_provider_for_testing, provider);
 }
 
-void HapticsManagerImplWin::PlayHaptics(blink::mojom::HapticEffect effect,
+void HapticsManagerImplWin::PlayHaptics(device::mojom::HapticEffect effect,
                                         double intensity) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M160);
@@ -99,7 +98,7 @@ void HapticsManagerImplWin::PlayHaptics(blink::mojom::HapticEffect effect,
   // default.
   std::optional<uint16_t> preferred = WaveformForEffect(effect);
   std::optional<uint16_t> device_default =
-      DefaultWaveformForDevice(device_type);
+      DefaultWaveformForEffectAndDevice(effect, device_type);
 
   uint16_t target = 0;
   if (preferred && std::ranges::contains(supported, *preferred)) {
@@ -178,7 +177,7 @@ void HapticsManagerImplWin::PrimeHapticsController() {
 }
 
 std::optional<uint16_t> HapticsManagerImplWin::WaveformForEffect(
-    blink::mojom::HapticEffect effect) {
+    device::mojom::HapticEffect effect) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   std::optional<uint16_t>& cached =
       waveform_cache_[static_cast<size_t>(effect)];
@@ -189,43 +188,41 @@ std::optional<uint16_t> HapticsManagerImplWin::WaveformForEffect(
 }
 
 std::optional<uint16_t> HapticsManagerImplWin::ComputeWaveformForEffect(
-    blink::mojom::HapticEffect effect) {
+    device::mojom::HapticEffect effect) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
-  // The four semantic effects map to these Windows waveforms:
-  //   hint -> Hover (Statics2), edge -> Collide, tick -> Step, align -> Align
-  //   (Collide/Step/Align on Statics3).
   UINT16 value = 0;
   HRESULT hr = E_FAIL;
 
-  if (effect == blink::mojom::HapticEffect::kHint) {
-    if (!known_waveforms2_) {
-      return std::nullopt;
-    }
-    hr = known_waveforms2_->get_Hover(&value);
-    return SUCCEEDED(hr) ? std::optional<uint16_t>(value) : std::nullopt;
-  }
-
-  // Collide/Step/Align live on Statics3; QI it from the same factory (24H2+).
   if (!known_waveforms2_) {
     return std::nullopt;
   }
-  ComPtr<IKnownSimpleHapticsControllerWaveformsStatics3> waveforms3;
-  if (FAILED(known_waveforms2_.As(&waveforms3)) || !waveforms3) {
-    return std::nullopt;
-  }
   switch (effect) {
-    case blink::mojom::HapticEffect::kEdge:
-      hr = waveforms3->get_Collide(&value);
+    case device::mojom::HapticEffect::kHint:
+      hr = known_waveforms2_->get_Hover(&value);
       break;
-    case blink::mojom::HapticEffect::kTick:
-      hr = waveforms3->get_Step(&value);
+    case device::mojom::HapticEffect::kSuccess:
+      hr = known_waveforms2_->get_Success(&value);
       break;
-    case blink::mojom::HapticEffect::kAlign:
-      hr = waveforms3->get_Align(&value);
+    case device::mojom::HapticEffect::kError:
+      hr = known_waveforms2_->get_Error(&value);
       break;
-    case blink::mojom::HapticEffect::kHint:
-      NOTREACHED();
+    case device::mojom::HapticEffect::kEdge:
+    case device::mojom::HapticEffect::kTick:
+    case device::mojom::HapticEffect::kAlign: {
+      ComPtr<IKnownSimpleHapticsControllerWaveformsStatics3> waveforms3;
+      if (FAILED(known_waveforms2_.As(&waveforms3)) || !waveforms3) {
+        return std::nullopt;
+      }
+      if (effect == device::mojom::HapticEffect::kEdge) {
+        hr = waveforms3->get_Collide(&value);
+      } else if (effect == device::mojom::HapticEffect::kTick) {
+        hr = waveforms3->get_Step(&value);
+      } else {
+        hr = waveforms3->get_Align(&value);
+      }
+      break;
+    }
   }
   if (FAILED(hr)) {
     return std::nullopt;
@@ -233,7 +230,9 @@ std::optional<uint16_t> HapticsManagerImplWin::ComputeWaveformForEffect(
   return value;
 }
 
-std::optional<uint16_t> HapticsManagerImplWin::DefaultWaveformForDevice(
+std::optional<uint16_t>
+HapticsManagerImplWin::DefaultWaveformForEffectAndDevice(
+    device::mojom::HapticEffect effect,
     haptics::HapticDeviceType device_type) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   if (!known_waveforms2_) {
@@ -241,7 +240,13 @@ std::optional<uint16_t> HapticsManagerImplWin::DefaultWaveformForDevice(
   }
 
   UINT16 value = 0;
-  if (device_type == haptics::HapticDeviceType_None) {
+  if (device_type == haptics::HapticDeviceType_None ||
+      device_type == haptics::HapticDeviceType_Generic) {
+    return std::nullopt;
+  }
+  if (device_type == haptics::HapticDeviceType_Touchpad &&
+      (effect == device::mojom::HapticEffect::kSuccess ||
+       effect == device::mojom::HapticEffect::kError)) {
     return std::nullopt;
   }
   if (device_type == haptics::HapticDeviceType_Pen) {
@@ -254,7 +259,7 @@ std::optional<uint16_t> HapticsManagerImplWin::DefaultWaveformForDevice(
                : std::nullopt;
   }
 
-  // Mouse, Touchpad, and Generic default to Hover.
+  // Mouse and Touchpad default to Hover.
   return SUCCEEDED(known_waveforms2_->get_Hover(&value))
              ? std::optional<uint16_t>(value)
              : std::nullopt;

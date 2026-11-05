@@ -43,11 +43,7 @@
 #include "chrome/browser/ash/fileapi/file_system_backend.h"
 #include "chrome/browser/ash/fileapi/recent_drive_source.h"
 #include "chrome/browser/ash/fusebox/fusebox_server.h"
-#include "chrome/browser/chromeos/drivefs/drivefs_native_message_host.h"
-#include "chrome/browser/chromeos/drivefs/drivefs_native_message_host_origins.h"
-#include "chrome/browser/net/system_network_context_manager.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/signin/identity_manager_factory.h"
 #include "chromeos/ash/components/drivefs/drivefs_pinning_manager.h"
 #include "chromeos/ash/components/drivefs/drivefs_util.h"
 #include "chromeos/ash/components/drivefs/mojom/drivefs.mojom.h"
@@ -60,8 +56,6 @@
 #include "components/drive/event_logger.h"
 #include "components/drive/file_errors.h"
 #include "components/prefs/pref_service.h"
-#include "components/signin/public/base/consent_level.h"
-#include "components/signin/public/identity_manager/identity_manager.h"
 #include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/network_service_instance.h"
@@ -709,11 +703,11 @@ FileManagerPrivateSearchDriveMetadataFunction::Run() {
 
   Profile* const profile = Profile::FromBrowserContext(browser_context());
   if (drive::EventLogger* logger = file_manager::util::GetLogger(profile)) {
-    UNSAFE_TODO(logger->Log(
+    logger->Log(
         logging::LOGGING_INFO, "%s[%s] called. (types: '%s', maxResults: '%d')",
         name(), request_uuid().AsLowercaseString().c_str(),
         api::file_manager_private::ToString(params->search_params.types),
-        params->search_params.max_results));
+        params->search_params.max_results);
   }
   set_log_on_completion(true);
 

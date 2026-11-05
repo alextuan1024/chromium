@@ -7,7 +7,6 @@
 #include "chrome/browser/ash/login/users/scoped_account_id_annotator.h"
 #include "chrome/browser/ash/profiles/profile_helper.h"
 #include "chrome/browser/ash/settings/scoped_cros_settings_test_helper.h"
-#include "chrome/browser/profiles/profile.h"
 #include "chrome/test/base/testing_browser_process.h"
 #include "chrome/test/base/testing_profile.h"
 #include "chrome/test/base/testing_profile_manager.h"
@@ -67,11 +66,12 @@ TEST_F(ProfileUserManagerControllerTest, GetProfilePrefs) {
   // Triggers ProfileUserManagerController::OnProfileAdded().
   ScopedAccountIdAnnotator annotator(
       testing_profile_manager().profile_manager(), kOwnerAccountId);
-  auto* profile =
-      testing_profile_manager().CreateTestingProfile("arbitrary_profile_name");
+  auto* profile = testing_profile_manager().CreateTestingProfile(
+      std::string(kOwnerAccountId.GetUserEmail()));
 
   EXPECT_TRUE(user->GetProfilePrefs());
   EXPECT_EQ(profile->GetPrefs(), user->GetProfilePrefs());
+  EXPECT_EQ(profile->GetPath(), user->GetPath());
 
   // Triggers ProfileUserManagerController::OnProfileWillBeDestroyed().
   testing_profile_manager().DeleteAllTestingProfiles();

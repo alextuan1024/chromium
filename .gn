@@ -2,6 +2,9 @@
 # tree and to set startup options. For documentation on the values set in this
 # file, run "gn help dotfile" at the command line.
 
+import("//build/circular_includes_bedrock.gni")
+import("//build/circular_includes_untriaged.gni")
+import("//build/strict_deps_failures.gni")
 import("//build/dotfile_settings.gni")
 import("//third_party/angle/dotfile_settings.gni")
 
@@ -35,19 +38,11 @@ default_args = {
   v8_enable_gdbjit = false
   v8_imminent_deprecation_warnings = false
 
-  # Don't include webrtc's builtin task queue implementation.
-  rtc_link_task_queue_impl = false
-
   # When building with Chromium, `webrtc::Location` is replaced by
   # `base::Location`. Since WebRTC doesn't use `public_deps` (webrtc:8603), it
   # would fail to propagate the dependency internally. Instead WebRTC let its
   # embedders to define it globally for all of its targets.
   rtc_common_public_deps = [ "//base" ]
-
-  # Don't include the iLBC audio codec.
-  # TODO(bugs.webrtc.org/8396): Once WebRTC gets rid of its internal
-  # deps on codecs, we can remove this.
-  rtc_include_ilbc = false
 
   # Changes some setup for the Crashpad build to set them to build against
   # Chromium's zlib, base, etc.
@@ -80,15 +75,34 @@ default_args = {
 
 # These are the targets to skip header checking by default. The files in targets
 # matching these patterns (see "gn help label_pattern" for format) will not have
-# their includes checked for proper dependencies when you run
-# "gn check", "gn check --check-generated", or "gn gen --check".
+# their includes checked for proper dependencies when you run "gn check",
+# "gn check --check-generated", or "gn gen --check". If only the generated files
+# in a target fail the check, add it to no_check_generated_targets instead.
 no_check_targets = [
+  "//chrome/browser/resources/tab_search/shared:resources",
+  "//device/bluetooth/public/mojom:deprecated_experimental_interfaces_blink",
+  "//device/bluetooth/public/mojom:fake_bluetooth_interfaces_blink",
+  "//v8/src/inspector:inspector",  # https://crbug.com/v8/7330
+  "//v8/test/cctest:cctest_sources",  # https://crbug.com/v8/7330
+  "//v8/test/unittests:inspector_unittests_sources",  # https://crbug.com/v8/7330
+  "//v8:cppgc_base",  # https://crbug.com/v8/7330
+  "//v8:v8_internal_headers",  # https://crbug.com/v8/7330
+  "//v8:v8_libplatform",  # https://crbug.com/v8/7330
+]
+
+# These are the targets to skip generated header checking by default. The
+# generated files in targets matching these patterns will not have their
+# includes checked when you run "gn check --check-generated". The other files in
+# these targets are still checked.
+no_check_generated_targets = [
   # TODO(crbug.com/558554239): Eliminate entries as header dependency
   # violations are resolved.
   "//base/logging/rust_logger:rust_logger_cxx_generated",
   "//base/tracing/protos:chrome_track_event_zero",
+  "//build/rust/tests/bindgen_static_fns_test:c_lib_bindgen_generator_static_fns",
   "//chrome/app/theme:theme_resources",
   "//chrome/app/theme:webui_theme_resources",
+  "//chrome/browser/apps/platform_apps/api:api_registration",
   "//chrome/browser/controlled_frame/api:api_registration",
   "//chrome/browser/extensions/api:api_registration",
   "//chrome/browser/indigo/resources:grit",
@@ -129,7 +143,6 @@ no_check_targets = [
   "//chrome/browser/resources/feature_showcase:resources",
   "//chrome/browser/resources/feedback:resources",
   "//chrome/browser/resources/gaia_auth_host:resources",
-  "//chrome/browser/resources/geic:resources",
   "//chrome/browser/resources/glic/experimental_opt_in:resources",
   "//chrome/browser/resources/glic/selection_overlay:resources",
   "//chrome/browser/resources/glic:resources",
@@ -156,9 +169,9 @@ no_check_targets = [
   "//chrome/browser/resources/new_tab_page_instant:resources",
   "//chrome/browser/resources/new_tab_page_third_party:resources",
   "//chrome/browser/resources/new_tab_shared:resources",
-  "//chrome/browser/resources/omnibox/aim_eligibility_extension:resources",
-  "//chrome/browser/resources/omnibox:resources",
   "//chrome/browser/resources/omnibox_everywhere:resources",
+  "//chrome/browser/resources/omnibox_internals/aim_eligibility_extension:resources",
+  "//chrome/browser/resources/omnibox_internals:resources",
   "//chrome/browser/resources/omnibox_popup:resources",
   "//chrome/browser/resources/on_device_internals:resources",
   "//chrome/browser/resources/on_device_translation_internals:resources",
@@ -196,7 +209,6 @@ no_check_targets = [
   "//chrome/browser/resources/suggest_internals:resources",
   "//chrome/browser/resources/support_tool:resources",
   "//chrome/browser/resources/tab_group_home:resources",
-  "//chrome/browser/resources/tab_search/shared:resources",
   "//chrome/browser/resources/tab_search:resources",
   "//chrome/browser/resources/tab_strip_internals:resources",
   "//chrome/browser/resources/updater:resources",
@@ -282,8 +294,6 @@ no_check_targets = [
   "//content/common:mojo_bindings",
   "//content/test:web_ui_mojo_test_resources",
   "//content:content_resources",
-  "//device/bluetooth/public/mojom:deprecated_experimental_interfaces_blink",
-  "//device/bluetooth/public/mojom:fake_bluetooth_interfaces_blink",
   "//extensions/browser/api:api_registration",
   "//extensions/common/api:api_features",
   "//extensions/common/api:behavior_features",
@@ -367,14 +377,8 @@ no_check_targets = [
   "//ui/webui/resources:resources",
   "//url/mojom:url_mojom_gurl_blink",
   "//url/mojom:url_mojom_scheme_host_port",
-  "//v8/src/inspector:inspector",  # https://crbug.com/v8/7330 (20 errors)
-  "//v8/test/cctest:cctest_sources",  # https://crbug.com/v8/7330 (15 errors)
-  "//v8/test/unittests:inspector_unittests_sources",  # https://crbug.com/v8/7330 (2 errors)
   "//v8/tools/debug_helper:v8_debug_helper_internal",
   "//v8/tools/debug_helper:v8_debug_helper_shared",
-  "//v8:cppgc_base",  # https://crbug.com/v8/7330 (1 error)
-  "//v8:v8_internal_headers",  # https://crbug.com/v8/7330 (11 errors)
-  "//v8:v8_libplatform",  # https://crbug.com/v8/7330 (2 errors)
 ]
 
 # These are the list of GN files that run exec_script. This allowlist exists
@@ -467,3 +471,11 @@ expand_directory_allowlist =
       # Requires to enumerate policy template yaml files.
       "//components/policy/BUILD.gn",
     ]
+
+# Entries in the allowlist should have a justification for why we need them. New
+# entries should in this list should be reviewed by a member of the chrome build
+# team.
+# entries in this list should be reviewed by a member of the chrome build team.
+allow_circular_includes_from_allowlist =
+    allow_circular_includes_from_untriaged + project_bedrock_circular_includes +
+    []

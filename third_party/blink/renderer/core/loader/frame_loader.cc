@@ -83,6 +83,7 @@
 #include "third_party/blink/renderer/core/frame/csp/content_security_policy.h"
 #include "third_party/blink/renderer/core/frame/csp/csp_source.h"
 #include "third_party/blink/renderer/core/frame/frame_console.h"
+#include "third_party/blink/renderer/core/frame/frame_swap_scope.h"
 #include "third_party/blink/renderer/core/frame/local_dom_window.h"
 #include "third_party/blink/renderer/core/frame/local_frame.h"
 #include "third_party/blink/renderer/core/frame/local_frame_client.h"
@@ -441,6 +442,7 @@ void FrameLoader::DispatchUnloadEventAndFillOldDocumentInfoIfNeeded(
   frame_->GetDocument()->DispatchUnloadEvents(
       &old_document_info->unload_timing_info,
       will_commit_new_document_in_this_frame);
+  old_document_info->unreported_ad_task_time = frame_->UnreportedAdTaskTime();
   old_document_info->total_lifecycle_events_processing_time_on_commit =
       std::max(
           old_document_info->total_lifecycle_events_processing_time_on_commit,
@@ -599,7 +601,8 @@ void FrameLoader::ProcessScrollForSameDocumentNavigation(
   TakeObjectSnapshot();
 }
 
-bool FrameLoader::AllowRequestForThisFrame(const FrameLoadRequest& request) {
+bool FrameLoader::AllowRequestForThisFrame(const FrameLoadRequest& request,
+                                           bool is_same_document_navigation) {
   // If no origin Document* was specified, skip remaining security checks and
   // assume the caller has fully initialized the FrameLoadRequest.
   if (!request.GetOriginWindow())
@@ -618,7 +621,11 @@ bool FrameLoader::AllowRequestForThisFrame(const FrameLoadRequest& request) {
     }
   }
 
-  if (!request.CanDisplay(url)) {
+  // A fragment navigation initiated by this document does not load the URL
+  // again, even if its sandboxed origin cannot load local resources.
+  if (!request.CanDisplay(url) &&
+      !(is_same_document_navigation &&
+        request.GetOriginWindow() == frame_->DomWindow())) {
     request.GetOriginWindow()->AddConsoleMessage(
         MakeGarbageCollected<ConsoleMessage>(
             mojom::ConsoleMessageSource::kSecurity,
@@ -737,8 +744,44 @@ void FrameLoader::StartNavigation(FrameLoadRequest& request,
                url.GetString().Utf8(), "load_type",
                static_cast<int>(frame_load_type));
 
-  if (!AllowRequestForThisFrame(request))
+  // Convert navigations from the initial empty document to do replacement if
+  // needed. Note that we don't convert reloads or history navigations (so only
+  // kStandard navigations can get converted to do replacement).
+  if (frame_load_type == WebFrameLoadType::kStandard &&
+      IsOnInitialEmptyDocument()) {
+    frame_load_type = WebFrameLoadType::kReplaceCurrentItem;
+  }
+
+  bool same_document_navigation =
+      request.GetNavigationPolicy() == kNavigationPolicyCurrentTab &&
+      ShouldPerformFragmentNavigation(
+          request.Form(), resource_request.HttpMethod(), frame_load_type, url);
+
+  if (RuntimeEnabledFeatures::
+          TreatMhtmlInitialDocumentLoadsAsCrossDocumentEnabled()) {
+    if (auto* parent = DynamicTo<LocalFrame>(frame_->Tree().Parent())) {
+      // Within MHTML archives, treat the initial about:blank#fragment
+      // navigation as cross-document. Although it appears to be a same-document
+      // fragment navigation, it actually commits a new document with a new
+      // opaque origin.
+      //
+      // TODO(crbug.com/423663315): Consider refining this logic to only treat
+      // the initial about:blank#fragment navigation in MHTML as cross-document
+      // if the MHTML archive actually overrides the about:blank resource. If it
+      // doesn't, the navigation may be better treated as same-document,
+      // matching non-MHTML behavior.
+      if (parent->Loader().GetDocumentLoader()->HasBeenLoadedAsWebArchive()) {
+        if (url.HasFragmentIdentifier() &&
+            frame_->GetDocument()->IsInitialEmptyDocument()) {
+          same_document_navigation = false;
+        }
+      }
+    }
+  }
+
+  if (!AllowRequestForThisFrame(request, same_document_navigation)) {
     return;
+  }
 
   // Block renderer-initiated loads of data: and filesystem: URLs in the top
   // frame (unless they are reload requests).
@@ -774,41 +817,6 @@ void FrameLoader::StartNavigation(FrameLoadRequest& request,
   if (url.ProtocolIs("filesystem")) {
     document_loader_->CountUse(
         mojom::blink::WebFeature::kFileSystemUrlNavigation);
-  }
-
-  // Convert navigations from the initial empty document to do replacement if
-  // needed. Note that we don't convert reloads or history navigations (so only
-  // kStandard navigations can get converted to do replacement).
-  if (frame_load_type == WebFrameLoadType::kStandard &&
-      IsOnInitialEmptyDocument()) {
-    frame_load_type = WebFrameLoadType::kReplaceCurrentItem;
-  }
-
-  bool same_document_navigation =
-      request.GetNavigationPolicy() == kNavigationPolicyCurrentTab &&
-      ShouldPerformFragmentNavigation(
-          request.Form(), resource_request.HttpMethod(), frame_load_type, url);
-
-  if (RuntimeEnabledFeatures::
-          TreatMhtmlInitialDocumentLoadsAsCrossDocumentEnabled()) {
-    if (auto* parent = DynamicTo<LocalFrame>(frame_->Tree().Parent())) {
-      // Within MHTML archives, treat the initial about:blank#fragment
-      // navigation as cross-document. Although it appears to be a same-document
-      // fragment navigation, it actually commits a new document with a new
-      // opaque origin.
-      //
-      // TODO(crbug.com/423663315): Consider refining this logic to only treat
-      // the initial about:blank#fragment navigation in MHTML as cross-document
-      // if the MHTML archive actually overrides the about:blank resource. If it
-      // doesn't, the navigation may be better treated as same-document,
-      // matching non-MHTML behavior.
-      if (parent->Loader().GetDocumentLoader()->HasBeenLoadedAsWebArchive()) {
-        if (url.HasFragmentIdentifier() &&
-            frame_->GetDocument()->IsInitialEmptyDocument()) {
-          same_document_navigation = false;
-        }
-      }
-    }
   }
 
   // Perform same document navigation.
@@ -1229,16 +1237,14 @@ void FrameLoader::CommitNavigation(
   // is being unloaded/swapped out.
   auto url_origin = SecurityOrigin::Create(navigation_params->url);
   auto* info = MakeGarbageCollected<OldDocumentInfoForCommit>(url_origin);
-  if (RuntimeEnabledFeatures::ResponsiveIframesEnabled()) {
-    if (frame_->IsProvisional()) {
-      if (const Frame* prev_frame = frame_->GetProvisionalOwnerFrame()) {
-        info->old_document_origin =
-            prev_frame->GetSecurityContext()->GetSecurityOrigin();
-      }
-    } else {
+  if (frame_->IsProvisional()) {
+    if (const Frame* prev_frame = frame_->GetProvisionalOwnerFrame()) {
       info->old_document_origin =
-          frame_->GetSecurityContext()->GetSecurityOrigin();
+          prev_frame->GetSecurityContext()->GetSecurityOrigin();
     }
+  } else {
+    info->old_document_origin =
+        frame_->GetSecurityContext()->GetSecurityOrigin();
   }
   ScopedOldDocumentInfoForCommitCapturer scoped_old_document_info(info);
   scoped_old_document_info.CurrentInfo()
@@ -1286,7 +1292,7 @@ void FrameLoader::CommitNavigation(
     // this triggers a local RenderFrame swap, it might trigger the unloading
     // of the old RenderFrame's document, updating the contents of the
     // OldDocumentInfoForCommit set in `scoped_old_document_info` above.
-    // NOTE: it's important that SwapIn() happens before DetachDocument(),
+    // NOTE: it's important that DetachDocument() happens before SwapIn(),
     // because this ensures that the unload timing info generated by detaching
     // the provisional frame's document isn't the one that gets used.
     if (is_provisional && !frame_->SwapIn())

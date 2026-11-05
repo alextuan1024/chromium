@@ -243,10 +243,6 @@ class CONTENT_EXPORT DedicatedWorkerHost final
     return worker_client_security_state_->cross_origin_embedder_policy;
   }
 
-  ServiceWorkerMainResourceHandle* service_worker_handle() {
-    return service_worker_handle_.get();
-  }
-
   bool file_url_support() const { return file_url_support_; }
 
 #if BUILDFLAG(ENABLE_COMPUTE_PRESSURE)
@@ -305,6 +301,8 @@ class CONTENT_EXPORT DedicatedWorkerHost final
   }
 
  private:
+  friend class DedicatedWorkerServiceImplTest;
+
   // RenderProcessHostObserver:
   void RenderProcessExited(RenderProcessHost* render_process_host,
                            const ChildProcessTerminationInfo& info) override;
@@ -477,6 +475,10 @@ class CONTENT_EXPORT DedicatedWorkerHost final
 
   // The policies of the creator context. Used for inheritance.
   const PolicyContainerPolicies creator_policies_;
+
+  // The policy container host for this worker. Initialized in
+  // `DidStartScriptLoad()`.
+  scoped_refptr<PolicyContainerHost> policy_container_host_;
 
   base::WeakPtrFactory<DedicatedWorkerHost> weak_factory_{this};
 };

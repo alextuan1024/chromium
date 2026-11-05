@@ -14,7 +14,7 @@
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/browser_window.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
-#include "chrome/browser/ui/browser_window_theme_observer.h"
+#include "chrome/browser/ui/browser_window_theme_observer/browser_window_theme_observer.h"
 #include "chrome/browser/ui/omnibox/omnibox_next_features.h"
 #include "chrome/browser/ui/tabs/split_tab_metrics.h"
 #include "chrome/browser/ui/tabs/tab_enums.h"
@@ -329,14 +329,7 @@ IN_PROC_BROWSER_TEST_F(TabStripServiceImplBrowserTest, SynchronousObserver) {
   ASSERT_EQ(1, observer.num_callbacks);
 }
 
-// TODO(crbug.com/542347163): Re-enable test.
-#if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS)
-#define MAYBE_PreventsReentrancy DISABLED_PreventsReentrancy
-#else
-#define MAYBE_PreventsReentrancy PreventsReentrancy
-#endif
-IN_PROC_BROWSER_TEST_F(TabStripServiceImplBrowserTest,
-                       MAYBE_PreventsReentrancy) {
+IN_PROC_BROWSER_TEST_F(TabStripServiceImplBrowserTest, PreventsReentrancy) {
   class ReallyBadObserver
       : public tabs_api::observation::TabStripApiBatchedObserver {
    public:
@@ -920,7 +913,8 @@ IN_PROC_BROWSER_TEST_F(TabStripServiceImplBrowserTest, UpdateTabGroupData) {
   tab_groups::TabGroupVisualData new_visuals(
       expected_title, tab_groups::TabGroupColorId::kRed, false);
   base::RunLoop run_loop;
-  auto tab_group = tabs_api::mojom::TabGroup::New(group_node_id, new_visuals);
+  auto tab_group = tabs_api::mojom::TabGroup::New(group_node_id, new_visuals,
+                                                  /*is_ephemeral=*/false);
   auto data = tabs_api::mojom::Data::NewTabGroup(std::move(tab_group));
   remote->Update(
       std::move(data), std::nullopt,

@@ -16,7 +16,7 @@
 #include "chrome/browser/ui/tabs/recent_tabs_sub_menu_model.h"
 #include "components/favicon_base/favicon_types.h"
 #include "ui/actions/actions.h"
-#include "ui/base/window_open_disposition.h"
+#include "ui/base/mojom/window_open_disposition.mojom-forward.h"
 
 // This class is meant to support the dynamic content needed for the recent tabs
 // submenu
@@ -30,6 +30,7 @@ class RecentTabsDynamicMenu {
   }
 
   void BuildRecentTabsActions(actions::BaseAction* parent_item);
+  void BuildOtherDeviceTabsActions(actions::BaseAction* parent_item);
 
   void CreateRecentTabsActionForTesting(
       actions::BaseAction* parent_item,
@@ -51,7 +52,8 @@ class RecentTabsDynamicMenu {
                         actions::ActionItem* item,
                         actions::ActionInvocationContext context);
 
-  void ExecuteRestoreEntry(SessionID id, WindowOpenDisposition disposition);
+  void ExecuteRestoreEntry(SessionID id,
+                           ui::mojom::WindowOpenDisposition disposition);
 
   void ExecuteRecentSplit(const RecentTabItem& recent_item,
                           actions::ActionItem* item,

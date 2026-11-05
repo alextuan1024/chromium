@@ -5,7 +5,6 @@
 #include "chrome/browser/ui/read_anything/read_anything_prefs.h"
 
 #include "base/values.h"
-#include "chrome/browser/ui/ui_features.h"
 #include "chrome/common/read_anything/read_anything.mojom.h"
 #include "chrome/common/read_anything/read_anything_util.h"
 #include "components/pref_registry/pref_registry_syncable.h"
@@ -69,17 +68,14 @@ void RegisterReadAnythingProfilePrefs(
   registry->RegisterListPref(
       prefs::kAccessibilityReadAnythingRecentUsagesStartTimes,
       base::ListValue());
-
-  if (features::IsReadAnythingLineFocusEnabled()) {
-    registry->RegisterIntegerPref(
-        prefs::kAccessibilityReadAnythingLineFocus,
-        static_cast<int>(read_anything::mojom::LineFocus::kDefaultValue),
-        user_prefs::PrefRegistrySyncable::SYNCABLE_PREF);
-    registry->RegisterIntegerPref(
-        prefs::kAccessibilityReadAnythingLastNonDisabledLineFocus,
-        static_cast<int>(read_anything::mojom::LineFocus::kDefaultValue),
-        user_prefs::PrefRegistrySyncable::SYNCABLE_PREF);
-  }
+  registry->RegisterIntegerPref(
+      prefs::kAccessibilityReadAnythingLineFocus,
+      static_cast<int>(read_anything::mojom::LineFocus::kDefaultValue),
+      user_prefs::PrefRegistrySyncable::SYNCABLE_PREF);
+  registry->RegisterIntegerPref(
+      prefs::kAccessibilityReadAnythingLastNonDisabledLineFocus,
+      static_cast<int>(read_anything::mojom::LineFocus::kDefaultValue),
+      user_prefs::PrefRegistrySyncable::SYNCABLE_PREF);
 }
 
 #endif  // !BUILDFLAG(IS_ANDROID)

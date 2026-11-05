@@ -4,6 +4,7 @@
 
 #include "chrome/browser/ui/views/page_action/test_support/page_action_test_accessor.h"
 
+#include <optional>
 #include <string>
 #include <string_view>
 
@@ -19,12 +20,14 @@
 #include "chrome/browser/ui/views/location_bar/webui_location_bar.h"
 #include "chrome/browser/ui/views/page_action/page_action_view.h"
 #include "chrome/browser/ui/views/page_action/page_action_view_interface.h"
-#include "chrome/browser/ui/views/page_action/test_support/page_action_test_support.h"
 #include "chrome/browser/ui/views/page_action/webui_page_action_control.h"
 #include "chrome/browser/ui/views/page_action/webui_page_action_view.h"
+#include "chrome/browser/ui/views/toolbar/webui_test_utils.h"
 #include "chrome/browser/ui/views/toolbar/webui_toolbar_web_view.h"
 #include "chrome/browser/ui/webui/webui_toolbar/utils/toolbar_button_utils.h"
+#include "content/public/common/color_parser.h"
 #include "content/public/test/browser_test_utils.h"
+#include "testing/gtest/include/gtest/gtest.h"
 #include "ui/actions/action_id.h"
 #include "ui/base/interaction/element_identifier.h"
 #include "ui/events/base_event_utils.h"
@@ -42,29 +45,8 @@
 
 namespace page_actions {
 
-namespace {
-
-// JavaScript function for traversing shadow DOM trees to find an element
-// matching the predicate.
-constexpr char kFindDeepJS[] = R"(
-  function findDeep(root, predicate) {
-    if (!root) return null;
-    if (predicate(root)) return root;
-    const children = root.shadowRoot
-        ? Array.from(root.shadowRoot.querySelectorAll('*'))
-        : Array.from(root.querySelectorAll('*'));
-    for (const child of children) {
-      if (predicate(child)) return child;
-      if (child.shadowRoot) {
-        const found = findDeep(child, predicate);
-        if (found) return found;
-      }
-    }
-    return null;
-  }
-)";
-
-}  // namespace
+// Note: `kFindDeepJS` is defined in `webui_test_utils.h` for traversing shadow
+// DOM trees to find an element matching a CSS selector or predicate.
 
 PageActionTestAccessor::PageActionTestAccessor(BrowserWindowInterface* browser,
                                                actions::ActionId action_id)
@@ -115,7 +97,7 @@ const page_actions::PageActionModelInterface* PageActionTestAccessor::GetModel()
 
 page_actions::PageActionView* PageActionTestAccessor::GetPageActionView()
     const {
-  if (features::IsWebUILocationBarEnabled()) {
+  if (GetWebUIPageActionControl()) {
     return nullptr;
   }
   auto* interface_ptr = GetInterface();
@@ -169,28 +151,29 @@ content::WebContents* PageActionTestAccessor::GetWebContents() const {
   return webui_view->GetWebViewForTesting()->web_contents();
 }
 
-bool PageActionTestAccessor::EvaluateWebUI(
-    std::string_view element_predicate_js) const {
+std::optional<content::EvalJsResult>
+PageActionTestAccessor::EvaluateWebUIResult(
+    std::string_view element_fn_js) const {
   if (auto* tracked_el = GetTrackedElement()) {
     if (content::WebContents* contents = GetWebContents()) {
       const std::string script = base::StringPrintf(
           R"((() => {
             const manager = window._trackedElementManager;
-            if (!manager) return false;
+            if (!manager) return null;
             const tracked = manager.getElementWithId({
               nativeIdentifier: "%s",
               secondaryIdentifier: "%s"
             });
-            if (!tracked || !tracked.element) return false;
+            if (!tracked || !tracked.element) return null;
             const el = tracked.element;
             return (%s)(el);
           })())",
           tracked_el->identifier().GetName().c_str(),
           tracked_el->GetSecondaryIdentifier().c_str(),
-          std::string(element_predicate_js).c_str());
+          std::string(element_fn_js).c_str());
       content::EvalJsResult result = content::EvalJs(contents, script);
-      if (result.is_bool()) {
-        return result.ExtractBool();
+      if (result.is_ok() && !result.is_none()) {
+        return result;
       }
     }
   }
@@ -205,93 +188,108 @@ bool PageActionTestAccessor::EvaluateWebUI(
           %s
           const el = findDeep(document.body,
                               e => e.state?.pageActionId === %d);
-          if (!el) return false;
+          if (!el) return null;
           return (%s)(el);
         })())",
-        kFindDeepJS, action_id_int, std::string(element_predicate_js).c_str());
+        kFindDeepJS, action_id_int, std::string(element_fn_js).c_str());
     content::EvalJsResult result = content::EvalJs(contents, script);
-    if (result.is_bool()) {
-      return result.ExtractBool();
+    if (result.is_ok() && !result.is_none()) {
+      return result;
     }
   }
-  return false;
+  return std::nullopt;
+}
+
+bool PageActionTestAccessor::EvaluateWebUI(
+    std::string_view element_predicate_js) const {
+  const auto result = EvaluateWebUIResult(element_predicate_js);
+  return result && result->is_bool() && result->ExtractBool();
+}
+
+std::optional<std::string> PageActionTestAccessor::EvaluateWebUIString(
+    std::string_view element_extractor_js) const {
+  const auto result = EvaluateWebUIResult(element_extractor_js);
+  if (result && result->is_string()) {
+    return result->ExtractString();
+  }
+  return std::nullopt;
+}
+
+std::optional<double> PageActionTestAccessor::EvaluateWebUIDouble(
+    std::string_view element_extractor_js) const {
+  const auto result = EvaluateWebUIResult(element_extractor_js);
+  if (result && (result->is_double() || result->is_int())) {
+    return result->ExtractDouble();
+  }
+  return std::nullopt;
 }
 
 bool PageActionTestAccessor::GetVisible() const {
-  if (features::IsWebUILocationBarEnabled()) {
-    if (const auto* model = GetModel()) {
-      return model->GetVisible();
-    }
-    return EvaluateWebUI(
-        "(el) => !el.hidden && window.getComputedStyle(el).display !== 'none'");
+  if (auto* pav = GetPageActionView()) {
+    return pav->GetVisible();
   }
-  auto* pav = GetPageActionView();
-  return pav ? pav->GetVisible() : false;
+  if (const auto* model = GetModel()) {
+    return model->GetVisible();
+  }
+  return EvaluateWebUI(
+      "(el) => !el.hidden && window.getComputedStyle(el).display !== 'none'");
 }
 
 bool PageActionTestAccessor::ShouldShowSuggestionChip() const {
-  if (features::IsWebUILocationBarEnabled()) {
-    if (const auto* model = GetModel()) {
-      return model->GetVisible() && model->ShouldShowSuggestionChip();
-    }
-    return EvaluateWebUI(
-        R"((el) => {
-          if (el.hidden || window.getComputedStyle(el).display === 'none') {
-            return false;
-          }
-          const chipBtn = el.shadowRoot
-              ? el.shadowRoot.querySelector('#button')
-              : null;
-          return !!chipBtn && chipBtn.hasAttribute('has-label');
-        })");
+  if (auto* pav = GetPageActionView()) {
+    return pav->GetVisible() && pav->IsChipVisible();
   }
-  auto* pav = GetPageActionView();
-  if (!pav || !pav->GetVisible()) {
-    return false;
+  if (const auto* model = GetModel()) {
+    return model->GetVisible() && model->ShouldShowSuggestionChip();
   }
-  return pav->IsChipVisible();
+  return EvaluateWebUI(
+      R"((el) => {
+        if (el.hidden || window.getComputedStyle(el).display === 'none') {
+          return false;
+        }
+        const chipBtn = el.shadowRoot
+            ? el.shadowRoot.querySelector('#button')
+            : null;
+        return !!chipBtn && chipBtn.hasAttribute('has-label');
+      })");
 }
 
 bool PageActionTestAccessor::IsChipShowing() const {
-  if (features::IsWebUILocationBarEnabled()) {
-    if (const auto* model = GetModel()) {
-      return model->GetVisible() && model->IsChipShowing();
-    }
-    return EvaluateWebUI(
-        R"((el) => {
-          if (el.hidden || window.getComputedStyle(el).display === 'none') {
-            return false;
-          }
-          const chipBtn = el.shadowRoot
-              ? el.shadowRoot.querySelector('#button')
-              : null;
-          return !!chipBtn && chipBtn.hasAttribute('has-label');
-        })");
+  if (GetPageActionView()) {
+    return ShouldShowSuggestionChip() && !IsAnimating();
   }
-  return ShouldShowSuggestionChip() && !IsAnimating();
+  if (const auto* model = GetModel()) {
+    return model->GetVisible() && model->IsChipShowing();
+  }
+  return EvaluateWebUI(
+      R"((el) => {
+        if (el.hidden || window.getComputedStyle(el).display === 'none') {
+          return false;
+        }
+        const chipBtn = el.shadowRoot
+            ? el.shadowRoot.querySelector('#button')
+            : null;
+        return !!chipBtn && chipBtn.hasAttribute('has-label');
+      })");
 }
 
 bool PageActionTestAccessor::IsIconVisible() const {
-  if (features::IsWebUILocationBarEnabled()) {
-    if (const auto* model = GetModel()) {
-      return model->GetVisible() && !model->ShouldShowSuggestionChip();
-    }
-    return EvaluateWebUI(
-        R"((el) => {
-          if (el.hidden || window.getComputedStyle(el).display === 'none') {
-            return false;
-          }
-          const chipBtn = el.shadowRoot
-              ? el.shadowRoot.querySelector('#button')
-              : null;
-          return !!chipBtn && !chipBtn.hasAttribute('has-label');
-        })");
+  if (auto* pav = GetPageActionView()) {
+    return pav->GetVisible() && !pav->IsChipVisible();
   }
-  auto* pav = GetPageActionView();
-  if (!pav || !pav->GetVisible()) {
-    return false;
+  if (const auto* model = GetModel()) {
+    return model->GetVisible() && !model->ShouldShowSuggestionChip();
   }
-  return !pav->IsChipVisible();
+  return EvaluateWebUI(
+      R"((el) => {
+        if (el.hidden || window.getComputedStyle(el).display === 'none') {
+          return false;
+        }
+        const chipBtn = el.shadowRoot
+            ? el.shadowRoot.querySelector('#button')
+            : null;
+        return !!chipBtn && !chipBtn.hasAttribute('has-label');
+      })");
 }
 
 bool PageActionTestAccessor::HasFocus() const {
@@ -303,102 +301,93 @@ bool PageActionTestAccessor::HasFocus() const {
 }
 
 bool PageActionTestAccessor::IsLabelVisible() const {
-  if (features::IsWebUILocationBarEnabled()) {
-    return EvaluateWebUI(
-        R"((el) => {
-          if (el.hidden || window.getComputedStyle(el).display === 'none') {
-            return false;
-          }
-          const chipBtn = el.shadowRoot
-              ? el.shadowRoot.querySelector('#button')
-              : null;
-          if (!chipBtn || !chipBtn.hasAttribute('has-label')) {
-            return false;
-          }
-          const textSpan = chipBtn.querySelector('#text');
-          if (!textSpan) {
-            return false;
-          }
-          return textSpan.getBoundingClientRect().width > 0;
-        })");
+  if (auto* pav = GetPageActionView()) {
+    return pav->GetVisible() && pav->IsChipVisible() &&
+           pav->GetLabelForTesting()->width() != 0;
   }
-  auto* pav = GetPageActionView();
-  if (!pav || !pav->GetVisible()) {
-    return false;
-  }
-  return pav->IsChipVisible() && pav->GetLabelForTesting()->width() != 0;
+  return EvaluateWebUI(
+      R"((el) => {
+        if (el.hidden || window.getComputedStyle(el).display === 'none') {
+          return false;
+        }
+        const chipBtn = el.shadowRoot
+            ? el.shadowRoot.querySelector('#button')
+            : null;
+        if (!chipBtn || !chipBtn.hasAttribute('has-label')) {
+          return false;
+        }
+        const textSpan = chipBtn.querySelector('#text');
+        if (!textSpan) {
+          return false;
+        }
+        return textSpan.getBoundingClientRect().width > 0;
+      })");
 }
 
 bool PageActionTestAccessor::IsAtMinimumSize() const {
-  if (features::IsWebUILocationBarEnabled()) {
-    return EvaluateWebUI(
-        R"((el) => {
-          const chipBtn = el.shadowRoot
-              ? el.shadowRoot.querySelector('#button')
-              : null;
-          if (!chipBtn) return true;
-          const btn = chipBtn.shadowRoot
-              ? chipBtn.shadowRoot.querySelector('#button')
-              : chipBtn;
-          const rect = btn.getBoundingClientRect();
-          return rect.width <= rect.height;
-        })");
+  if (auto* pav = GetPageActionView()) {
+    return pav->size() == pav->GetMinimumSize();
   }
-  auto* pav = GetPageActionView();
-  if (!pav) {
-    return true;
-  }
-  return pav->size() == pav->GetMinimumSize();
+  return EvaluateWebUI(
+      R"((el) => {
+        const chipBtn = el.shadowRoot
+            ? el.shadowRoot.querySelector('#button')
+            : null;
+        if (!chipBtn) return true;
+        const btn = chipBtn.shadowRoot
+            ? chipBtn.shadowRoot.querySelector('#button')
+            : chipBtn;
+        const rect = btn.getBoundingClientRect();
+        return rect.width <= rect.height;
+      })");
 }
 
 bool PageActionTestAccessor::IsIconCentered() const {
-  if (features::IsWebUILocationBarEnabled()) {
-    return EvaluateWebUI(
-        R"((el) => {
-          const chipBtn = el.shadowRoot
-              ? el.shadowRoot.querySelector('#button')
-              : null;
-          if (!chipBtn) return true;
-          const btn = chipBtn.shadowRoot
-              ? chipBtn.shadowRoot.querySelector('#button')
-              : chipBtn;
-          const icon = chipBtn.querySelector('#icon');
-          if (!icon) return true;
-          const btnRect = btn.getBoundingClientRect();
-          const iconRect = icon.getBoundingClientRect();
-          const leftGap = iconRect.left - btnRect.left;
-          const rightGap = btnRect.right - iconRect.right;
-          return Math.abs(leftGap - rightGap) <= 1;
-        })");
+  if (auto* pav = GetPageActionView()) {
+    const auto* const image_container = pav->GetImageContainerView();
+    return image_container->x() ==
+           pav->width() - image_container->bounds().right();
   }
-  auto* pav = GetPageActionView();
-  if (!pav) {
-    return true;
-  }
-  const auto* const image_container = pav->GetImageContainerView();
-  return image_container->x() ==
-         pav->width() - image_container->bounds().right();
+  return EvaluateWebUI(
+      R"((el) => {
+        const chipBtn = el.shadowRoot
+            ? el.shadowRoot.querySelector('#button')
+            : null;
+        if (!chipBtn) return true;
+        const btn = chipBtn.shadowRoot
+            ? chipBtn.shadowRoot.querySelector('#button')
+            : chipBtn;
+        const icon = chipBtn.querySelector('#icon');
+        if (!icon) return true;
+        const btnRect = btn.getBoundingClientRect();
+        const iconRect = icon.getBoundingClientRect();
+        const leftGap = iconRect.left - btnRect.left;
+        const rightGap = btnRect.right - iconRect.right;
+        return Math.abs(leftGap - rightGap) <= 1;
+      })");
 }
 
 bool PageActionTestAccessor::IsAnimating() const {
-  if (features::IsWebUILocationBarEnabled()) {
-    return EvaluateWebUI(
-        R"((el) => {
-          const btn = el.shadowRoot
-              ? el.shadowRoot.querySelector('button, [role="button"]')
-              : null;
-          const anims = [
-            ...el.getAnimations(),
-            ...(btn ? btn.getAnimations() : [])
-          ];
-          return anims.some(a => a.playState === 'running');
-        })");
+  if (auto* pav = GetPageActionView()) {
+    return pav->is_animating_label();
   }
-  auto* pav = GetPageActionView();
-  if (!pav) {
-    return false;
-  }
-  return pav->is_animating_label();
+  return EvaluateWebUI(
+      R"((el) => {
+        const getAllAnims = (root) => {
+          const anims = [];
+          const traverse = (node) => {
+            if (!node) return;
+            if (node.shadowRoot) traverse(node.shadowRoot);
+            if (node.getAnimations) anims.push(...node.getAnimations());
+            for (const child of (node.children || [])) {
+              traverse(child);
+            }
+          };
+          traverse(root);
+          return anims;
+        };
+        return getAllAnims(el).some(a => a.playState === 'running');
+      })");
 }
 
 bool PageActionTestAccessor::HasIconHighlight() const {
@@ -407,52 +396,36 @@ bool PageActionTestAccessor::HasIconHighlight() const {
            views::InkDropState::ACTIVATED;
   }
 
-  const char kScript[] = R"(
-    (el) => {
-      return el.hasAttribute('is-menu-open');
-    }
-  )";
-
-  return EvaluateWebUI(kScript);
+  return EvaluateWebUI(
+      R"((el) => {
+        const chipBtn = el.shadowRoot
+            ? el.shadowRoot.querySelector('#button')
+            : null;
+        return !!chipBtn && chipBtn.hasAttribute('is-menu-open');
+      })");
 }
 
 std::u16string PageActionTestAccessor::GetText() const {
   if (!ShouldShowSuggestionChip()) {
     return std::u16string();
   }
-  if (features::IsWebUILocationBarEnabled()) {
-    if (const auto* model = GetModel()) {
-      return model->GetText();
-    }
-    if (auto* tracked_el = GetTrackedElement()) {
-      if (content::WebContents* contents = GetWebContents()) {
-        const std::string script = base::StringPrintf(
-            R"((() => {
-              const manager = window._trackedElementManager;
-              if (!manager) return '';
-              const tracked = manager.getElementWithId({
-                nativeIdentifier: "%s",
-                secondaryIdentifier: "%s"
-              });
-              if (!tracked || !tracked.element) return '';
-              const el = tracked.element;
-              const textSpan = el.shadowRoot
-                  ? el.shadowRoot.querySelector('#text')
-                  : null;
-              return (textSpan ? (textSpan.textContent || '') : '').trim();
-            })())",
-            tracked_el->identifier().GetName().c_str(),
-            tracked_el->GetSecondaryIdentifier().c_str());
-        content::EvalJsResult result = content::EvalJs(contents, script);
-        if (result.is_string()) {
-          return base::UTF8ToUTF16(result.ExtractString());
-        }
-      }
-    }
-    return std::u16string();
+  if (auto* pav = GetPageActionView()) {
+    return std::u16string(pav->GetText());
   }
-  auto* pav = GetPageActionView();
-  return pav ? std::u16string(pav->GetText()) : std::u16string();
+  if (const auto* model = GetModel()) {
+    return model->GetText();
+  }
+  const auto text = EvaluateWebUIString(
+      R"((el) => {
+        const textSpan = el.shadowRoot
+            ? el.shadowRoot.querySelector('#text')
+            : null;
+        return (textSpan ? (textSpan.textContent || '') : '').trim();
+      })");
+  if (text.has_value()) {
+    return base::UTF8ToUTF16(*text);
+  }
+  return std::u16string();
 }
 
 std::u16string PageActionTestAccessor::GetTooltipText() const {
@@ -475,192 +448,186 @@ std::u16string PageActionTestAccessor::GetAccessibleName() const {
   return std::u16string();
 }
 
-ui::ImageModel PageActionTestAccessor::GetImage() const {
-  if (features::IsWebUILocationBarEnabled()) {
-    if (const auto* model = GetModel()) {
-      return model->GetImage();
-    }
-    return ui::ImageModel();
+SkColor PageActionTestAccessor::GetBackgroundColor() const {
+  if (auto* pav = GetPageActionView()) {
+    return pav->GetBackgroundColorForTesting();
   }
-  auto* pav = GetPageActionView();
-  return pav ? pav->GetImageModel(views::Button::STATE_NORMAL)
-                   .value_or(ui::ImageModel())
-             : ui::ImageModel();
+  const std::optional<std::string> color_str = EvaluateWebUIString(
+      R"((el) => {
+        const chipBtn = el.shadowRoot
+            ? el.shadowRoot.querySelector('#button')
+            : null;
+        if (!chipBtn) return '';
+        const btn = chipBtn.shadowRoot
+            ? (chipBtn.shadowRoot.querySelector('#button') || chipBtn)
+            : chipBtn;
+        return window.getComputedStyle(btn).backgroundColor;
+      })");
+  if (color_str.has_value()) {
+    SkColor color;
+    if (content::ParseCssColorString(*color_str, &color)) {
+      return color;
+    }
+  }
+  return SK_ColorTRANSPARENT;
+}
+
+SkColor PageActionTestAccessor::GetForegroundColor() const {
+  if (auto* pav = GetPageActionView()) {
+    return pav->GetForegroundColorForTesting();
+  }
+  const std::optional<std::string> color_str = EvaluateWebUIString(
+      R"((el) => {
+        const chipBtn = el.shadowRoot
+            ? el.shadowRoot.querySelector('#button')
+            : null;
+        if (!chipBtn) return '';
+        const btn = chipBtn.shadowRoot
+            ? (chipBtn.shadowRoot.querySelector('#button') || chipBtn)
+            : chipBtn;
+        return window.getComputedStyle(btn).color;
+      })");
+  if (color_str.has_value()) {
+    SkColor color;
+    if (content::ParseCssColorString(*color_str, &color)) {
+      return color;
+    }
+  }
+  return SK_ColorTRANSPARENT;
+}
+
+ui::ImageModel PageActionTestAccessor::GetImage() const {
+  if (auto* pav = GetPageActionView()) {
+    return pav->GetImageModel(views::Button::STATE_NORMAL)
+        .value_or(ui::ImageModel());
+  }
+  if (const auto* model = GetModel()) {
+    return model->GetImage();
+  }
+  return ui::ImageModel();
 }
 
 ui::TrackedElement* PageActionTestAccessor::GetElement() const {
-  if (features::IsWebUILocationBarEnabled()) {
-    return GetTrackedElement();
-  }
   if (auto* pav = GetPageActionView()) {
     return views::ElementTrackerViews::GetInstance()->GetElementForView(
         pav, /*assign_temporary_id=*/true);
   }
-  return nullptr;
+  return GetTrackedElement();
 }
 
-page_actions::PageActionView* PageActionTestAccessor::view() const {
-  return GetPageActionView();
+void PageActionTestAccessor::RequestFocus() {
+  if (auto* pav = GetPageActionView()) {
+    pav->RequestFocus();
+    return;
+  }
+  EvaluateWebUI(
+      R"((el) => {
+        const btn = el.shadowRoot
+            ? (el.shadowRoot.querySelector('#button') || el)
+            : el;
+        btn.focus();
+        return true;
+      })");
 }
 
 std::optional<size_t> PageActionTestAccessor::GetIndex() const {
-  if (features::IsWebUILocationBarEnabled()) {
-    if (auto* const control = GetWebUIPageActionControl()) {
-      auto states = control->GetPageActionStates();
-      for (size_t i = 0; i < states.size(); ++i) {
-        if (webui_toolbar::MojomPageActionIdToActionId(
-                states[i]->page_action_id) == action_id_) {
-          return i;
-        }
-      }
-    }
-    return std::nullopt;
-  }
   if (auto* pav = GetPageActionView()) {
     if (auto* parent = pav->parent()) {
       return parent->GetIndexOf(pav);
+    }
+    return std::nullopt;
+  }
+  if (auto* const control = GetWebUIPageActionControl()) {
+    auto states = control->GetPageActionStates();
+    for (size_t i = 0; i < states.size(); ++i) {
+      if (webui_toolbar::MojomPageActionIdToActionId(
+              states[i]->page_action_id) == action_id_) {
+        return i;
+      }
     }
   }
   return std::nullopt;
 }
 
-void PageActionTestAccessor::FinishAnimation() const {
-  if (features::IsWebUILocationBarEnabled()) {
-    if (content::WebContents* contents = GetWebContents()) {
-      const int action_id_int = static_cast<int>(
-          webui_toolbar::ActionIdToMojomPageActionId(action_id_));
-      const auto* model = GetModel();
-      const bool expected_chip = model && model->ShouldShowSuggestionChip();
-      const std::string script = base::StringPrintf(
-          R"((async () => {
-            %s
-            // Wait for the page action state to catch up to the C++ model and
-            // complete its Lit render lifecycle before fast-forwarding
-            // animations.
-            for (let i = 0; i < 50; ++i) {
-              const el = findDeep(document.body,
-                                  e => e.state?.pageActionId === %d);
-              if (el) {
-                if (el.updateComplete) {
-                  await el.updateComplete;
-                }
-                const chipBtn =
-                    el.shadowRoot?.querySelector('toolbar-chip-button');
-                if (chipBtn && chipBtn.updateComplete) {
-                  await chipBtn.updateComplete;
-                }
-                if (Boolean(el.state?.shouldShowChip) === %s) {
-                  // Await a frame so that layout/style resolution occurs and
-                  // instantiates any CSS transitions before querying
-                  // animations.
-                  await new Promise(resolve => requestAnimationFrame(resolve));
-                  break;
-                }
-              }
-              await new Promise(resolve => requestAnimationFrame(resolve));
+double PageActionTestAccessor::GetSlideAnimationValue() const {
+  if (auto* pav = GetPageActionView()) {
+    return pav->GetSlideAnimationForTesting().GetCurrentValue();
+  }
+  const std::optional<double> progress = EvaluateWebUIDouble(
+      R"((el) => {
+        const getAllAnims = (root) => {
+          const anims = [];
+          const traverse = (node) => {
+            if (!node) return;
+            if (node.shadowRoot) traverse(node.shadowRoot);
+            if (node.getAnimations) anims.push(...node.getAnimations());
+            for (const child of (node.children || [])) {
+              traverse(child);
             }
+          };
+          traverse(root);
+          return anims;
+        };
+        const anims = getAllAnims(el);
+        const running = anims.find(a => a.playState === 'running');
+        // For slide-and-crossfade chips, the native slide animation tracks
+        // the leading/trailing icon crossfade (see
+        // PageActionView::HandleSlideAndCrossfadeTransition()), so the
+        // expanded state is `showTrailingIcon` rather than `shouldShowChip`.
+        const isSlideAndCrossfade = el.hasAttribute('slide-and-crossfade');
+        const isExpandedTarget = isSlideAndCrossfade
+            ? Boolean(el.state?.showTrailingIcon)
+            : Boolean(el.state?.shouldShowChip);
+        if (running) {
+          const p = running.effect?.getComputedTiming()?.progress;
+          if (p !== null && p !== undefined) {
+            return isExpandedTarget ? p : (1.0 - p);
+          }
+        }
+        return isExpandedTarget ? 1.0 : 0.0;
+      })");
+  return progress.value_or(0.0);
+}
 
-            const anims = document.getAnimations({subtree: true});
-            for (const anim of anims) {
-              try {
-                anim.finish();
-              } catch (e) {
-                try {
-                  anim.currentTime = anim.effect?.getTiming()?.duration || 0;
-                } catch (e2) {}
-              }
-            }
-            return true;
-          })())",
-          kFindDeepJS, action_id_int, expected_chip ? "true" : "false");
-      std::ignore = content::EvalJs(contents, script);
-    }
-  } else if (auto* pav = GetPageActionView()) {
+void PageActionTestAccessor::FinishAnimation() const {
+  if (auto* pav = GetPageActionView()) {
     auto animation = std::make_unique<gfx::AnimationTestApi>(
         &pav->GetSlideAnimationForTesting());
     auto now = base::TimeTicks::Now();
     animation->SetStartTime(now);
     animation->Step(now + base::Minutes(1));
+    return;
+  }
+  if (content::WebContents* contents = GetWebContents()) {
+    const int action_id_int = static_cast<int>(
+        webui_toolbar::ActionIdToMojomPageActionId(action_id_));
+    const auto* model = GetModel();
+    const bool expected_chip = model && model->ShouldShowSuggestionChip();
+    const std::string wait_script = base::StringPrintf(
+        R"(for (let i = 0; i < %d; ++i) {
+             const el = findDeep(document.body,
+                                 e => e.state?.pageActionId === %d);
+             if (el) {
+               if (el.updateComplete) {
+                 await el.updateComplete;
+               }
+               const chipBtn =
+                   el.shadowRoot?.querySelector('toolbar-chip-button');
+               if (chipBtn && chipBtn.updateComplete) {
+                 await chipBtn.updateComplete;
+               }
+               if (Boolean(el.state?.shouldShowChip) === %s) {
+                 break;
+               }
+             }
+             await new Promise(resolve => requestAnimationFrame(resolve));
+           })",
+        kMaxWebUIWaitFrames, action_id_int, expected_chip ? "true" : "false");
+    EXPECT_TRUE(FinishWebUIAnimations(contents, wait_script));
   }
 }
 
 void PageActionTestAccessor::Click(page_actions::PageActionTrigger trigger) {
-  if (features::IsWebUILocationBarEnabled()) {
-    if (auto* tracked_el = GetTrackedElement()) {
-      if (content::WebContents* contents = GetWebContents()) {
-        const int click_detail =
-            (trigger == page_actions::PageActionTrigger::kMouse) ? 1 : 0;
-        const std::string script = base::StringPrintf(
-            R"((() => {
-              const manager = window._trackedElementManager;
-              if (!manager) return false;
-              const tracked = manager.getElementWithId({
-                nativeIdentifier: "%s",
-                secondaryIdentifier: "%s"
-              });
-              if (!tracked || !tracked.element) return false;
-              const el = tracked.element;
-              const btn = el.shadowRoot
-                  ? (el.shadowRoot.querySelector(
-                         '#button, toolbar-chip-button, toolbar-button, button, [role="button"]') || el)
-                  : el;
-              const detail = %d;
-              if (detail > 0) {
-                const bounds = btn.getBoundingClientRect();
-                btn.dispatchEvent(new PointerEvent('pointerdown', {
-                  bubbles: true,
-                  composed: true,
-                  button: 0,
-                  pointerId: 1,
-                  isPrimary: true,
-                  buttons: 1,
-                  clientX: bounds.left + bounds.width / 2,
-                  clientY: bounds.top + bounds.height / 2,
-                }));
-                btn.dispatchEvent(new PointerEvent('pointerup', {
-                  bubbles: true,
-                  composed: true,
-                  button: 0,
-                  pointerId: 1,
-                  isPrimary: true,
-                  buttons: 0,
-                  clientX: bounds.left + bounds.width / 2,
-                  clientY: bounds.top + bounds.height / 2,
-                }));
-                btn.dispatchEvent(new MouseEvent('click', {
-                  bubbles: true,
-                  composed: true,
-                  button: 0,
-                  detail: 1,
-                  clientX: bounds.left + bounds.width / 2,
-                  clientY: bounds.top + bounds.height / 2,
-                }));
-              } else {
-                btn.dispatchEvent(new MouseEvent('click', {
-                  bubbles: true,
-                  composed: true,
-                  button: 0,
-                  detail: 0,
-                }));
-              }
-              return true;
-            })())",
-            tracked_el->identifier().GetName().c_str(),
-            tracked_el->GetSecondaryIdentifier().c_str(), click_detail);
-        content::EvalJsResult result = content::EvalJs(contents, script);
-        if (result.is_bool() && result.ExtractBool()) {
-          return;
-        }
-      }
-    }
-    if (auto* const control = GetWebUIPageActionControl()) {
-      control->OnPageActionClick(
-          webui_toolbar::ActionIdToMojomPageActionId(action_id_), trigger,
-          base::DoNothing());
-      return;
-    }
-    return;
-  }
   if (auto* pav = GetPageActionView()) {
     if (trigger == page_actions::PageActionTrigger::kKeyboard) {
       ui::test::TestEvent event(ui::EventType::kKeyPressed);
@@ -671,13 +638,89 @@ void PageActionTestAccessor::Click(page_actions::PageActionTrigger trigger) {
                            ui::EF_LEFT_MOUSE_BUTTON, ui::EF_LEFT_MOUSE_BUTTON);
       views::test::ButtonTestApi(pav).NotifyClick(event);
     }
+    return;
+  }
+  if (auto* tracked_el = GetTrackedElement()) {
+    if (content::WebContents* contents = GetWebContents()) {
+      const int click_detail =
+          (trigger == page_actions::PageActionTrigger::kMouse) ? 1 : 0;
+      const std::string script = base::StringPrintf(
+          R"((() => {
+            const manager = window._trackedElementManager;
+            if (!manager) return false;
+            const tracked = manager.getElementWithId({
+              nativeIdentifier: "%s",
+              secondaryIdentifier: "%s"
+            });
+            if (!tracked || !tracked.element) return false;
+            const el = tracked.element;
+            const btn = el.shadowRoot
+                ? (el.shadowRoot.querySelector('#button') || el)
+                : el;
+            const detail = %d;
+            if (detail > 0) {
+              const bounds = btn.getBoundingClientRect();
+              btn.dispatchEvent(new PointerEvent('pointerdown', {
+                bubbles: true,
+                composed: true,
+                button: 0,
+                pointerId: 1,
+                isPrimary: true,
+                buttons: 1,
+                clientX: bounds.left + bounds.width / 2,
+                clientY: bounds.top + bounds.height / 2,
+              }));
+              btn.dispatchEvent(new PointerEvent('pointerup', {
+                bubbles: true,
+                composed: true,
+                button: 0,
+                pointerId: 1,
+                isPrimary: true,
+                buttons: 0,
+                clientX: bounds.left + bounds.width / 2,
+                clientY: bounds.top + bounds.height / 2,
+              }));
+              btn.dispatchEvent(new MouseEvent('click', {
+                bubbles: true,
+                composed: true,
+                button: 0,
+                detail: 1,
+                clientX: bounds.left + bounds.width / 2,
+                clientY: bounds.top + bounds.height / 2,
+              }));
+            } else {
+              btn.dispatchEvent(new MouseEvent('click', {
+                bubbles: true,
+                composed: true,
+                button: 0,
+                detail: 0,
+              }));
+            }
+            return true;
+          })())",
+          tracked_el->identifier().GetName().c_str(),
+          tracked_el->GetSecondaryIdentifier().c_str(), click_detail);
+      content::EvalJsResult result = content::EvalJs(contents, script);
+      if (result.is_bool() && result.ExtractBool()) {
+        return;
+      }
+    }
+  }
+  if (auto* const control = GetWebUIPageActionControl()) {
+    control->OnPageActionClick(
+        webui_toolbar::ActionIdToMojomPageActionId(action_id_), trigger,
+        base::DoNothing());
+    return;
   }
 }
 
 void PageActionTestAccessor::SetSuppressionThreshold(
     base::TimeDelta threshold) {
-  if (auto* const control = GetWebUIPageActionControl()) {
-    control->SetSuppressionThresholdForTesting(threshold);
+  // Click suppression for page actions is only implemented by the WebUI
+  // toolbar (HighlightTracker in toolbar_button.ts); there is nothing to
+  // configure for the Views implementation.
+  if (GetWebUIPageActionControl()) {
+    EXPECT_TRUE(SetWebUIToolbarClickSuppressionThreshold(browser_, threshold));
   }
 }
 

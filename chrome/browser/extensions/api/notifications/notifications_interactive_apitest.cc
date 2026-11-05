@@ -37,7 +37,7 @@
 #include "extensions/common/mojom/view_type.mojom.h"
 #include "extensions/test/extension_test_message_listener.h"
 #include "extensions/test/result_catcher.h"
-#include "ui/base/window_open_disposition.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
 #include "ui/message_center/public/cpp/notification.h"
 #include "ui/message_center/public/cpp/notifier_id.h"
 
@@ -151,7 +151,7 @@ class NotificationsApiTest : public extensions::ExtensionApiTest {
   void SetUpOnMainThread() override {
     extensions::ExtensionApiTest::SetUpOnMainThread();
 
-    DCHECK(profile());
+    CHECK(profile(), base::NotFatalUntil::M161);
     display_service_tester_ =
         std::make_unique<NotificationDisplayServiceTester>(profile());
   }
@@ -167,7 +167,7 @@ class NotificationsApiTest : public extensions::ExtensionApiTest {
   // made to continue to be able to access the underlying information.
   message_center::Notification* GetNotificationForExtension(
       const extensions::Extension* extension) {
-    DCHECK(extension);
+    CHECK(extension, base::NotFatalUntil::M161);
 
     std::set<std::string> notifications =
         GetDisplayHelper()->GetNotificationIdsForExtension(extension->url());
@@ -185,9 +185,10 @@ class NotificationsApiTest : public extensions::ExtensionApiTest {
 #if BUILDFLAG(ENABLE_PLATFORM_APPS)
   void LaunchPlatformApp(const Extension* extension) {
     apps::AppServiceProxyFactory::GetForProfile(profile())->LaunchAppWithParams(
-        apps::AppLaunchParams(
-            extension->id(), apps::LaunchContainer::kLaunchContainerNone,
-            WindowOpenDisposition::NEW_WINDOW, apps::LaunchSource::kFromTest));
+        apps::AppLaunchParams(extension->id(),
+                              apps::LaunchContainer::kLaunchContainerNone,
+                              ui::mojom::WindowOpenDisposition::kNewWindow,
+                              apps::LaunchSource::kFromTest));
   }
 #endif  // BUILDFLAG(ENABLE_PLATFORM_APPS)
 

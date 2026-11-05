@@ -14,9 +14,12 @@ import static org.mockito.Mockito.when;
 import static org.chromium.chrome.browser.hub.HubColorMixer.COLOR_MIXER;
 import static org.chromium.chrome.browser.hub.HubPaneHostProperties.PANE_ROOT_VIEW;
 import static org.chromium.chrome.browser.hub.HubPaneHostProperties.SLIDE_ANIMATE_LEFT_TO_RIGHT;
+import static org.chromium.chrome.browser.hub.HubPaneHostProperties.SLIDE_FROM_PANE_ID;
+import static org.chromium.chrome.browser.hub.HubPaneHostProperties.SLIDE_TO_PANE_ID;
 import static org.chromium.chrome.browser.hub.HubPaneHostProperties.SNACKBAR_CONTAINER_CALLBACK;
 
 import android.view.ViewGroup;
+import android.widget.FrameLayout;
 
 import org.junit.Before;
 import org.junit.Rule;
@@ -26,6 +29,7 @@ import org.mockito.Mock;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
 
+import org.chromium.base.ContextUtils;
 import org.chromium.base.supplier.ObservableSuppliers;
 import org.chromium.base.supplier.SettableMonotonicObservableSupplier;
 import org.chromium.base.test.BaseRobolectricTestRunner;
@@ -43,9 +47,11 @@ public class HubPaneHostMediatorUnitTest {
 
     private @Mock Pane mPane;
     private @Mock Pane mIncognitoPane;
-    private @Mock ViewGroup mRootView;
-    private @Mock ViewGroup mSnackbarContainer;
     private @Mock HubColorMixer mColorMixer;
+
+    private final ViewGroup mRootView = new FrameLayout(ContextUtils.getApplicationContext());
+    private final ViewGroup mSnackbarContainer =
+            new FrameLayout(ContextUtils.getApplicationContext());
 
     private final SettableMonotonicObservableSupplier<Pane> mPaneSupplier =
             ObservableSuppliers.createMonotonic();
@@ -157,6 +163,22 @@ public class HubPaneHostMediatorUnitTest {
         mPaneSupplier.set(mPane);
         // PaneId.TAB_SWITCHER <- PaneId.INCOGNITO_TAB_SWITCHER
         assertTrue(mModel.get(SLIDE_ANIMATE_LEFT_TO_RIGHT));
+    }
+
+    @Test
+    public void testSlidePaneIds() {
+        new HubPaneHostMediator(
+                mModel,
+                mPaneSupplier,
+                mPaneOrderController,
+                /* defaultPaneId= */ PaneId.TAB_SWITCHER);
+        RobolectricUtil.runAllBackgroundAndUi();
+        mPaneSupplier.set(mPane);
+
+        mPaneSupplier.set(mIncognitoPane);
+
+        assertEquals(PaneId.TAB_SWITCHER, mModel.get(SLIDE_FROM_PANE_ID));
+        assertEquals(PaneId.INCOGNITO_TAB_SWITCHER, mModel.get(SLIDE_TO_PANE_ID));
     }
 
     @Test

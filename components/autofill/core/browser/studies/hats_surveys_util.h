@@ -5,6 +5,7 @@
 #ifndef COMPONENTS_AUTOFILL_CORE_BROWSER_STUDIES_HATS_SURVEYS_UTIL_H_
 #define COMPONENTS_AUTOFILL_CORE_BROWSER_STUDIES_HATS_SURVEYS_UTIL_H_
 
+#include <cstddef>
 #include <map>
 #include <optional>
 #include <string>
@@ -15,6 +16,8 @@
 #include "components/autofill/core/browser/data_model/autofill_ai/entity_instance.h"
 #include "components/autofill/core/browser/data_model/autofill_ai/entity_type.h"
 #include "components/autofill/core/browser/field_types.h"
+#include "components/autofill/core/browser/suggestions/suggestion_hiding_reason.h"
+#include "components/autofill/core/browser/suggestions/suggestion_type.h"
 #include "components/autofill/core/common/unique_ids.h"
 
 namespace autofill {
@@ -36,6 +39,28 @@ using HatsSurveyStringData = std::map<std::string, std::string>;
 // `submitted_form`.
 void MaybeTriggerFormSubmissionHatsSurveys(AutofillClient& client,
                                            const FormStructure& submitted_form);
+
+// Returns `count` as a string if it is below `limit`, otherwise `limit` as a
+// string with an appended "+". This prevents user identification using specific
+// rare values. Values below `limit` are expected to occur frequently enough to
+// naturally avoid the issue.
+std::string FormatCountForHats(int count, int limit);
+
+// Collects client context product-specific data (PSD) for personalization and
+// trust surveys.
+HatsSurveyStringData CollectPersonalizationAndTrustClientContextData(
+    const AutofillClient& client);
+
+// Translates `reason` to a user-facing dismissal description for HaTS.
+std::string_view SuggestionHidingReasonToDismissalTypeForHats(
+    SuggestionHidingReason reason);
+
+// If the conditions of a HaTS survey for dismissing OTP offers are satisfied,
+// try to trigger the survey.
+void MaybeTriggerOneTimePasswordDismissalHatsSurvey(
+    AutofillClient& client,
+    SuggestionHidingReason reason,
+    base::span<const SuggestionType> shown_types);
 
 // Keeps track of the most recent user interactions in the context of
 // `AutofillAiManager`. This information is used for collecting the
@@ -73,11 +98,6 @@ class RecentUserAutofillAiInteractionsForHats final {
   base::LRUCache<FormGlobalId, InteractionDetails>
       user_suggestion_interactions_per_form_{kSuggestionInteractionMemorySize};
 };
-
-void MaybeTriggerAutofillAiSubmissionHatsSurveys(
-    AutofillClient& client,
-    const FormStructure& submitted_form,
-    const RecentUserAutofillAiInteractionsForHats& suggestion_interactions);
 
 }  // namespace autofill
 

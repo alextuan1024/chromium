@@ -519,10 +519,10 @@
 <translation id="5045550434625856497">Ugyldig adgangskode</translation>
 <translation id="5059127710849015030">Nepalesisk translitteration</translation>
 <translation id="5068919226082848014">Pizza</translation>
+<translation id="5075336522277785691"><ph name="EXTENSION_NAME" /> har angivet regler for tilsidesættelse af proxy</translation>
 <translation id="5081517858322016911"><ph name="TOTAL_FILE_SIZE" /> filer slettes</translation>
 <translation id="508423945471810158">Flytter <ph name="NUMBER_OF_ITEMS" /> elementer til <ph name="FOLDER_NAME" /></translation>
 <translation id="509429900233858213">Der opstod en fejl.</translation>
-<translation id="5102922915594634436">Administrer synkroniserede mapper</translation>
 <translation id="5109254780565519649">Der opstod en fejl. Nogle elementer er muligvis ikke blevet gendannet.</translation>
 <translation id="5110329002213341433">Engelsk (Canada)</translation>
 <translation id="5119780910075847424">Synkronisering er sat på pause</translation>
@@ -1024,7 +1024,7 @@
 <translation id="8688591111840995413">Forkert adgangskode</translation>
 <translation id="8698464937041809063">Google-tegning</translation>
 <translation id="8698877009525468705">Denne fil er fortrolig og underlagt begrænsninger i henhold til administratorpolitikken.</translation>
-<translation id="8712637175834984815">Forstået</translation>
+<translation id="8712637175834984815">OK</translation>
 <translation id="8713112442029511308">Maltesisk</translation>
 <translation id="8714406895390098252">Cykel</translation>
 <translation id="8719721339511222681"><ph name="ENTRY_NAME" /> er valgt.</translation>

@@ -6,13 +6,15 @@
 
 #include <stddef.h>
 #include <stdint.h>
-#include <string.h>
 
+#include <array>
+#include <string>
 #include <utility>
 
 #include "base/base_paths.h"
 #include "base/command_line.h"
 #include "base/compiler_specific.h"
+#include "base/containers/span.h"
 #include "base/files/file.h"
 #include "base/functional/bind.h"
 #include "base/memory/ptr_util.h"
@@ -26,7 +28,6 @@
 #include "base/synchronization/waitable_event.h"
 #include "base/test/test_timeouts.h"
 #include "build/build_config.h"
-#include "mojo/core/embedder/embedder.h"
 #include "mojo/core/ipcz_driver/shared_buffer.h"
 #include "mojo/core/test/mojo_test_base.h"
 #include "mojo/public/c/system/core.h"
@@ -56,6 +57,7 @@ MojoResult ExtractRegionFromSharedBuffer(MojoHandle handle, T* region) {
 
 // The multiprocess tests that use these don't compile on iOS.
 #if !BUILDFLAG(IS_IOS)
+constexpr size_t kSharedBufferSize = 123;
 const char kHelloWorld[] = "hello world";
 const char kByeWorld[] = "bye world";
 #endif
@@ -91,11 +93,11 @@ TEST_F(EmbedderTest, SendMessagePipeWithWriteQueue) {
   }
 
   // Now send client2.
-  WriteMessageWithHandles(server_mp, "hey", &client_mp2, 1);
+  WriteMessageWithHandle(server_mp, "hey", client_mp2);
   client_mp2 = MOJO_HANDLE_INVALID;
 
   // Read client2 just so we can close it later.
-  EXPECT_EQ("hey", ReadMessageWithHandles(client_mp, &client_mp2, 1));
+  EXPECT_EQ("hey", ReadMessageWithHandle(client_mp, &client_mp2));
   EXPECT_NE(MOJO_HANDLE_INVALID, client_mp2);
 
   // Now verify that all the messages that were written were sent correctly.
@@ -124,7 +126,7 @@ TEST_F(EmbedderTest, ChannelsHandlePassing) {
 
   // Write one message to |server_mp|, attaching |h1|.
   const std::string kWorld = "world!!!";
-  WriteMessageWithHandles(server_mp, kWorld, &h1, 1);
+  WriteMessageWithHandle(server_mp, kWorld, h1);
   h1 = MOJO_HANDLE_INVALID;
 
   // Write another message to |h0|.
@@ -132,7 +134,7 @@ TEST_F(EmbedderTest, ChannelsHandlePassing) {
   WriteMessage(h0, kFoo);
 
   // Wait for |client_mp| to become readable and read a message from it.
-  EXPECT_EQ(kWorld, ReadMessageWithHandles(client_mp, &h1, 1));
+  EXPECT_EQ(kWorld, ReadMessageWithHandle(client_mp, &h1));
   EXPECT_NE(h1, MOJO_HANDLE_INVALID);
 
   // Wait for |h1| to become readable and read a message from it.
@@ -187,12 +189,12 @@ TEST_F(EmbedderTest, MultiprocessChannels) {
     WriteMessage(mp0, "FOO");
 
     // 5. Write a message to |server_mp|, attaching |mp1|.
-    WriteMessageWithHandles(server_mp, "Bar", &mp1, 1);
+    WriteMessageWithHandle(server_mp, "Bar", mp1);
     mp1 = MOJO_HANDLE_INVALID;
 
     // 6. Read a message from |mp0|, which should have |mp2| attached.
     MojoHandle mp2 = MOJO_HANDLE_INVALID;
-    EXPECT_EQ("quux", ReadMessageWithHandles(mp0, &mp2, 1));
+    EXPECT_EQ("quux", ReadMessageWithHandle(mp0, &mp2));
 
     // 7. Read a message from |mp2|.
     EXPECT_EQ("baz", ReadMessage(mp2));
@@ -226,7 +228,7 @@ DEFINE_TEST_CLIENT_TEST_WITH_PIPE(MultiprocessChannelsClient,
 
   // 4. Read a message from |client_mp|, which should have |mp1| attached.
   MojoHandle mp1;
-  EXPECT_EQ("Bar", ReadMessageWithHandles(client_mp, &mp1, 1));
+  EXPECT_EQ("Bar", ReadMessageWithHandle(client_mp, &mp1));
 
   // 5. Create a new message pipe (endpoints |mp2| and |mp3|).
   MojoHandle mp2, mp3;
@@ -239,7 +241,7 @@ DEFINE_TEST_CLIENT_TEST_WITH_PIPE(MultiprocessChannelsClient,
   ASSERT_EQ(MOJO_RESULT_OK, MojoClose(mp3));
 
   // 8. Write a message to |mp1|, attaching |mp2|.
-  WriteMessageWithHandles(mp1, "quux", &mp2, 1);
+  WriteMessageWithHandle(mp1, "quux", mp2);
   mp2 = MOJO_HANDLE_INVALID;
 
   // 9. Read a message from |mp1|.
@@ -261,36 +263,43 @@ DEFINE_TEST_CLIENT_TEST_WITH_PIPE(MultiprocessChannelsClient,
 TEST_F(EmbedderTest, MultiprocessBaseSharedMemory) {
   RunTestClient("MultiprocessSharedMemoryClient", [&](MojoHandle server_mp) {
     // 1. Create a shared memory region and wrap it as a Mojo object.
-    auto shared_memory = base::UnsafeSharedMemoryRegion::Create(123);
+    auto shared_memory =
+        base::UnsafeSharedMemoryRegion::Create(kSharedBufferSize);
     ASSERT_TRUE(shared_memory.IsValid());
     MojoHandle sb1;
     ASSERT_EQ(MOJO_RESULT_OK,
               CreateSharedBufferFromRegion(shared_memory.Duplicate(), &sb1));
 
     // 2. Map |sb1| and write something into it.
-    char* buffer = nullptr;
-    ASSERT_EQ(MOJO_RESULT_OK, MojoMapBuffer(sb1, 0, 123, nullptr,
-                                            reinterpret_cast<void**>(&buffer)));
+    void* buffer = nullptr;
+    ASSERT_EQ(MOJO_RESULT_OK,
+              MojoMapBuffer(sb1, 0, kSharedBufferSize, nullptr, &buffer));
     ASSERT_TRUE(buffer);
-    UNSAFE_TODO(memcpy(buffer, kHelloWorld, sizeof(kHelloWorld)));
+    // SAFETY: MojoMapBuffer succeeded for kSharedBufferSize bytes. The mapping
+    // is not unmapped while buffer_span is in use.
+    auto buffer_span = UNSAFE_BUFFERS(
+        base::span(static_cast<uint8_t*>(buffer), kSharedBufferSize));
+    buffer_span.copy_prefix_from(base::as_byte_span(kHelloWorld));
 
     // 3. Duplicate |sb1| into |sb2| and pass to |server_mp|.
     MojoHandle sb2 = MOJO_HANDLE_INVALID;
     EXPECT_EQ(MOJO_RESULT_OK, MojoDuplicateBufferHandle(sb1, nullptr, &sb2));
     EXPECT_NE(MOJO_HANDLE_INVALID, sb2);
-    WriteMessageWithHandles(server_mp, "hello", &sb2, 1);
+    WriteMessageWithHandle(server_mp, "hello", sb2);
 
     // 4. Read a message from |server_mp|.
     EXPECT_EQ("hey", ReadMessage(server_mp));
 
     // 5. Expect that the contents of the shared buffer have changed.
-    EXPECT_EQ(kByeWorld, std::string(buffer));
+    EXPECT_EQ(base::as_byte_span(kByeWorld),
+              buffer_span.first<sizeof(kByeWorld)>());
 
     // 6. Map the original base::SharedMemory and expect it contains the
     // expected value.
     auto mapping = shared_memory.Map();
     ASSERT_TRUE(mapping.IsValid());
-    EXPECT_EQ(kByeWorld, std::string(static_cast<char*>(mapping.memory())));
+    EXPECT_EQ(base::as_byte_span(kByeWorld),
+              base::span(mapping).first<sizeof(kByeWorld)>());
 
     ASSERT_EQ(MOJO_RESULT_OK, MojoClose(sb1));
 
@@ -305,19 +314,24 @@ DEFINE_TEST_CLIENT_TEST_WITH_PIPE(MultiprocessSharedMemoryClient,
   // 1. Read the first message from |client_mp|, which should have |sb1| which
   // should be a shared buffer handle.
   MojoHandle sb1;
-  EXPECT_EQ("hello", ReadMessageWithHandles(client_mp, &sb1, 1));
+  EXPECT_EQ("hello", ReadMessageWithHandle(client_mp, &sb1));
 
   // 2. Map |sb1|.
-  char* buffer = nullptr;
-  ASSERT_EQ(MOJO_RESULT_OK, MojoMapBuffer(sb1, 0, 123, nullptr,
-                                          reinterpret_cast<void**>(&buffer)));
+  void* buffer = nullptr;
+  ASSERT_EQ(MOJO_RESULT_OK,
+            MojoMapBuffer(sb1, 0, kSharedBufferSize, nullptr, &buffer));
   ASSERT_TRUE(buffer);
+  // SAFETY: MojoMapBuffer succeeded for kSharedBufferSize bytes. The mapping
+  // is not unmapped while buffer_span is in use.
+  auto buffer_span = UNSAFE_BUFFERS(
+      base::span(static_cast<uint8_t*>(buffer), kSharedBufferSize));
 
   // 3. Ensure |buffer| contains the values we expect.
-  EXPECT_EQ(kHelloWorld, std::string(buffer));
+  EXPECT_EQ(base::as_byte_span(kHelloWorld),
+            buffer_span.first<sizeof(kHelloWorld)>());
 
   // 4. Write into |buffer| and send a message back.
-  UNSAFE_TODO(memcpy(buffer, kByeWorld, sizeof(kByeWorld)));
+  buffer_span.copy_prefix_from(base::as_byte_span(kByeWorld));
   WriteMessage(client_mp, "hey");
 
   // 5. Extract the shared memory handle and ensure we can map it and read the
@@ -326,8 +340,9 @@ DEFINE_TEST_CLIENT_TEST_WITH_PIPE(MultiprocessSharedMemoryClient,
   ASSERT_EQ(MOJO_RESULT_OK, ExtractRegionFromSharedBuffer(sb1, &shared_memory));
   auto mapping = shared_memory.Map();
   ASSERT_TRUE(mapping.IsValid());
-  EXPECT_NE(buffer, mapping.memory());
-  EXPECT_EQ(kByeWorld, std::string(static_cast<char*>(mapping.memory())));
+  EXPECT_NE(buffer, mapping.data());
+  EXPECT_EQ(base::as_byte_span(kByeWorld),
+            base::span(mapping).first<sizeof(kByeWorld)>());
 
   EXPECT_EQ("bye", ReadMessage(client_mp));
 
@@ -341,21 +356,21 @@ enum class HandleType {
   MACH,
 };
 
-const HandleType kTestHandleTypes[] = {
+constexpr auto kTestHandleTypes = std::to_array({
     HandleType::MACH,
     HandleType::POSIX,
     HandleType::POSIX,
     HandleType::MACH,
-};
+});
 
 // Test that we can mix file descriptors and mach port handles.
 TEST_F(EmbedderTest, MultiprocessMixMachAndFds) {
   const size_t kShmSize = 1234;
   RunTestClient("MultiprocessMixMachAndFdsClient", [&](MojoHandle server_mp) {
     // 1. Create fds or Mach objects and mojo handles from them.
-    MojoHandle platform_handles[std::size(kTestHandleTypes)];
-    for (size_t i = 0; i < std::size(kTestHandleTypes); i++) {
-      const auto type = UNSAFE_TODO(kTestHandleTypes[i]);
+    std::array<MojoHandle, kTestHandleTypes.size()> platform_handles = {};
+    for (size_t i = 0; i < kTestHandleTypes.size(); i++) {
+      const auto type = kTestHandleTypes[i];
       PlatformHandle scoped_handle;
       if (type == HandleType::POSIX) {
         // The easiest source of fds is opening /dev/null.
@@ -374,13 +389,12 @@ TEST_F(EmbedderTest, MultiprocessMixMachAndFds) {
         scoped_handle = PlatformHandle(std::move(shm_handle));
         ASSERT_TRUE(scoped_handle.is_valid_mach_port());
       }
-      UNSAFE_TODO(platform_handles[i]) =
+      platform_handles[i] =
           WrapPlatformHandle(std::move(scoped_handle)).release().value();
     }
 
     // 2. Send all the handles to the child.
-    WriteMessageWithHandles(server_mp, "hello", platform_handles,
-                            std::size(kTestHandleTypes));
+    WriteMessageWithHandles(server_mp, "hello", platform_handles);
 
     // 3. Read a message from |server_mp|.
     EXPECT_EQ("bye", ReadMessage(server_mp));
@@ -390,19 +404,17 @@ TEST_F(EmbedderTest, MultiprocessMixMachAndFds) {
 DEFINE_TEST_CLIENT_TEST_WITH_PIPE(MultiprocessMixMachAndFdsClient,
                                   EmbedderTest,
                                   client_mp) {
-  const int kNumHandles = std::size(kTestHandleTypes);
-  MojoHandle platform_handles[kNumHandles];
+  std::array<MojoHandle, kTestHandleTypes.size()> platform_handles = {};
 
   // 1. Read from |client_mp|, which should have a message containing
   // |kNumHandles| handles.
-  EXPECT_EQ("hello",
-            ReadMessageWithHandles(client_mp, platform_handles, kNumHandles));
+  EXPECT_EQ("hello", ReadMessageWithHandles(client_mp, platform_handles));
 
   // 2. Extract each handle, and verify the type.
-  for (int i = 0; i < kNumHandles; i++) {
-    const auto type = UNSAFE_TODO(kTestHandleTypes[i]);
-    PlatformHandle scoped_handle = UnwrapPlatformHandle(
-        ScopedHandle(Handle(UNSAFE_TODO(platform_handles[i]))));
+  for (size_t i = 0; i < platform_handles.size(); i++) {
+    const auto type = kTestHandleTypes[i];
+    PlatformHandle scoped_handle =
+        UnwrapPlatformHandle(ScopedHandle(Handle(platform_handles[i])));
     if (type == HandleType::POSIX) {
       EXPECT_TRUE(scoped_handle.is_valid_fd());
     } else {

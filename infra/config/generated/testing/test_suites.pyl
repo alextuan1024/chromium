@@ -39,6 +39,174 @@
       },
     },
 
+    'chrome_ai_wpt_tests_manifest_conversation_suite': {
+      'chrome_ai_wpt_tests_manifest_cpu_conversation': {
+        'test_common': {
+          'args': [
+            '--manifest-test-config=../../components/optimization_guide/internal/testing/configs/manifest_test_config_cpu_conversation.json',
+          ],
+          'merge': {
+            'script': '//third_party/blink/tools/merge_web_test_results.py',
+            'args': [
+              '--verbose',
+            ],
+          },
+        },
+        'test': 'chrome_ai_wpt_tests',
+        'results_handler': 'layout tests',
+        'mixins': [
+          'has_native_resultdb_integration',
+          'blink_tests_write_run_histories',
+        ],
+        'args': [
+          '--release',
+          '--timeout-multiplier=5',
+          '--child-processes=1',
+        ],
+        'mac_args': [
+          '--driver-name',
+          'Google Chrome',
+        ],
+        'swarming': {
+          'shards': 4,
+        },
+      },
+      'chrome_ai_wpt_tests_manifest_gpu_high_tier_conversation': {
+        'test_common': {
+          'args': [
+            '--manifest-test-config=../../components/optimization_guide/internal/testing/configs/manifest_test_config_gpu_high_tier_conversation.json',
+          ],
+          'merge': {
+            'script': '//third_party/blink/tools/merge_web_test_results.py',
+            'args': [
+              '--verbose',
+            ],
+          },
+        },
+        'test': 'chrome_ai_wpt_tests',
+        'results_handler': 'layout tests',
+        'mixins': [
+          'has_native_resultdb_integration',
+          'blink_tests_write_run_histories',
+        ],
+        'args': [
+          '--release',
+          '--timeout-multiplier=5',
+          '--child-processes=1',
+        ],
+        'mac_args': [
+          '--driver-name',
+          'Google Chrome',
+        ],
+        'win_args': [
+          '--exit-after-n-crashes-or-timeouts=2',
+          '--additional-driver-flag=--enable-features=OnDeviceModelGpuAudioInput:on_device_model_audio_input_vram_min/5000',
+        ],
+        'swarming': {
+          'shards': 4,
+        },
+      },
+      'chrome_ai_wpt_tests_manifest_gpu_low_tier_conversation': {
+        'test_common': {
+          'args': [
+            '--manifest-test-config=../../components/optimization_guide/internal/testing/configs/manifest_test_config_gpu_low_tier_conversation.json',
+          ],
+          'merge': {
+            'script': '//third_party/blink/tools/merge_web_test_results.py',
+            'args': [
+              '--verbose',
+            ],
+          },
+        },
+        'test': 'chrome_ai_wpt_tests',
+        'results_handler': 'layout tests',
+        'mixins': [
+          'has_native_resultdb_integration',
+          'blink_tests_write_run_histories',
+        ],
+        'args': [
+          '--release',
+          '--timeout-multiplier=5',
+          '--child-processes=1',
+        ],
+        'mac_args': [
+          '--driver-name',
+          'Google Chrome',
+        ],
+        'swarming': {
+          'shards': 4,
+        },
+      },
+    },
+
+    'chrome_ai_wpt_tests_manifest_cpu_conversation_suite': {
+      'chrome_ai_wpt_tests_manifest_cpu_conversation': {
+        'test_common': {
+          'args': [
+            '--manifest-test-config=../../components/optimization_guide/internal/testing/configs/manifest_test_config_cpu_conversation.json',
+          ],
+          'merge': {
+            'script': '//third_party/blink/tools/merge_web_test_results.py',
+            'args': [
+              '--verbose',
+            ],
+          },
+        },
+        'test': 'chrome_ai_wpt_tests',
+        'results_handler': 'layout tests',
+        'mixins': [
+          'has_native_resultdb_integration',
+          'blink_tests_write_run_histories',
+        ],
+        'args': [
+          '--release',
+          '--timeout-multiplier=5',
+          '--child-processes=1',
+        ],
+        'mac_args': [
+          '--driver-name',
+          'Google Chrome',
+        ],
+        'swarming': {
+          'shards': 4,
+        },
+      },
+    },
+
+    'chrome_ai_wpt_tests_manifest_cpu_gemma4_conversation_suite': {
+      'chrome_ai_wpt_tests_manifest_cpu_gemma4_conversation': {
+        'test_common': {
+          'args': [
+            '--manifest-test-config=../../components/optimization_guide/internal/testing/configs/manifest_test_config_cpu_gemma4_conversation.json',
+          ],
+          'merge': {
+            'script': '//third_party/blink/tools/merge_web_test_results.py',
+            'args': [
+              '--verbose',
+            ],
+          },
+        },
+        'test': 'chrome_ai_wpt_tests',
+        'results_handler': 'layout tests',
+        'mixins': [
+          'has_native_resultdb_integration',
+          'blink_tests_write_run_histories',
+        ],
+        'args': [
+          '--release',
+          '--timeout-multiplier=5',
+          '--child-processes=1',
+        ],
+        'mac_args': [
+          '--driver-name',
+          'Google Chrome',
+        ],
+        'swarming': {
+          'shards': 4,
+        },
+      },
+    },
+
     'chrome_ai_wpt_tests_manifest_cpu_gemma4_suite': {
       'chrome_ai_wpt_tests_manifest_cpu_gemma4': {
         'test_common': {
@@ -74,7 +242,7 @@
     },
 
     'chrome_ai_wpt_tests_manifest_cpu_suite': {
-      'chrome_ai_wpt_tests_light_manifest_cpu': {
+      'chrome_ai_wpt_tests_manifest_cpu': {
         'test_common': {
           'args': [
             '--manifest-test-config=../../components/optimization_guide/internal/testing/configs/manifest_test_config_cpu.json',
@@ -86,7 +254,7 @@
             ],
           },
         },
-        'test': 'chrome_ai_wpt_tests_light',
+        'test': 'chrome_ai_wpt_tests',
         'results_handler': 'layout tests',
         'mixins': [
           'has_native_resultdb_integration',
@@ -105,10 +273,79 @@
           'shards': 4,
         },
       },
-      'chrome_ai_wpt_tests_manifest_cpu': {
+    },
+
+    'chrome_ai_wpt_tests_manifest_gemma4_conversation_suite': {
+      'chrome_ai_wpt_tests_manifest_cpu_gemma4_conversation': {
         'test_common': {
           'args': [
-            '--manifest-test-config=../../components/optimization_guide/internal/testing/configs/manifest_test_config_cpu.json',
+            '--manifest-test-config=../../components/optimization_guide/internal/testing/configs/manifest_test_config_cpu_gemma4_conversation.json',
+          ],
+          'merge': {
+            'script': '//third_party/blink/tools/merge_web_test_results.py',
+            'args': [
+              '--verbose',
+            ],
+          },
+        },
+        'test': 'chrome_ai_wpt_tests',
+        'results_handler': 'layout tests',
+        'mixins': [
+          'has_native_resultdb_integration',
+          'blink_tests_write_run_histories',
+        ],
+        'args': [
+          '--release',
+          '--timeout-multiplier=5',
+          '--child-processes=1',
+        ],
+        'mac_args': [
+          '--driver-name',
+          'Google Chrome',
+        ],
+        'swarming': {
+          'shards': 4,
+        },
+      },
+      'chrome_ai_wpt_tests_manifest_gpu_high_tier_gemma4_conversation': {
+        'test_common': {
+          'args': [
+            '--manifest-test-config=../../components/optimization_guide/internal/testing/configs/manifest_test_config_gpu_high_tier_gemma4_conversation.json',
+          ],
+          'merge': {
+            'script': '//third_party/blink/tools/merge_web_test_results.py',
+            'args': [
+              '--verbose',
+            ],
+          },
+        },
+        'test': 'chrome_ai_wpt_tests',
+        'results_handler': 'layout tests',
+        'mixins': [
+          'has_native_resultdb_integration',
+          'blink_tests_write_run_histories',
+        ],
+        'args': [
+          '--release',
+          '--timeout-multiplier=5',
+          '--child-processes=1',
+        ],
+        'mac_args': [
+          '--driver-name',
+          'Google Chrome',
+        ],
+        'win_args': [
+          '--exit-after-n-crashes-or-timeouts=2',
+          '--additional-driver-flag=--enable-features=OnDeviceModelGpuAudioInput:on_device_model_audio_input_vram_min/5000',
+        ],
+        'swarming': {
+          'shards': 4,
+        },
+      },
+      'chrome_ai_wpt_tests_manifest_gpu_low_tier_gemma4_conversation': {
+        'test_common': {
+          'args': [
+            '--manifest-test-config=../../components/optimization_guide/internal/testing/configs/manifest_test_config_gpu_low_tier_gemma4_conversation.json',
           ],
           'merge': {
             'script': '//third_party/blink/tools/merge_web_test_results.py',
@@ -238,6 +475,82 @@
       },
     },
 
+    'chrome_ai_wpt_tests_manifest_gpu_high_tier_conversation_suite': {
+      'chrome_ai_wpt_tests_manifest_gpu_high_tier_conversation': {
+        'test_common': {
+          'args': [
+            '--manifest-test-config=../../components/optimization_guide/internal/testing/configs/manifest_test_config_gpu_high_tier_conversation.json',
+          ],
+          'merge': {
+            'script': '//third_party/blink/tools/merge_web_test_results.py',
+            'args': [
+              '--verbose',
+            ],
+          },
+        },
+        'test': 'chrome_ai_wpt_tests',
+        'results_handler': 'layout tests',
+        'mixins': [
+          'has_native_resultdb_integration',
+          'blink_tests_write_run_histories',
+        ],
+        'args': [
+          '--release',
+          '--timeout-multiplier=5',
+          '--child-processes=1',
+        ],
+        'mac_args': [
+          '--driver-name',
+          'Google Chrome',
+        ],
+        'win_args': [
+          '--exit-after-n-crashes-or-timeouts=2',
+          '--additional-driver-flag=--enable-features=OnDeviceModelGpuAudioInput:on_device_model_audio_input_vram_min/5000',
+        ],
+        'swarming': {
+          'shards': 4,
+        },
+      },
+    },
+
+    'chrome_ai_wpt_tests_manifest_gpu_high_tier_gemma4_conversation_suite': {
+      'chrome_ai_wpt_tests_manifest_gpu_high_tier_gemma4_conversation': {
+        'test_common': {
+          'args': [
+            '--manifest-test-config=../../components/optimization_guide/internal/testing/configs/manifest_test_config_gpu_high_tier_gemma4_conversation.json',
+          ],
+          'merge': {
+            'script': '//third_party/blink/tools/merge_web_test_results.py',
+            'args': [
+              '--verbose',
+            ],
+          },
+        },
+        'test': 'chrome_ai_wpt_tests',
+        'results_handler': 'layout tests',
+        'mixins': [
+          'has_native_resultdb_integration',
+          'blink_tests_write_run_histories',
+        ],
+        'args': [
+          '--release',
+          '--timeout-multiplier=5',
+          '--child-processes=1',
+        ],
+        'mac_args': [
+          '--driver-name',
+          'Google Chrome',
+        ],
+        'win_args': [
+          '--exit-after-n-crashes-or-timeouts=2',
+          '--additional-driver-flag=--enable-features=OnDeviceModelGpuAudioInput:on_device_model_audio_input_vram_min/5000',
+        ],
+        'swarming': {
+          'shards': 4,
+        },
+      },
+    },
+
     'chrome_ai_wpt_tests_manifest_gpu_high_tier_gemma4_suite': {
       'chrome_ai_wpt_tests_manifest_gpu_high_tier_gemma4': {
         'test_common': {
@@ -277,41 +590,6 @@
     },
 
     'chrome_ai_wpt_tests_manifest_gpu_high_tier_suite': {
-      'chrome_ai_wpt_tests_light_manifest_gpu_high_tier': {
-        'test_common': {
-          'args': [
-            '--manifest-test-config=../../components/optimization_guide/internal/testing/configs/manifest_test_config_gpu_high_tier.json',
-          ],
-          'merge': {
-            'script': '//third_party/blink/tools/merge_web_test_results.py',
-            'args': [
-              '--verbose',
-            ],
-          },
-        },
-        'test': 'chrome_ai_wpt_tests_light',
-        'results_handler': 'layout tests',
-        'mixins': [
-          'has_native_resultdb_integration',
-          'blink_tests_write_run_histories',
-        ],
-        'args': [
-          '--release',
-          '--timeout-multiplier=5',
-          '--child-processes=1',
-        ],
-        'mac_args': [
-          '--driver-name',
-          'Google Chrome',
-        ],
-        'win_args': [
-          '--exit-after-n-crashes-or-timeouts=2',
-          '--additional-driver-flag=--enable-features=OnDeviceModelGpuAudioInput:on_device_model_audio_input_vram_min/5000',
-        ],
-        'swarming': {
-          'shards': 4,
-        },
-      },
       'chrome_ai_wpt_tests_manifest_gpu_high_tier': {
         'test_common': {
           'args': [
@@ -342,6 +620,74 @@
         'win_args': [
           '--exit-after-n-crashes-or-timeouts=2',
           '--additional-driver-flag=--enable-features=OnDeviceModelGpuAudioInput:on_device_model_audio_input_vram_min/5000',
+        ],
+        'swarming': {
+          'shards': 4,
+        },
+      },
+    },
+
+    'chrome_ai_wpt_tests_manifest_gpu_low_tier_conversation_suite': {
+      'chrome_ai_wpt_tests_manifest_gpu_low_tier_conversation': {
+        'test_common': {
+          'args': [
+            '--manifest-test-config=../../components/optimization_guide/internal/testing/configs/manifest_test_config_gpu_low_tier_conversation.json',
+          ],
+          'merge': {
+            'script': '//third_party/blink/tools/merge_web_test_results.py',
+            'args': [
+              '--verbose',
+            ],
+          },
+        },
+        'test': 'chrome_ai_wpt_tests',
+        'results_handler': 'layout tests',
+        'mixins': [
+          'has_native_resultdb_integration',
+          'blink_tests_write_run_histories',
+        ],
+        'args': [
+          '--release',
+          '--timeout-multiplier=5',
+          '--child-processes=1',
+        ],
+        'mac_args': [
+          '--driver-name',
+          'Google Chrome',
+        ],
+        'swarming': {
+          'shards': 4,
+        },
+      },
+    },
+
+    'chrome_ai_wpt_tests_manifest_gpu_low_tier_gemma4_conversation_suite': {
+      'chrome_ai_wpt_tests_manifest_gpu_low_tier_gemma4_conversation': {
+        'test_common': {
+          'args': [
+            '--manifest-test-config=../../components/optimization_guide/internal/testing/configs/manifest_test_config_gpu_low_tier_gemma4_conversation.json',
+          ],
+          'merge': {
+            'script': '//third_party/blink/tools/merge_web_test_results.py',
+            'args': [
+              '--verbose',
+            ],
+          },
+        },
+        'test': 'chrome_ai_wpt_tests',
+        'results_handler': 'layout tests',
+        'mixins': [
+          'has_native_resultdb_integration',
+          'blink_tests_write_run_histories',
+        ],
+        'args': [
+          '--release',
+          '--timeout-multiplier=5',
+          '--child-processes=1',
+        ],
+        'mac_args': [
+          '--driver-name',
+          'Google Chrome',
         ],
         'swarming': {
           'shards': 4,
@@ -688,6 +1034,28 @@
         'skylab': {
           'autotest_name': 'chromium',
         },
+      },
+    },
+
+    'chromeos_disk_usage_tast_test': {
+      'disk_usage_tast_test': {
+        'test_common': {
+          'merge': {
+            'script': '//tools/perf/process_perf_results.py',
+            'args': [
+              '--upload-skia-json',
+            ],
+          },
+        },
+        'ci_only': True,
+        'skylab': {
+          'timeout_sec': 3600,
+          'strip_chrome': True,
+          'cros_test_names': [
+            'tast.platform.ReportDiskUsage',
+          ],
+        },
+        'experiment_percentage': 100,
       },
     },
 
@@ -1069,7 +1437,6 @@
           'timeout_sec': 5400,
           'autotest_name': 'chromium',
         },
-        'experiment_percentage': 100,
       },
       'sql_unittests': {
         'skylab': {
@@ -1872,26 +2239,6 @@
       },
     },
 
-    'gpu_webgl_conformance_vulkan_passthrough_telemetry_tests': {
-      'webgl_conformance_vulkan_passthrough_tests': {
-        'test_common': {
-          'mixins': [
-            'has_native_resultdb_integration',
-            'gpu_force_command_decoder_passthrough',
-            'gpu_force_angle_vulkan',
-            'gpu_force_high_performance_gpu',
-            'gpu_integration_test_webgl1_args',
-            'gpu_integration_test_common_args',
-          ],
-          'module_scheme': 'flat',
-        },
-        'telemetry_test_name': 'webgl1_conformance',
-        'swarming': {
-          'shards': 2,
-        },
-      },
-    },
-
     'gpu_webrtc_metal_passthrough_graphite_telemetry_test': {
       'webrtc_metal_passthrough_graphite_tests': {
         'test_common': {
@@ -1900,19 +2247,6 @@
             'gpu_force_command_decoder_passthrough',
             'gpu_force_angle_metal',
             'gpu_force_skia_graphite',
-            'gpu_integration_test_common_args',
-          ],
-          'module_scheme': 'flat',
-        },
-        'telemetry_test_name': 'webrtc',
-      },
-    },
-
-    'gpu_webrtc_telemetry_test': {
-      'webrtc_tests': {
-        'test_common': {
-          'mixins': [
-            'has_native_resultdb_integration',
             'gpu_integration_test_common_args',
           ],
           'module_scheme': 'flat',
@@ -2202,6 +2536,19 @@
       },
     },
 
+    'legacy_webrtc_tests': {
+      'webrtc_tests': {
+        'test_common': {
+          'mixins': [
+            'has_native_resultdb_integration',
+            'gpu_integration_test_common_args',
+          ],
+          'module_scheme': 'flat',
+        },
+        'telemetry_test_name': 'webrtc',
+      },
+    },
+
     'linux_chromeos_lacros_gtests': {
       'chromeos_unittests': {},
     },
@@ -2366,6 +2713,21 @@
       },
     },
 
+    'litert_e2e_tests_gpu_suite': {
+      'litert_e2e_tests_gpu': {
+        'test_common': {
+          'mixins': [
+            'has_native_resultdb_integration',
+          ],
+          'args': [
+            '--benchmark_binary_dir=./',
+            '--backends=gpu',
+          ],
+        },
+        'test': 'litert_e2e_tests',
+      },
+    },
+
     'litert_lm_advanced_main_legacy_tests_cpu_suite': {
       'litert_lm_advanced_main_legacy_tests_cpu': {
         'test_common': {
@@ -2375,6 +2737,21 @@
           'args': [
             '--benchmark_binary_dir=./',
             '--backends=cpu',
+          ],
+        },
+        'test': 'litert_lm_advanced_main_legacy_tests',
+      },
+    },
+
+    'litert_lm_advanced_main_legacy_tests_gpu_suite': {
+      'litert_lm_advanced_main_legacy_tests_gpu': {
+        'test_common': {
+          'mixins': [
+            'has_native_resultdb_integration',
+          ],
+          'args': [
+            '--benchmark_binary_dir=./',
+            '--backends=gpu_artisan',
           ],
         },
         'test': 'litert_lm_advanced_main_legacy_tests',
@@ -2457,6 +2834,33 @@
       'views_unittests': {},
     },
 
+    'ondevice_api_scrape_tests_suite': {
+      'ondevice_api_scrape_tests': {
+        'mixins': [
+          'has_native_resultdb_integration',
+        ],
+        'linux_args': [
+          '--chromedriver',
+          'chromedriver',
+          '--binary',
+          'chrome',
+          '--no-xvfb',
+        ],
+        'mac_args': [
+          '--chromedriver',
+          'chromedriver',
+          '--binary',
+          'Google Chrome.app/Contents/MacOS/Google Chrome',
+        ],
+        'win_args': [
+          '--chromedriver',
+          'chromedriver.exe',
+          '--binary',
+          'Chrome.exe',
+        ],
+      },
+    },
+
     'ondevice_stability_tests_light_suite': {
       'ondevice_stability_tests_light': {
         'mixins': [
@@ -2501,6 +2905,17 @@
           '--no-xvfb',
         ],
       },
+    },
+
+    'openscreen_chromium_gtests': {
+      'cast_unittests': {},
+      'components_unittests': {
+        'swarming': {
+          'shards': 2,
+        },
+      },
+      'media_unittests': {},
+      'openscreen_unittests': {},
     },
 
     'optimization_guide_android_gtests': {
@@ -2617,30 +3032,6 @@
       },
     },
 
-    'vulkan_swiftshader_isolated_scripts': {
-      'vulkan_swiftshader_blink_web_tests': {
-        'test_common': {
-          'mixins': [
-            'has_native_resultdb_integration',
-            'blink_tests_write_run_histories',
-          ],
-          'args': [
-            '--num-retries=3',
-            '--skipped=always',
-            '--flag-specific=skia-vulkan-swiftshader',
-          ],
-          'merge': {
-            'script': '//third_party/blink/tools/merge_web_test_results.py',
-            'args': [
-              '--verbose',
-            ],
-          },
-        },
-        'test': 'blink_web_tests',
-        'results_handler': 'layout tests',
-      },
-    },
-
     'webrtc_chromium_wpt_tests': {
       'blink_wpt_tests': {
         'test_common': {
@@ -2703,6 +3094,9 @@
           'external/wpt/webrtc-stats',
           'external/wpt/webrtc-svc',
         ],
+        'swarming': {
+          'shards': 4,
+        },
       },
     },
 
@@ -2731,7 +3125,6 @@
       'chromium_blink_isolated_scripts',
       'chromium_web_tests_high_dpi_isolated_scripts',
       'linux_specific_chromium_isolated_scripts',
-      'vulkan_swiftshader_isolated_scripts',
     ],
 
     'devtools_gtests': [
@@ -2766,8 +3159,6 @@
       'gpu_passthrough_telemetry_tests',
       'gpu_webgl2_conformance_d3d11_passthrough_telemetry_tests',
       'gpu_webgl_conformance_d3d11_passthrough_telemetry_tests',
-      'gpu_webgl_conformance_vulkan_passthrough_telemetry_tests',
-      'gpu_webrtc_telemetry_test',
       'legacy_context_lost_passthrough_graphite_tests',
       'legacy_expected_color_pixel_passthrough_graphite_test',
       'legacy_info_collection_tests',
@@ -2775,6 +3166,7 @@
       'legacy_screenshot_sync_passthrough_graphite_tests',
       'legacy_trace_test',
       'legacy_webcodecs_tests',
+      'legacy_webrtc_tests',
     ],
 
     'legacy_gpu_all_linux_release_telemetry_tests': [
@@ -3143,6 +3535,14 @@
       'chromeos_chrome_flaky_tast_tests': {
         'mixins': [
           'skylab-20-tests-per-shard',
+          'skylab-rdb-tast',
+        ],
+        'variants': [
+          'CROS_LKGM',
+        ],
+      },
+      'chromeos_disk_usage_tast_test': {
+        'mixins': [
           'skylab-rdb-tast',
         ],
         'variants': [
@@ -3543,18 +3943,64 @@
     },
 
     'optimization_guide_linux_script_tests': {
+      'chrome_ai_wpt_tests_manifest_cpu_conversation_suite': {
+        'mixins': [
+          'chrome-intelligence-swarming-pool',
+          'gce',
+          'x64_ai_wpt_shards',
+          'ci_only',
+          'experiments',
+        ],
+      },
+      'chrome_ai_wpt_tests_manifest_cpu_gemma4_conversation_suite': {
+        'mixins': [
+          'chrome-intelligence-swarming-pool',
+          'gce',
+          'x64_ai_wpt_shards',
+          'ci_only',
+          'experiments',
+        ],
+      },
       'chrome_ai_wpt_tests_manifest_cpu_gemma4_suite': {
         'mixins': [
           'chrome-intelligence-swarming-pool',
-          'non-gce',
+          'gce',
           'x64_ai_wpt_shards',
         ],
       },
       'chrome_ai_wpt_tests_manifest_cpu_suite': {
         'mixins': [
           'chrome-intelligence-swarming-pool',
+          'gce',
+          'x64_ai_wpt_shards',
+        ],
+      },
+      'chrome_ai_wpt_tests_manifest_gpu_high_tier_conversation_suite': {
+        'mixins': [
+          'chrome-intelligence-swarming-pool',
           'non-gce',
           'x64_ai_wpt_shards',
+          'linux_gpu_high_tier_ai_wpt_dimensions',
+          'ci_only',
+          'experiments',
+        ],
+      },
+      'chrome_ai_wpt_tests_manifest_gpu_high_tier_gemma4_conversation_suite': {
+        'mixins': [
+          'chrome-intelligence-swarming-pool',
+          'non-gce',
+          'x64_ai_wpt_shards',
+          'linux_gpu_high_tier_gemma4_ai_wpt_dimensions',
+          'ci_only',
+          'experiments',
+        ],
+      },
+      'chrome_ai_wpt_tests_manifest_gpu_high_tier_gemma4_suite': {
+        'mixins': [
+          'chrome-intelligence-swarming-pool',
+          'non-gce',
+          'x64_ai_wpt_shards',
+          'linux_gpu_high_tier_gemma4_ai_wpt_dimensions',
         ],
       },
       'chrome_ai_wpt_tests_manifest_gpu_high_tier_suite': {
@@ -3563,6 +4009,33 @@
           'non-gce',
           'x64_ai_wpt_shards',
           'linux_gpu_high_tier_ai_wpt_dimensions',
+        ],
+      },
+      'chrome_ai_wpt_tests_manifest_gpu_low_tier_conversation_suite': {
+        'mixins': [
+          'chrome-intelligence-swarming-pool',
+          'non-gce',
+          'x64_ai_wpt_shards',
+          'ci_only',
+          'experiments',
+        ],
+      },
+      'chrome_ai_wpt_tests_manifest_gpu_low_tier_gemma4_conversation_suite': {
+        'mixins': [
+          'chrome-intelligence-swarming-pool',
+          'non-gce',
+          'x64_ai_wpt_shards',
+          'linux_gpu_high_tier_gemma4_ai_wpt_dimensions',
+          'ci_only',
+          'experiments',
+        ],
+      },
+      'chrome_ai_wpt_tests_manifest_gpu_low_tier_gemma4_suite': {
+        'mixins': [
+          'chrome-intelligence-swarming-pool',
+          'non-gce',
+          'x64_ai_wpt_shards',
+          'linux_gpu_high_tier_gemma4_ai_wpt_dimensions',
         ],
       },
       'chrome_ai_wpt_tests_manifest_gpu_low_tier_suite': {
@@ -3578,7 +4051,19 @@
           'non-gce',
         ],
       },
+      'litert_e2e_tests_gpu_suite': {
+        'mixins': [
+          'chrome-intelligence-swarming-pool',
+          'non-gce',
+        ],
+      },
       'litert_lm_advanced_main_legacy_tests_cpu_suite': {
+        'mixins': [
+          'chrome-intelligence-swarming-pool',
+          'non-gce',
+        ],
+      },
+      'litert_lm_advanced_main_legacy_tests_gpu_suite': {
         'mixins': [
           'chrome-intelligence-swarming-pool',
           'non-gce',
@@ -3594,6 +4079,11 @@
           'gce',
         ],
       },
+      'ondevice_api_scrape_tests_suite': {
+        'variants': [
+          'NVIDIA_GEFORCE_GTX_1660',
+        ],
+      },
       'ondevice_stability_tests_suite': {
         'variants': [
           'NVIDIA_GEFORCE_GTX_1660',
@@ -3602,12 +4092,27 @@
     },
 
     'optimization_guide_mac_script_tests': {
+      'chrome_ai_wpt_tests_manifest_conversation_suite': {
+        'mixins': [
+          'ci_only',
+          'experiments',
+        ],
+      },
+      'chrome_ai_wpt_tests_manifest_gemma4_conversation_suite': {
+        'mixins': [
+          'ci_only',
+          'experiments',
+        ],
+      },
       'chrome_ai_wpt_tests_manifest_gemma4_suite': {},
       'chrome_ai_wpt_tests_manifest_suite': {},
       'litert_e2e_tests_cpu_suite': {},
+      'litert_e2e_tests_gpu_suite': {},
       'litert_lm_advanced_main_legacy_tests_cpu_suite': {},
+      'litert_lm_advanced_main_legacy_tests_gpu_suite': {},
       'model_validation_tests_light_suite': {},
       'model_validation_tests_suite': {},
+      'ondevice_api_scrape_tests_suite': {},
       'ondevice_stability_tests_suite': {},
     },
 
@@ -3631,11 +4136,60 @@
     },
 
     'optimization_guide_win64_script_tests': {
+      'chrome_ai_wpt_tests_manifest_cpu_conversation_suite': {
+        'mixins': [
+          'chrome-intelligence-swarming-pool',
+          'gce',
+          'win10',
+          'x64_ai_wpt_shards',
+          'ci_only',
+          'experiments',
+        ],
+      },
+      'chrome_ai_wpt_tests_manifest_cpu_gemma4_conversation_suite': {
+        'mixins': [
+          'chrome-intelligence-swarming-pool',
+          'gce',
+          'win10',
+          'x64_ai_wpt_shards',
+          'ci_only',
+          'experiments',
+        ],
+      },
       'chrome_ai_wpt_tests_manifest_cpu_gemma4_suite': {
+        'mixins': [
+          'chrome-intelligence-swarming-pool',
+          'gce',
+          'win10',
+          'x64_ai_wpt_shards',
+        ],
+      },
+      'chrome_ai_wpt_tests_manifest_cpu_suite': {
+        'mixins': [
+          'chrome-intelligence-swarming-pool',
+          'gce',
+          'win10',
+          'x64_ai_wpt_shards',
+        ],
+      },
+      'chrome_ai_wpt_tests_manifest_gpu_high_tier_conversation_suite': {
         'mixins': [
           'chrome-intelligence-swarming-pool',
           'non-gce',
           'x64_ai_wpt_shards',
+          'win_gpu_ai_wpt_dimensions',
+          'ci_only',
+          'experiments',
+        ],
+      },
+      'chrome_ai_wpt_tests_manifest_gpu_high_tier_gemma4_conversation_suite': {
+        'mixins': [
+          'chrome-intelligence-swarming-pool',
+          'non-gce',
+          'x64_ai_wpt_shards',
+          'win_gpu_gemma4_ai_wpt_dimensions',
+          'ci_only',
+          'experiments',
         ],
       },
       'chrome_ai_wpt_tests_manifest_gpu_high_tier_gemma4_suite': {
@@ -3646,6 +4200,34 @@
           'win_gpu_gemma4_ai_wpt_dimensions',
         ],
       },
+      'chrome_ai_wpt_tests_manifest_gpu_high_tier_suite': {
+        'mixins': [
+          'chrome-intelligence-swarming-pool',
+          'non-gce',
+          'x64_ai_wpt_shards',
+          'win_gpu_ai_wpt_dimensions',
+        ],
+      },
+      'chrome_ai_wpt_tests_manifest_gpu_low_tier_conversation_suite': {
+        'mixins': [
+          'chrome-intelligence-swarming-pool',
+          'non-gce',
+          'x64_ai_wpt_shards',
+          'win_gpu_ai_wpt_dimensions',
+          'ci_only',
+          'experiments',
+        ],
+      },
+      'chrome_ai_wpt_tests_manifest_gpu_low_tier_gemma4_conversation_suite': {
+        'mixins': [
+          'chrome-intelligence-swarming-pool',
+          'non-gce',
+          'x64_ai_wpt_shards',
+          'win_gpu_gemma4_ai_wpt_dimensions',
+          'ci_only',
+          'experiments',
+        ],
+      },
       'chrome_ai_wpt_tests_manifest_gpu_low_tier_gemma4_suite': {
         'mixins': [
           'chrome-intelligence-swarming-pool',
@@ -3654,36 +4236,68 @@
           'win_gpu_gemma4_ai_wpt_dimensions',
         ],
       },
-      'chrome_ai_wpt_tests_manifest_suite': {
+      'chrome_ai_wpt_tests_manifest_gpu_low_tier_suite': {
         'mixins': [
           'chrome-intelligence-swarming-pool',
           'non-gce',
           'x64_ai_wpt_shards',
+          'win_gpu_ai_wpt_dimensions',
         ],
       },
       'litert_e2e_tests_cpu_suite': {
         'mixins': [
           'chrome-intelligence-swarming-pool',
           'non-gce',
+          'win10',
+        ],
+      },
+      'litert_e2e_tests_gpu_suite': {
+        'mixins': [
+          'chrome-intelligence-swarming-pool',
+          'non-gce',
+          'win10',
         ],
       },
       'litert_lm_advanced_main_legacy_tests_cpu_suite': {
         'mixins': [
           'chrome-intelligence-swarming-pool',
           'non-gce',
+          'win10',
+        ],
+      },
+      'litert_lm_advanced_main_legacy_tests_gpu_suite': {
+        'mixins': [
+          'chrome-intelligence-swarming-pool',
+          'non-gce',
+          'win10',
         ],
       },
       'model_validation_tests_light_suite': {
         'mixins': [
           'gce',
+          'win10',
         ],
       },
       'model_validation_tests_suite': {
         'mixins': [
           'gce',
+          'win10',
+        ],
+      },
+      'ondevice_api_scrape_tests_suite': {
+        'mixins': [
+          'win10',
+        ],
+        'variants': [
+          'AMD_RADEON_RX_5500_XT',
+          'INTEL_UHD_630_OR_770',
+          'NVIDIA_GEFORCE_GTX_1660',
         ],
       },
       'ondevice_stability_tests_suite': {
+        'mixins': [
+          'win10',
+        ],
         'variants': [
           'AMD_RADEON_RX_5500_XT',
           'INTEL_UHD_630_OR_770',
@@ -3693,6 +4307,18 @@
     },
 
     'optimization_guide_win_arm64_script_tests': {
+      'chrome_ai_wpt_tests_manifest_conversation_suite': {
+        'mixins': [
+          'ci_only',
+          'experiments',
+        ],
+      },
+      'chrome_ai_wpt_tests_manifest_gemma4_conversation_suite': {
+        'mixins': [
+          'ci_only',
+          'experiments',
+        ],
+      },
       'chrome_ai_wpt_tests_manifest_gemma4_suite': {},
       'chrome_ai_wpt_tests_manifest_suite': {},
       'model_validation_tests_light_suite': {},
@@ -3702,6 +4328,9 @@
 
     'optimization_guide_win_gtests': {
       'optimization_guide_gpu_gtests': {
+        'mixins': [
+          'win10',
+        ],
         'variants': [
           'AMD_RADEON_RX_5500_XT',
           'INTEL_UHD_630_OR_770',
@@ -3711,6 +4340,7 @@
       'optimization_guide_nogpu_gtests': {
         'mixins': [
           'gce',
+          'win10',
         ],
       },
     },

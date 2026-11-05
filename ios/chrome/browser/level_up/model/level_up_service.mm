@@ -6,6 +6,7 @@
 
 #import <algorithm>
 #import <numeric>
+#import <optional>
 
 #import "base/functional/bind.h"
 #import "base/logging.h"
@@ -15,6 +16,8 @@
 #import "base/values.h"
 #import "components/prefs/pref_service.h"
 #import "components/prefs/scoped_user_pref_update.h"
+#import "ios/chrome/browser/level_up/model/level_up_metrics.h"
+#import "ios/chrome/browser/level_up/model/level_up_service_observer.h"
 #import "ios/chrome/browser/level_up/model/tasks/task_factories.h"
 #import "ios/chrome/browser/passwords/model/ios_chrome_password_check_manager.h"
 #import "ios/chrome/browser/sessions/model/session_restoration_observer.h"
@@ -48,6 +51,31 @@ const char* GetPrefNameForStatType(LevelUpTaskStatType stat_type) {
       return prefs::kLevelUpPasswordsVerifiedStat;
     case LevelUpTaskStatType::kPhotoSearchesPerformed:
       return prefs::kLevelUpPhotoSearchesPerformedStat;
+  }
+}
+
+// Returns the `LevelUpTaskStatType` associated with `task_type`, or
+// `std::nullopt` if the task does not have an associated stat.
+std::optional<LevelUpTaskStatType> GetStatTypeForTaskType(TaskType task_type) {
+  switch (task_type) {
+    case TaskType::kTabGroups:
+      return LevelUpTaskStatType::kTabsDecluttered;
+    case TaskType::kAutofill:
+      return LevelUpTaskStatType::kPasswordsAutofilled;
+    case TaskType::kPasswordCheckup:
+      return LevelUpTaskStatType::kPasswordsVerified;
+    case TaskType::kLensCameraSearch:
+      return LevelUpTaskStatType::kPhotoSearchesPerformed;
+    case TaskType::kUnknown:
+    case TaskType::kPinTabs:
+    case TaskType::kGemini:
+    case TaskType::kPaymentMethods:
+    case TaskType::kClearBrowsingData:
+    case TaskType::kSafeBrowsing:
+    case TaskType::kIncognito:
+    case TaskType::kLensWebsiteSearch:
+    case TaskType::kAISearch:
+      return std::nullopt;
   }
 }
 
@@ -285,14 +313,24 @@ int LevelUpService::GetCurrentLevel() const {
   return current_level_;
 }
 
-int LevelUpService::GetTasksRemainingForNextLevel() const {
+std::pair<int, int> LevelUpService::GetTasksRemainingForNextLevel() const {
   if (current_level_ >= kMaxLevel) {
-    return 0;
+    return {0, 0};
   }
   int next_level = current_level_ + 1;
-  int required = GetTotalTasksRequiredForLevel(next_level);
+  int total_required = GetTotalTasksRequiredForLevel(next_level);
   int completed = completed_tasks_.size();
-  return std::max(0, required - completed);
+  int required = std::max(0, total_required - completed);
+
+  int base_amount_for_next_level = GetTasksIncrementForLevel(next_level);
+  // If the user's level is incorrect due to changing requirements or tasks, the
+  // required amount can exceed the base amount for next level. In that case,
+  // raise amount for next level. For example, if the level requirements are
+  // currently 1 -> 2: 3 and 2 -> 3: 4, and the user is at level 2 with only 1
+  // task remaining, they need 6 tasks to reach 3, even though 2 -> 3 is only 4.
+  int amount_for_next_level =
+      required == 0 ? 0 : std::max(base_amount_for_next_level, required);
+  return {required, amount_for_next_level};
 }
 
 void LevelUpService::MarkTaskCompleted(TaskType task_type) {
@@ -310,13 +348,21 @@ void LevelUpService::MarkTaskCompleted(TaskType task_type) {
     ScopedListPrefUpdate update(pref_service_, prefs::kLevelUpCompletedTasks);
     update->Append(storage_id);
 
+    RecordLevelUpTaskCompleted(task_type);
     UpdateLevelAndPref();
     pref_service_->SetInteger(
         prefs::kIosMagicStackSegmentationLevelUpImpressionsSinceFreshness, 0);
+    NotifyObserversOfTaskComplete();
   }
 }
 
 void LevelUpService::ResetAllTasksStatus() {
+  // Clear and reset UI state prefs.
+  pref_service_->ClearPref(prefs::kLevelUpUIEnabled);
+  is_ui_enabled_ = pref_service_->GetBoolean(prefs::kLevelUpUIEnabled);
+  pref_service_->ClearPref(prefs::kLevelUpNewTasksNotificationEnabled);
+
+  // Clear or override task prefs.
   completed_tasks_.clear();
   current_level_ = 1;
   pref_service_->ClearPref(prefs::kLevelUpCompletedTasks);
@@ -325,7 +371,6 @@ void LevelUpService::ResetAllTasksStatus() {
   pref_service_->SetInteger(prefs::kLevelUpPasswordsAutofilledStat, 0);
   pref_service_->SetInteger(prefs::kLevelUpPasswordsVerifiedStat, 0);
   pref_service_->SetInteger(prefs::kLevelUpPhotoSearchesPerformedStat, 0);
-  pref_service_->SetBoolean(prefs::kLevelUpNewTasksNotificationEnabled, true);
   pref_service_->SetInteger(
       prefs::kIosMagicStackSegmentationLevelUpImpressionsSinceFreshness, 0);
 }
@@ -449,6 +494,31 @@ int LevelUpService::GetStatValue(LevelUpTaskStatType stat_type) const {
   return pref_service_->GetInteger(pref_name);
 }
 
+std::vector<LevelUpTaskStatType> LevelUpService::GetOrderedStatTypes() const {
+  std::vector<LevelUpTaskStatType> ordered_stats;
+  std::vector<LevelUpTaskStatType> default_stats = {
+      LevelUpTaskStatType::kTabsDecluttered,
+      LevelUpTaskStatType::kPasswordsAutofilled,
+      LevelUpTaskStatType::kPasswordsVerified,
+      LevelUpTaskStatType::kPhotoSearchesPerformed,
+  };
+
+  for (auto it = completed_tasks_.rbegin(); it != completed_tasks_.rend();
+       ++it) {
+    TaskType task_type = StringToTaskType(*it);
+    std::optional<LevelUpTaskStatType> stat_type =
+        GetStatTypeForTaskType(task_type);
+    if (stat_type && !std::ranges::contains(ordered_stats, *stat_type)) {
+      ordered_stats.push_back(*stat_type);
+      std::erase(default_stats, *stat_type);
+    }
+  }
+
+  ordered_stats.insert(ordered_stats.end(), default_stats.begin(),
+                       default_stats.end());
+  return ordered_stats;
+}
+
 void LevelUpService::IncrementStatValue(LevelUpTaskStatType stat_type,
                                         int delta) {
   if (delta <= 0 || !IsOptedIn()) {
@@ -457,6 +527,7 @@ void LevelUpService::IncrementStatValue(LevelUpTaskStatType stat_type,
   const char* pref_name = GetPrefNameForStatType(stat_type);
   int current = GetStatValue(stat_type);
   pref_service_->SetInteger(pref_name, current + delta);
+  NotifyObserversOfStatUpdate();
 }
 
 const std::map<TaskType, std::unique_ptr<TaskInfo>>& LevelUpService::GetTasks()
@@ -472,7 +543,6 @@ LevelUpService::GetStatTriggerUserActions() const {
 void LevelUpService::PopulateTasks() {
   tasks_[TaskType::kTabGroups] = CreateTabGroupsTaskInfo();
   tasks_[TaskType::kAutofill] = CreateAutofillTaskInfo();
-  tasks_[TaskType::kPinTabs] = CreatePinTabsTaskInfo();
   tasks_[TaskType::kGemini] = CreateGeminiTaskInfo();
   tasks_[TaskType::kPaymentMethods] = CreatePaymentMethodsTaskInfo();
   tasks_[TaskType::kClearBrowsingData] = CreateClearBrowsingDataTaskInfo();
@@ -513,6 +583,7 @@ void LevelUpService::UpdateLevelAndPref() {
 
   if (current_level_ > highest_level_pref) {
     pref_service_->SetInteger(prefs::kLevelUpHighestLevel, current_level_);
+    RecordLevelUpLevelChanged(current_level_);
   }
 }
 
@@ -551,22 +622,43 @@ int LevelUpService::CalculateLevel(size_t completed_count) const {
   return kMaxLevel;
 }
 
+void LevelUpService::AddObserver(LevelUpServiceObserver* observer) {
+  observers_.AddObserver(observer);
+}
+
+void LevelUpService::RemoveObserver(LevelUpServiceObserver* observer) {
+  observers_.RemoveObserver(observer);
+}
+
+void LevelUpService::NotifyObserversOfTaskComplete() {
+  for (LevelUpServiceObserver& observer : observers_) {
+    observer.OnTaskCompleted();
+  }
+}
+
+void LevelUpService::NotifyObserversOfStatUpdate() {
+  for (LevelUpServiceObserver& observer : observers_) {
+    observer.OnStatValueChanged();
+  }
+}
+
 // static
 void LevelUpService::RegisterProfilePrefs(
     user_prefs::PrefRegistrySyncable* registry) {
-  registry->RegisterListPref(prefs::kLevelUpCompletedTasks,
-                             user_prefs::PrefRegistrySyncable::SYNCABLE_PREF);
-  registry->RegisterIntegerPref(
-      prefs::kLevelUpHighestLevel, 1,
-      user_prefs::PrefRegistrySyncable::SYNCABLE_PREF);
-  registry->RegisterBooleanPref(
-      prefs::kLevelUpUIEnabled, false,
-      user_prefs::PrefRegistrySyncable::SYNCABLE_PREF);
   registry->RegisterBooleanPref(
       prefs::kLevelUpOptIn, false,
       user_prefs::PrefRegistrySyncable::SYNCABLE_PREF);
   registry->RegisterBooleanPref(
+      prefs::kLevelUpUIEnabled, true,
+      user_prefs::PrefRegistrySyncable::SYNCABLE_PREF);
+  registry->RegisterBooleanPref(
       prefs::kLevelUpNewTasksNotificationEnabled, true,
+      user_prefs::PrefRegistrySyncable::SYNCABLE_PREF);
+
+  registry->RegisterListPref(prefs::kLevelUpCompletedTasks,
+                             user_prefs::PrefRegistrySyncable::SYNCABLE_PREF);
+  registry->RegisterIntegerPref(
+      prefs::kLevelUpHighestLevel, 1,
       user_prefs::PrefRegistrySyncable::SYNCABLE_PREF);
   registry->RegisterIntegerPref(
       prefs::kLevelUpTabsDeclutteredStat, 0,

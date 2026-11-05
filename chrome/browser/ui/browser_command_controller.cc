@@ -15,6 +15,7 @@
 #include "base/debug/profiler.h"
 #include "base/feature_list.h"
 #include "base/functional/bind.h"
+#include "base/i18n/number_formatting.h"
 #include "base/i18n/rtl.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/metrics/user_metrics.h"
@@ -30,7 +31,6 @@
 #include "chrome/browser/browsing_data/browsing_data_important_sites_util.h"
 #include "chrome/browser/defaults.h"
 #include "chrome/browser/devtools/devtools_window.h"
-#include "chrome/browser/devtools/features.h"
 #include "chrome/browser/enterprise/isolated_mode/isolated_mode_settings_service_factory.h"
 #include "chrome/browser/feedback/public/feedback_source.h"
 #include "chrome/browser/feedback/show_feedback_page.h"
@@ -43,6 +43,7 @@
 #include "chrome/browser/lifetime/application_lifetime.h"
 #include "chrome/browser/prefs/incognito_mode_prefs.h"
 #include "chrome/browser/profiles/profile.h"
+#include "chrome/browser/profiles/profile_manager.h"
 #include "chrome/browser/profiles/profile_window.h"
 #include "chrome/browser/sessions/tab_restore_service_factory.h"
 #include "chrome/browser/sharing_hub/sharing_hub_features.h"
@@ -50,8 +51,12 @@
 #include "chrome/browser/signin/identity_manager_factory.h"
 #include "chrome/browser/signin/signin_promo.h"
 #include "chrome/browser/signin/signin_ui_util.h"
+#include "chrome/browser/skills/skills_service_factory.h"
 #include "chrome/browser/sync/sync_ui_util.h"
 #include "chrome/browser/translate/chrome_translate_client.h"
+#include "chrome/browser/ttc/core/states.h"
+#include "chrome/browser/ttc/core/ttc_keyed_service.h"
+#include "chrome/browser/ui/accelerator_table.h"
 #include "chrome/browser/ui/actions/chrome_action_id.h"
 #include "chrome/browser/ui/actions/chrome_action_properties.h"
 #include "chrome/browser/ui/actions/command_action_updater.h"
@@ -84,13 +89,13 @@
 #include "chrome/browser/ui/startup/default_browser_prompt/default_browser_prompt_prefs.h"
 #include "chrome/browser/ui/tabs/features.h"
 #include "chrome/browser/ui/tabs/split_tab_metrics.h"
-#include "chrome/browser/ui/tabs/tab_change_type.h"
 #include "chrome/browser/ui/tabs/tab_model.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/tabs/tab_strip_user_gesture_details.h"
 #include "chrome/browser/ui/tabs/vertical_tab_strip_state_controller.h"
 #include "chrome/browser/ui/toolbar/chrome_labs/chrome_labs_utils.h"
 #include "chrome/browser/ui/ui_features.h"
+#include "chrome/browser/ui/user_education/browser_user_education_interface.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/views/side_panel/tabs_from_other_devices/tabs_from_other_devices_side_panel_coordinator.h"
 #include "chrome/browser/ui/web_applications/app_browser_controller.h"
@@ -109,6 +114,7 @@
 #include "chrome/common/pref_names.h"
 #include "chrome/common/url_constants.h"
 #include "chrome/common/webui_url_constants.h"
+#include "chrome/grit/generated_resources.h"
 #include "components/bookmarks/browser/bookmark_model_load_waiter.h"
 #include "components/bookmarks/common/bookmark_bar_visibility_state.h"
 #include "components/bookmarks/common/bookmark_pref_names.h"
@@ -125,9 +131,12 @@
 #include "components/signin/public/base/signin_metrics.h"
 #include "components/signin/public/base/signin_pref_names.h"
 #include "components/signin/public/identity_manager/identity_manager.h"
+#include "components/skills/features.h"
+#include "components/subscription_eligibility/ai_subscription_tier_names.h"
 #include "components/tab_groups/tab_group_id.h"
 #include "components/tabs/public/tab_interface.h"
 #include "components/translate/core/browser/translate_manager.h"
+#include "components/zoom/zoom_controller.h"
 #include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/navigation_entry.h"
 #include "content/public/browser/render_frame_host.h"
@@ -140,10 +149,12 @@
 #include "extensions/buildflags/buildflags.h"
 #include "extensions/common/extension_urls.h"
 #include "printing/buildflags/buildflags.h"
+#include "third_party/omnibox_proto/chrome_aim_entry_point.pb.h"
 #include "ui/accessibility/accessibility_features.h"
 #include "ui/actions/actions.h"
+#include "ui/base/l10n/l10n_util.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
 #include "ui/base/ui_base_features.h"
-#include "ui/base/window_open_disposition.h"
 #include "ui/events/keycodes/keyboard_codes.h"
 
 #if !BUILDFLAG(IS_ANDROID)
@@ -190,6 +201,11 @@
 #if BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_WIN)
 #include "chrome/browser/ui/shortcuts/desktop_shortcuts_utils.h"
 #endif  // BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_WIN)
+
+#if BUILDFLAG(ENABLE_DICE_SUPPORT)
+#include "chrome/browser/signin/account_preview_data_service_factory.h"
+#include "chrome/browser/ui/signin/signin_view_controller.h"
+#endif  // BUILDFLAG(ENABLE_DICE_SUPPORT)
 
 static_assert(BUILDFLAG(ENABLE_EXTENSIONS));
 
@@ -344,26 +360,21 @@ BrowserCommandController::BrowserCommandController(BrowserWindowInterface* bwi)
         base::BindRepeating(
             &BrowserCommandController::UpdateCommandsForFileSelectionDialogs,
             base::Unretained(this)));
+    local_pref_registrar_.Add(
+        prefs::kQRCodeGeneratorEnabled,
+        base::BindRepeating(
+            &BrowserCommandController::UpdateQRCodeGeneratorActionEnabledState,
+            base::Unretained(this)));
   }
 
   profile_pref_registrar_.Init(profile()->GetPrefs());
-  if (!base::FeatureList::IsEnabled(features::kDevToolsShowPolicyDialog)) {
-    profile_pref_registrar_.Add(
-        prefs::kDevToolsAvailability,
-        base::BindRepeating(
-            &BrowserCommandController::UpdateCommandsForDevTools,
-            base::Unretained(this)));
-    profile_pref_registrar_.Add(
-        prefs::kDeveloperToolsAvailabilityAllowlist,
-        base::BindRepeating(
-            &BrowserCommandController::UpdateCommandsForDevTools,
-            base::Unretained(this)));
-    profile_pref_registrar_.Add(
-        prefs::kDeveloperToolsAvailabilityBlocklist,
-        base::BindRepeating(
-            &BrowserCommandController::UpdateCommandsForDevTools,
-            base::Unretained(this)));
-  }
+#if !BUILDFLAG(IS_CHROMEOS)
+  profile_pref_registrar_.Add(
+      prefs::kDesktopSharingHubEnabled,
+      base::BindRepeating(
+          &BrowserCommandController::UpdateActionsForSharingHubPolicy,
+          base::Unretained(this)));
+#endif  // !BUILDFLAG(IS_CHROMEOS)
   profile_pref_registrar_.Add(
       bookmarks::prefs::kEditBookmarksEnabled,
       base::BindRepeating(
@@ -428,6 +439,13 @@ BrowserCommandController::BrowserCommandController(BrowserWindowInterface* bwi)
     }
   }
 
+  if (ttc::TtcKeyedService* ttc_service =
+          ttc::TtcKeyedService::Get(profile())) {
+    ttc_state_subscription_ = ttc_service->RegisterStateChangedCallback(
+        base::BindRepeating(&BrowserCommandController::TtcStateChanged,
+                            base::Unretained(this)));
+  }
+
   InitCommandState();
 
   // Bookmark editing commands depend on the bookmark model to be loaded.
@@ -456,11 +474,17 @@ BrowserCommandController::BrowserCommandController(BrowserWindowInterface* bwi)
     }
   }
 
+  if (g_browser_process && g_browser_process->profile_manager()) {
+    profile_attributes_observation_.Observe(
+        &g_browser_process->profile_manager()->GetProfileAttributesStorage());
+  }
+
   extension_state_observer_ =
       std::make_unique<ExtensionStateObserver>(this, profile());
 }
 
 BrowserCommandController::~BrowserCommandController() {
+  profile_attributes_observation_.Reset();
   extension_state_observer_.reset();
   // TabRestoreService may have been shutdown by the time we get here. Don't
   // trigger creating it.
@@ -532,14 +556,7 @@ bool BrowserCommandController::IsReservedCommandOrKey(
   }
 #endif
 
-  return command_id == IDC_CLOSE_TAB || command_id == IDC_CLOSE_WINDOW ||
-         command_id == IDC_NEW_INCOGNITO_WINDOW ||
-         command_id == IDC_NEW_ISOLATED_WINDOW || command_id == IDC_NEW_TAB ||
-         command_id == IDC_NEW_WINDOW || command_id == IDC_RESTORE_TAB ||
-         command_id == IDC_SELECT_NEXT_TAB ||
-         command_id == IDC_SELECT_PREVIOUS_TAB ||
-         command_id == IDC_CYCLE_TO_NEXT_TAB ||
-         command_id == IDC_CYCLE_TO_PREV_TAB || command_id == IDC_EXIT;
+  return IsReservedCommand(command_id);
 }
 
 void BrowserCommandController::TabStateChanged() {
@@ -579,6 +596,9 @@ void BrowserCommandController::GlicActiveInstanceChanged(
   UpdateGlicState();
 }
 
+void BrowserCommandController::TtcStateChanged(ttc::ServiceState state) {
+  UpdateTtcState(state);
+}
 
 void BrowserCommandController::FindBarVisibilityChanged() {
   // Block find command updates in locked fullscreen mode unless the instance is
@@ -637,7 +657,7 @@ bool BrowserCommandController::IsCommandEnabled(int id) const {
 
 bool BrowserCommandController::ExecuteCommandWithDispositionAndContext(
     int id,
-    WindowOpenDisposition disposition,
+    ui::mojom::WindowOpenDisposition disposition,
     std::optional<actions::ActionInvocationContext> context,
     base::TimeTicks time_stamp) {
   if (!SupportsCommand(id) || !IsCommandEnabled(id)) {
@@ -663,10 +683,21 @@ bool BrowserCommandController::ExecuteCommandWithDispositionAndContext(
 
 void BrowserCommandController::HandleCommandWithDisposition(
     int id,
-    WindowOpenDisposition disposition,
+    ui::mojom::WindowOpenDisposition disposition,
     base::TimeTicks time_stamp) {
   DCHECK(IsCommandEnabled(id)) << "Invalid/disabled command " << id;
 
+  // LINT.IfChange
+  // ===========================================================================
+  // When adding a new command below, you MUST also create a corresponding
+  // declarative ActionItem in the modern Actions framework. (Pure ActionItems
+  // added without legacy IDC_* commands are allowed).
+  //
+  // Quick Guide:
+  // 1. Map ID in //chrome/browser/ui/actions/chrome_action_id.h:
+  //    E(kActionFoo, IDC_FOO)
+  // 2. Wire callback in BrowserActions::Initialize...() (browser_actions.cc).
+  // ===========================================================================
   // The order of commands in this switch statement must match the function
   // declaration order in browser.h!
   switch (id) {
@@ -917,8 +948,7 @@ void BrowserCommandController::HandleCommandWithDisposition(
     case IDC_TOGGLE_JAVASCRIPT_APPLE_EVENTS: {
       content::WebContents* web_contents =
           browser_->tab_strip_model()->GetActiveWebContents();
-      if (base::FeatureList::IsEnabled(features::kDevToolsShowPolicyDialog) &&
-          !DevToolsWindow::AllowDevToolsFor(profile(), web_contents)) {
+      if (!DevToolsWindow::AllowDevToolsFor(profile(), web_contents)) {
         DevToolsPolicyDialog::Show(web_contents);
       } else {
         chrome::ToggleJavaScriptFromAppleEventsAllowed(browser_);
@@ -943,8 +973,7 @@ void BrowserCommandController::HandleCommandWithDisposition(
     case IDC_VIEW_SOURCE: {
       content::WebContents* web_contents =
           browser_->tab_strip_model()->GetActiveWebContents();
-      if (base::FeatureList::IsEnabled(features::kDevToolsShowPolicyDialog) &&
-          !DevToolsWindow::AllowDevToolsFor(profile(), web_contents)) {
+      if (!DevToolsWindow::AllowDevToolsFor(profile(), web_contents)) {
 #if !BUILDFLAG(IS_ANDROID)
         DevToolsPolicyDialog::Show(web_contents);
 #endif
@@ -987,19 +1016,35 @@ void BrowserCommandController::HandleCommandWithDisposition(
       break;
 #endif  // !BUILDFLAG(IS_CHROMEOS)
     case IDC_TURN_ON_SYNC:
-      signin_ui_util::EnableSyncFromSingleAccountPromo(
+      signin_ui_util::EnableHistorySyncFromSingleAccountPromo(
           browser_->GetProfile(),
           GetAccountInfoFromProfile(browser_->GetProfile())
               .GetCoreAccountInfo(),
           signin_metrics::AccessPoint::kMenu);
       break;
-    case IDC_SHOW_SIGNIN:
+    case IDC_SHOW_SIGNIN: {
+      Profile* profile = browser_->GetProfile();
+#if BUILDFLAG(ENABLE_DICE_SUPPORT)
+      signin::IdentityManager* identity_manager =
+          IdentityManagerFactory::GetForProfileIfExists(profile);
+      if (identity_manager &&
+          !identity_manager->HasPrimaryAccount(signin::ConsentLevel::kSignin)) {
+        AccountInfo account_for_promos =
+            signin_ui_util::GetSingleAccountForPromos(
+                identity_manager,
+                AccountPreviewDataServiceFactory::GetForProfile(profile));
+        if (!account_for_promos.IsEmpty()) {
+          SigninViewController::From(browser_)->ShowChromeSigninBubble(
+              account_for_promos, signin_metrics::AccessPoint::kMenu);
+          break;
+        }
+      }
+#endif  // BUILDFLAG(ENABLE_DICE_SUPPORT)
       signin_ui_util::SignInFromSingleAccountPromo(
-          browser_->GetProfile(),
-          GetAccountInfoFromProfile(browser_->GetProfile())
-              .GetCoreAccountInfo(),
+          profile, GetAccountInfoFromProfile(profile).GetCoreAccountInfo(),
           signin_metrics::AccessPoint::kMenu);
       break;
+    }
     case IDC_SHOW_SIGNIN_WHEN_PAUSED:
       signin_ui_util::ShowReauthForPrimaryAccountWithAuthError(
           browser_->GetProfile(), signin_metrics::AccessPoint::kMenu);
@@ -1050,6 +1095,9 @@ void BrowserCommandController::HandleCommandWithDisposition(
       break;
     case IDC_SHARING_HUB_SCREENSHOT:
       ScreenshotCapture(browser_);
+      break;
+    case IDC_SHOW_TTC_MENU:
+      ShowTtcMenuItem(browser_);
       break;
 
     // Clipboard commands
@@ -1247,9 +1295,13 @@ void BrowserCommandController::HandleCommandWithDisposition(
       break;
     case IDC_MANAGE_SKILLS:
       ShowSkillsYourSkills(webui::GetBrowserForOpeningWebUi(browser_));
+      BrowserUserEducationInterface::From(browser_)->NotifyNewBadgeFeatureUsed(
+          features::kSkillsAndExtensionsAppMenu);
       break;
     case IDC_BROWSE_SKILLS:
       ShowSkillsBrowse(webui::GetBrowserForOpeningWebUi(browser_));
+      BrowserUserEducationInterface::From(browser_)->NotifyNewBadgeFeatureUsed(
+          features::kSkillsAndExtensionsAppMenu);
       break;
     case IDC_SHOW_BOOKMARK_SIDE_PANEL:
       SidePanelUI::From(browser_)->Show(SidePanelEntryId::kBookmarks,
@@ -1337,8 +1389,13 @@ void BrowserCommandController::HandleCommandWithDisposition(
       ShowAboutChrome(webui::GetBrowserForOpeningWebUi(browser_));
       break;
     case IDC_UPGRADE_DIALOG:
-      OpenUpdateChromeDialog(browser_);
+      MaybeUpdateChrome(browser_);
       break;
+#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
+    case IDC_SCHEDULED_RESTART_DIALOG:
+      OpenScheduledRestartDialog(browser_);
+      break;
+#endif  // BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
     case IDC_OPEN_SAFETY_HUB:
       ShowSettingsSubPage(webui::GetBrowserForOpeningWebUi(browser_),
                           chrome::kSafetyHubSubPage);
@@ -1369,9 +1426,7 @@ void BrowserCommandController::HandleCommandWithDisposition(
       ShowBetaForum(browser_);
       break;
     case IDC_CHROME_ENTERPRISE_RELEASE_NOTES:
-      if (base::FeatureList::IsEnabled(features::kEnterpriseReleaseNotes)) {
-        chrome::ShowChromeEnterpriseReleaseNotes(browser_);
-      }
+      chrome::ShowChromeEnterpriseReleaseNotes(browser_);
       break;
     case IDC_ROUTE_MEDIA:
       RouteMediaInvokedFromAppMenu(browser_);
@@ -1428,9 +1483,6 @@ void BrowserCommandController::HandleCommandWithDisposition(
     case IDC_ADD_NEW_TAB_RECENT_GROUP:
       AddNewTabToRecentGroup(browser_);
       break;
-    case IDC_UNFOCUS_TAB_GROUP:
-      UnfocusTabGroup(browser_, TabGroupFocusExitReason::kTabStripButton);
-      break;
     case IDC_WINDOW_CLOSE_TABS_TO_RIGHT:
       CloseTabsToRight(browser_);
       break;
@@ -1481,6 +1533,13 @@ void BrowserCommandController::HandleCommandWithDisposition(
       }
       break;
     }
+    case IDC_UNINSTALL_WEB_APP:
+#if !BUILDFLAG(IS_CHROMEOS)
+      CHECK(web_app::AppBrowserController::From(browser_));
+      web_app::AppBrowserController::From(browser_)->Uninstall(
+          webapps::WebappUninstallSource::kAppMenu);
+#endif
+      break;
 
     // UI debug commands
     case IDC_DEBUG_TOGGLE_TABLET_MODE:
@@ -1493,6 +1552,12 @@ void BrowserCommandController::HandleCommandWithDisposition(
 
     case IDC_CONTENT_CONTEXT_LENS_OVERLAY:
       ExecLensOverlay(browser_);
+      break;
+
+    case IDC_ASK_GOOGLE_ABOUT_THIS_PAGE:
+      ExecAskGoogleAboutThisPage(
+          browser_, lens::LensOverlayInvocationSource::kAppMenuAskGoogle,
+          omnibox::ChromeAimEntryPoint::DESKTOP_CHROME_APP_MENU_ASK_GOOGLE);
       break;
 
 #if BUILDFLAG(ENABLE_LENS_DESKTOP_GOOGLE_BRANDED_FEATURES)
@@ -1509,7 +1574,7 @@ void BrowserCommandController::HandleCommandWithDisposition(
                                         SidePanelOpenTrigger::kAppMenu);
       break;
 
-    case IDC_SHOW_READING_MODE_SIDE_PANEL: {
+    case IDC_SHOW_READING_MODE: {
       // Yes. This is a separate feature from the reading list.
       read_anything::ReadAnythingEntryPointController::ShowUI(
           browser_, read_anything::mojom::ReadAnythingOpenTrigger::kAppMenu);
@@ -1554,8 +1619,8 @@ void BrowserCommandController::HandleCommandWithDisposition(
       Profile* profile = browser_->GetProfile();
       signin::IdentityManager* identity_manager =
           IdentityManagerFactory::GetForProfile(profile);
-      DCHECK(
-          identity_manager->HasPrimaryAccount(signin::ConsentLevel::kSignin));
+      CHECK(identity_manager->HasPrimaryAccount(signin::ConsentLevel::kSignin),
+            base::NotFatalUntil::M162);
       NavigateToGoogleAccountPage(
           profile,
           identity_manager->GetPrimaryAccountInfo(signin::ConsentLevel::kSignin)
@@ -1606,6 +1671,7 @@ void BrowserCommandController::HandleCommandWithDisposition(
       LOG(WARNING) << "Received Unimplemented Command: " << id;
       break;
   }
+  // LINT.ThenChange(//chrome/browser/ui/actions/chrome_action_id.h)
 }
 
 void BrowserCommandController::AddCommandObserver(int id,
@@ -1663,25 +1729,17 @@ void BrowserCommandController::TabGroupedStateChanged(
   UpdateCommandsForTabStripStateChanged();
 }
 
-void BrowserCommandController::OnTabChangedAt(tabs::TabInterface* tab,
-                                              TabChangeType change_type) {
-  if (change_type == TabChangeType::kBlockedOnly) {
-    PrintingStateChanged();
-    FullscreenStateChanged();
-    UpdateCommandsForFind();
-    UpdateCommandsForMediaRouter();
-  }
+void BrowserCommandController::OnTabBlockedStateChanged(
+    tabs::TabInterface* tab) {
+  PrintingStateChanged();
+  FullscreenStateChanged();
+  UpdateCommandsForFind();
+  UpdateCommandsForMediaRouter();
 }
 
 void BrowserCommandController::OnTabPinnedStateChanged(tabs::TabInterface* tab,
                                                        int index) {
   UpdateCommandsForTabStripStateChanged();
-}
-
-void BrowserCommandController::OnTabGroupFocusChanged(
-    std::optional<tab_groups::TabGroupId> new_focused_group,
-    std::optional<tab_groups::TabGroupId> old_focused_group) {
-  UpdateCommandsForTabGroupFocusChanged();
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -1700,6 +1758,32 @@ void BrowserCommandController::TabRestoreServiceDestroyed(
 void BrowserCommandController::TabRestoreServiceLoaded(
     sessions::TabRestoreService* service) {
   UpdateTabRestoreCommandState();
+}
+
+////////////////////////////////////////////////////////////////////////////////
+// BrowserCommandController, ProfileAttributesStorageObserver implementation:
+
+void BrowserCommandController::OnProfileAdded(
+    const base::FilePath& profile_path) {
+  if (profile()->GetPath() == profile_path) {
+    UpdateCommandsForProfile();
+  }
+}
+
+void BrowserCommandController::OnProfileNameChanged(
+    const base::FilePath& profile_path,
+    const std::u16string& old_profile_name) {
+  if (profile()->GetPath() == profile_path) {
+    UpdateCommandsForProfile();
+  }
+}
+
+void BrowserCommandController::OnProfileAiSubscriptionTierUpdated(
+    const base::FilePath& profile_path,
+    int tier) {
+  if (profile()->GetPath() == profile_path) {
+    UpdateCommandsForProfile();
+  }
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -1739,7 +1823,6 @@ void BrowserCommandController::InitCommandState() {
   command_updater_->UpdateCommandEnabled(IDC_CLOSE_TAB_GROUP, true);
   command_updater_->UpdateCommandEnabled(IDC_GROUP_UNGROUPED_TABS, true);
   command_updater_->UpdateCommandEnabled(IDC_ADD_NEW_TAB_RECENT_GROUP, true);
-  command_updater_->UpdateCommandEnabled(IDC_UNFOCUS_TAB_GROUP, true);
 
   // Omnibox commands
   command_updater_->UpdateCommandEnabled(IDC_SHOW_FULL_URLS, true);
@@ -1748,9 +1831,10 @@ void BrowserCommandController::InitCommandState() {
   command_updater_->UpdateCommandEnabled(IDC_SHOW_AI_MODE_OMNIBOX_BUTTON, true);
 
   // Skills menu commands
-  command_updater_->UpdateCommandEnabled(IDC_SKILLS_MENU, true);
+  command_updater_->UpdateCommandEnabled(IDC_SKILLS_AND_EXTENSIONS_MENU, true);
   command_updater_->UpdateCommandEnabled(IDC_MANAGE_SKILLS, true);
   command_updater_->UpdateCommandEnabled(IDC_BROWSE_SKILLS, true);
+  command_updater_->UpdateCommandEnabled(IDC_CONTEXTUAL_TASKS_MENU, true);
 
   // Window management commands
   command_updater_->UpdateCommandEnabled(IDC_CLOSE_WINDOW, true);
@@ -1758,8 +1842,7 @@ void BrowserCommandController::InitCommandState() {
   command_updater_->UpdateCommandEnabled(IDC_CLOSE_TAB, true);
   command_updater_->UpdateCommandEnabled(
       IDC_DUPLICATE_TAB,
-      browser_->GetType() !=
-          BrowserWindowInterface::Type::TYPE_PICTURE_IN_PICTURE);
+      browser_->GetType() != BrowserWindowInterface::Type::TYPE_FLOATING);
   UpdateTabRestoreCommandState();
   command_updater_->UpdateCommandEnabled(IDC_EXIT, true);
   command_updater_->UpdateCommandEnabled(IDC_NAME_WINDOW, true);
@@ -1829,25 +1912,16 @@ void BrowserCommandController::InitCommandState() {
 
   command_updater_->UpdateCommandEnabled(IDC_OPEN_FILE, CanOpenFile(browser_));
 
-  if (base::FeatureList::IsEnabled(features::kDevToolsShowPolicyDialog)) {
-    const bool dev_tools_enabled = true;
-    command_updater_->UpdateCommandEnabled(IDC_DEV_TOOLS, dev_tools_enabled);
-    command_updater_->UpdateCommandEnabled(IDC_DEV_TOOLS_CONSOLE,
-                                           dev_tools_enabled);
-    command_updater_->UpdateCommandEnabled(IDC_DEV_TOOLS_DEVICES,
-                                           dev_tools_enabled);
-    command_updater_->UpdateCommandEnabled(IDC_DEV_TOOLS_INSPECT,
-                                           dev_tools_enabled);
-    command_updater_->UpdateCommandEnabled(IDC_DEV_TOOLS_TOGGLE,
-                                           dev_tools_enabled);
-    command_updater_->UpdateCommandEnabled(IDC_VIEW_SOURCE, dev_tools_enabled);
+  command_updater_->UpdateCommandEnabled(IDC_DEV_TOOLS, true);
+  command_updater_->UpdateCommandEnabled(IDC_DEV_TOOLS_CONSOLE, true);
+  command_updater_->UpdateCommandEnabled(IDC_DEV_TOOLS_DEVICES, true);
+  command_updater_->UpdateCommandEnabled(IDC_DEV_TOOLS_INSPECT, true);
+  command_updater_->UpdateCommandEnabled(IDC_DEV_TOOLS_TOGGLE, true);
+  command_updater_->UpdateCommandEnabled(IDC_VIEW_SOURCE, true);
 #if BUILDFLAG(IS_MAC)
-    command_updater_->UpdateCommandEnabled(IDC_TOGGLE_JAVASCRIPT_APPLE_EVENTS,
-                                           dev_tools_enabled);
+  command_updater_->UpdateCommandEnabled(IDC_TOGGLE_JAVASCRIPT_APPLE_EVENTS,
+                                         true);
 #endif
-  } else {
-    UpdateCommandsForDevTools();
-  }
   command_updater_->UpdateCommandEnabled(IDC_TASK_MANAGER,
                                          CanOpenTaskManager());
   command_updater_->UpdateCommandEnabled(IDC_TASK_MANAGER_APP_MENU,
@@ -1871,8 +1945,7 @@ void BrowserCommandController::InitCommandState() {
   command_updater_->UpdateCommandEnabled(IDC_SHOW_COMMENTS_SIDE_PANEL, true);
   command_updater_->UpdateCommandEnabled(IDC_FIND_AND_EDIT_MENU, true);
   command_updater_->UpdateCommandEnabled(IDC_SAVE_AND_SHARE_MENU, true);
-  command_updater_->UpdateCommandEnabled(IDC_SHOW_READING_MODE_SIDE_PANEL,
-                                         true);
+  command_updater_->UpdateCommandEnabled(IDC_SHOW_READING_MODE, true);
   command_updater_->UpdateCommandEnabled(IDC_SHOW_READING_MODE_KEYBOARD, true);
   command_updater_->UpdateCommandEnabled(IDC_SHOW_CUSTOMIZE_CHROME_SIDE_PANEL,
                                          true);
@@ -1901,9 +1974,8 @@ void BrowserCommandController::InitCommandState() {
   command_updater_->UpdateCommandEnabled(IDC_HELP_PAGE_VIA_KEYBOARD, true);
   command_updater_->UpdateCommandEnabled(IDC_HELP_PAGE_VIA_MENU, true);
   command_updater_->UpdateCommandEnabled(IDC_SHOW_BETA_FORUM, true);
-  command_updater_->UpdateCommandEnabled(
-      IDC_CHROME_ENTERPRISE_RELEASE_NOTES,
-      base::FeatureList::IsEnabled(features::kEnterpriseReleaseNotes));
+  command_updater_->UpdateCommandEnabled(IDC_CHROME_ENTERPRISE_RELEASE_NOTES,
+                                         true);
   command_updater_->UpdateCommandEnabled(
       IDC_BOOKMARKS_MENU, (!guest_session && !profile()->IsSystemProfile()));
   command_updater_->UpdateCommandEnabled(IDC_SAVED_TAB_GROUPS_MENU, true);
@@ -1964,6 +2036,10 @@ void BrowserCommandController::InitCommandState() {
                                          is_web_app_or_custom_tab);
   command_updater_->UpdateCommandEnabled(IDC_WEB_APP_MENU_APP_INFO,
                                          is_web_app_or_custom_tab);
+  command_updater_->UpdateCommandEnabled(
+      IDC_UNINSTALL_WEB_APP,
+      is_web_app_or_custom_tab &&
+          web_app::AppBrowserController::From(browser_)->CanUserUninstall());
 
   // Tab management commands
   const bool supports_tabs =
@@ -1991,6 +2067,9 @@ void BrowserCommandController::InitCommandState() {
 
   // These are always enabled; the menu determines their menu item visibility.
   command_updater_->UpdateCommandEnabled(IDC_UPGRADE_DIALOG, true);
+#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
+  command_updater_->UpdateCommandEnabled(IDC_SCHEDULED_RESTART_DIALOG, true);
+#endif  // BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
   command_updater_->UpdateCommandEnabled(IDC_SET_BROWSER_AS_DEFAULT, true);
 
   // Safety Hub commands.
@@ -2041,6 +2120,12 @@ void BrowserCommandController::InitCommandState() {
       IDC_GLIC_TOGGLE_PIN, glic::GlicEnabling::IsProfileEligible(profile()));
   UpdateGlicState();
 
+  // TTC commands.
+  if (ttc::TtcKeyedService* ttc_service =
+          ttc::TtcKeyedService::Get(profile())) {
+    UpdateTtcState(ttc_service->GetState());
+  }
+
   // Initialize other commands whose state changes based on various conditions.
   UpdateCommandsForFullscreenMode();
   UpdateCommandsForContentRestrictionState();
@@ -2049,7 +2134,7 @@ void BrowserCommandController::InitCommandState() {
   UpdateCommandsForExtensionsMenu();
   UpdateCommandsForTabKeyboardFocus(GetKeyboardFocusedTabIndex(browser_));
   UpdateCommandsForWebContentsFocus();
-  UpdateCommandsForTabGroupFocusChanged();
+  UpdateCommandsForProfile();
 }
 
 // static
@@ -2114,8 +2199,10 @@ void BrowserCommandController::UpdateCommandsForIncognitoAvailability() {
   // open.
   if (auto* const incognito_action =
           FindAction(kActionNewIncognitoWindow, browser_)) {
-    incognito_action->SetEnabled(
-        IncognitoModePrefs::IsIncognitoAllowed(profile()));
+    // Only standard Incognito enables this action. When Enterprise Isolated
+    // Mode replaces Incognito, kActionNewIsolatedWindow is used instead.
+    incognito_action->SetEnabled(IncognitoModePrefs::IsIncognitoTypeAllowed(
+        profile(), IncognitoModePrefs::IncognitoModeType::kStandard));
   }
   if (auto* const isolated_action =
           FindAction(kActionNewIsolatedWindow, browser_)) {
@@ -2233,10 +2320,11 @@ void BrowserCommandController::UpdateCommandsForTabState() {
       IDC_OPEN_IN_CHROME,
       IsWebAppOrCustomTab(browser_) && !is_isolated_app && !is_pinned_home_tab);
 
+  tabs::TabInterface* active_tab = browser_->tab_strip_model()->GetActiveTab();
   command_updater_->UpdateCommandEnabled(
       IDC_READING_LIST_MENU_ADD_TAB,
-      browser_->tab_strip_model()->IsReadLaterSupportedForAny(
-          {browser_->tab_strip_model()->active_index()}));
+      active_tab && browser_->tab_strip_model()->IsReadLaterSupportedForAny(
+                        {active_tab->GetHandle()}));
 
   command_updater_->UpdateCommandEnabled(
       IDC_TOGGLE_REQUEST_TABLET_SITE,
@@ -2249,15 +2337,6 @@ void BrowserCommandController::UpdateCommandsForTabState() {
   // Update the zoom commands when an active tab is selected.
   UpdateCommandsForZoomState();
   UpdateCommandsForTabKeyboardFocus(GetKeyboardFocusedTabIndex(browser_));
-  if (!base::FeatureList::IsEnabled(features::kDevToolsShowPolicyDialog)) {
-    UpdateCommandsForDevTools();
-  } else {
-    // Block the View Source command if DevTools are disabled.
-    command_updater_->UpdateCommandEnabled(
-        IDC_VIEW_SOURCE,
-        DevToolsWindow::AllowDevToolsFor(
-            profile(), browser_->tab_strip_model()->GetActiveWebContents()));
-  }
 }
 
 void BrowserCommandController::UpdateCommandsForZoomState() {
@@ -2274,6 +2353,14 @@ void BrowserCommandController::UpdateCommandsForZoomState() {
   command_updater_->UpdateCommandEnabled(IDC_ZOOM_NORMAL,
                                          CanResetZoom(contents));
   command_updater_->UpdateCommandEnabled(IDC_ZOOM_MINUS, CanZoomOut(contents));
+
+  if (const auto* zoom_controller =
+          zoom::ZoomController::FromWebContents(contents)) {
+    if (auto* const zoom_action = FindAction(kActionZoomNormal, browser_)) {
+      zoom_action->SetText(
+          base::FormatPercent(zoom_controller->GetZoomPercent()));
+    }
+  }
 }
 
 void BrowserCommandController::UpdateCommandsForContentRestrictionState() {
@@ -2287,30 +2374,6 @@ void BrowserCommandController::UpdateCommandsForContentRestrictionState() {
       IDC_PASTE, !(restrictions & CONTENT_RESTRICTION_PASTE));
   UpdateSaveAsState();
   UpdatePrintingState();
-}
-
-// TODO(crbug.com/442892562): Remove this function once the feature is launched.
-void BrowserCommandController::UpdateCommandsForDevTools() {
-  if (IsInLockedFullscreenMode(/*allow_ontask=*/false)) {
-    return;
-  }
-
-  bool dev_tools_enabled = DevToolsWindow::AllowDevToolsFor(
-      profile(), browser_->tab_strip_model()->GetActiveWebContents());
-  command_updater_->UpdateCommandEnabled(IDC_DEV_TOOLS, dev_tools_enabled);
-  command_updater_->UpdateCommandEnabled(IDC_DEV_TOOLS_CONSOLE,
-                                         dev_tools_enabled);
-  command_updater_->UpdateCommandEnabled(IDC_DEV_TOOLS_DEVICES,
-                                         dev_tools_enabled);
-  command_updater_->UpdateCommandEnabled(IDC_DEV_TOOLS_INSPECT,
-                                         dev_tools_enabled);
-  command_updater_->UpdateCommandEnabled(IDC_DEV_TOOLS_TOGGLE,
-                                         dev_tools_enabled);
-  command_updater_->UpdateCommandEnabled(IDC_VIEW_SOURCE, dev_tools_enabled);
-#if BUILDFLAG(IS_MAC)
-  command_updater_->UpdateCommandEnabled(IDC_TOGGLE_JAVASCRIPT_APPLE_EVENTS,
-                                         dev_tools_enabled);
-#endif
 }
 
 void BrowserCommandController::UpdateCommandsForBookmarkEditing() {
@@ -2399,8 +2462,7 @@ void BrowserCommandController::UpdateCommandsForFullscreenMode() {
       browser_->GetType() != BrowserWindowInterface::Type::TYPE_NORMAL &&
           !is_fullscreen &&
           browser_->GetType() != BrowserWindowInterface::Type::TYPE_DEVTOOLS &&
-          browser_->GetType() !=
-              BrowserWindowInterface::Type::TYPE_PICTURE_IN_PICTURE);
+          browser_->GetType() != BrowserWindowInterface::Type::TYPE_FLOATING);
 
   // Focus various bits of UI
   command_updater_->UpdateCommandEnabled(IDC_FOCUS_TOOLBAR, show_main_ui);
@@ -2437,8 +2499,6 @@ void BrowserCommandController::UpdateCommandsForFullscreenMode() {
   command_updater_->UpdateCommandEnabled(IDC_CHROME_TIPS, show_main_ui);
   command_updater_->UpdateCommandEnabled(IDC_CHROME_WHATS_NEW, show_main_ui);
 #endif
-  command_updater_->UpdateCommandEnabled(IDC_CONTENT_CONTEXT_SHARING_SUBMENU,
-                                         show_main_ui);
   command_updater_->UpdateCommandEnabled(IDC_SHARING_HUB, show_main_ui);
   command_updater_->UpdateCommandEnabled(IDC_SHARING_HUB_SCREENSHOT,
                                          show_main_ui);
@@ -2459,6 +2519,15 @@ void BrowserCommandController::UpdateCommandsForFullscreenMode() {
   command_updater_->UpdateCommandEnabled(IDC_FULLSCREEN, fullscreen_enabled);
   command_updater_->UpdateCommandEnabled(IDC_TOGGLE_FULLSCREEN_TOOLBAR,
                                          fullscreen_enabled);
+
+  if (auto* const fullscreen_action = FindAction(kActionFullscreen, browser_)) {
+    const int string_id =
+        is_fullscreen ? IDS_ACCNAME_EXIT_FULLSCREEN
+                      : (fullscreen_enabled ? IDS_ACCNAME_FULLSCREEN
+                                            : IDS_ACCNAME_FULLSCREEN_DISABLED);
+    fullscreen_action->SetTooltipText(l10n_util::GetStringUTF16(string_id));
+    fullscreen_action->SetAccessibleName(l10n_util::GetStringUTF16(string_id));
+  }
 
   UpdateCommandsForBookmarkBar();
   UpdateCommandsForIncognitoAvailability();
@@ -2493,7 +2562,7 @@ void NonAllowlistedCommandsAreDisabled(const CommandUpdater* command_updater) {
     if (std::ranges::contains(kAllowlistedIds, id)) {
       continue;
     }
-    DCHECK(!command_updater->IsCommandEnabled(id));
+    CHECK(!command_updater->IsCommandEnabled(id), base::NotFatalUntil::M162);
   }
 }
 #endif
@@ -2507,7 +2576,8 @@ void BrowserCommandController::UpdateCommandsForLockedFullscreenMode() {
   bool is_locked_fullscreen =
       platform_util::IsBrowserLockedFullscreen(browser_);
   // Sanity check to make sure this function is called only on state change.
-  DCHECK_NE(is_locked_fullscreen, is_locked_fullscreen_);
+  CHECK_NE(is_locked_fullscreen, is_locked_fullscreen_,
+           base::NotFatalUntil::M162);
   if (is_locked_fullscreen == is_locked_fullscreen_) {
     return;
   }
@@ -2530,6 +2600,18 @@ void BrowserCommandController::UpdateCommandsForLockedFullscreenMode() {
     if (IsLockedForOnTask(browser_)) {
       UpdateTabSwitchingCommandState();
       UpdateCommandsForFind();
+    }
+    if (auto* side_panel_ui = SidePanelUI::From(browser_)) {
+      if (side_panel_ui->GetCurrentEntryId() == SidePanelEntryId::kGlic) {
+        side_panel_ui->Close();
+      }
+    }
+    if (auto* const action = FindAction(kActionSidePanelShowGlic, browser_)) {
+      action->SetVisible(false);
+    }
+    if (auto* service =
+            glic::GlicKeyedServiceFactory::GetGlicKeyedService(profile())) {
+      service->CloseFloatingPanel();
     }
   } else {
     // Do an init call to re-initialize command state after the
@@ -2575,6 +2657,23 @@ void BrowserCommandController::SetTabSwitchCommandsEnabled(bool enabled) {
   is_tab_switching_enabled_ = enabled;
   UpdateTabSwitchingCommandState();
 }
+
+void BrowserCommandController::OnTaskStateChanged() {
+  CHECK(features::IsUseUnifiedLockedStateControllerEnabled());
+  // While pinned (including extension locked fullscreen), all commands are
+  // disabled by UpdateCommandsForLockedFullscreenMode() and must stay that way.
+  if (IsInLockedFullscreenMode(/*allow_ontask=*/false)) {
+    return;
+  }
+  // DevTools are unavailable throughout the OnTask lifecycle; this re-derives
+  // the state for the unpinned (prepared / unlocked) transitions.
+  const bool enabled = !IsLockedForOnTask(browser_);
+  command_updater_->UpdateCommandEnabled(IDC_DEV_TOOLS, enabled);
+  command_updater_->UpdateCommandEnabled(IDC_DEV_TOOLS_CONSOLE, enabled);
+  command_updater_->UpdateCommandEnabled(IDC_DEV_TOOLS_DEVICES, enabled);
+  command_updater_->UpdateCommandEnabled(IDC_DEV_TOOLS_INSPECT, enabled);
+  command_updater_->UpdateCommandEnabled(IDC_DEV_TOOLS_TOGGLE, enabled);
+}
 #endif  // BUILDFLAG(IS_CHROMEOS)
 
 void BrowserCommandController::UpdatePrintingState() {
@@ -2612,6 +2711,15 @@ void BrowserCommandController::UpdateGlicState() {
       }
     }
   }
+}
+
+void BrowserCommandController::UpdateTtcState(ttc::ServiceState state) {
+  if (IsInLockedFullscreenMode(/*allow_ontask=*/false)) {
+    return;
+  }
+
+  UpdateCommandAndActionEnabled(IDC_SHOW_TTC_MENU, kActionShowTtcMenu,
+                                state == ttc::ServiceState::kSessionInactive);
 }
 
 void BrowserCommandController::UpdateSaveAsState() {
@@ -2789,23 +2897,20 @@ void BrowserCommandController::UpdateCommandsForEnableGlicChanged() {
       }
     }
   }
-}
 
-void BrowserCommandController::UpdateCommandsForTabGroupFocusChanged() {
-  if (IsInLockedFullscreenMode(/*allow_ontask=*/false)) {
-    return;
+  const bool show_skills_and_extensions =
+      profile()->IsRegularProfile() &&
+      skills::SkillsServiceFactory::IsSkillsEnabledForProfile(profile()) &&
+      base::FeatureList::IsEnabled(features::kSkillsAndExtensionsAppMenu);
+  if (auto* const action =
+          FindAction(kActionSkillsAndExtensionsSubmenu, browser_)) {
+    action->SetVisible(show_skills_and_extensions);
   }
-
-  if (base::FeatureList::IsEnabled(features::kTabGroupsFocusing)) {
-    const bool is_focused =
-        browser_->tab_strip_model()->GetFocusedGroup().has_value();
-    if (auto* const action = FindAction(kActionUnfocusTabGroup, browser_)) {
-      action->SetVisible(is_focused);
-    }
-    if (auto* const action =
-            FindAction(kActionToggleCollapseVertical, browser_)) {
-      action->SetVisible(!is_focused);
-    }
+  if (auto* const action = FindAction(kActionExtensionsSubmenu, browser_)) {
+    action->SetVisible(!show_skills_and_extensions);
+  }
+  if (auto* const action = FindAction(kActionFindExtensions, browser_)) {
+    action->SetVisible(!show_skills_and_extensions);
   }
 }
 
@@ -2815,6 +2920,65 @@ void BrowserCommandController::UpdateCommandsForProfiling() {
                                            IsShowingMainUI());
     UpdateCheckedState(kActionProfilingEnabled,
                        content::Profiling::BeingProfiled());
+  }
+}
+
+void BrowserCommandController::UpdateCommandsForProfile() {
+  if (IsInLockedFullscreenMode(/*allow_ontask=*/false)) {
+    return;
+  }
+
+  if (profile()->IsIncognitoProfile() || profile()->IsGuestSession()) {
+    return;
+  }
+
+  ProfileAttributesEntry* profile_attributes =
+      (g_browser_process && g_browser_process->profile_manager())
+          ? GetProfileAttributesFromProfile(profile())
+          : nullptr;
+  if (!profile_attributes) {
+    return;
+  }
+
+  std::u16string accessible_name =
+      GetProfileMenuDisplayName(profile_attributes);
+  if (GetAvatarAiDecoration(profile()).show_decoration &&
+      !accessible_name.empty()) {
+    accessible_name = l10n_util::GetStringFUTF16(
+        IDS_PROFILE_AVATAR_NAME_WITH_AI_MEMBERSHIP, accessible_name);
+  }
+  if (auto* const profile_action =
+          FindAction(kActionProfileSubmenu, browser_)) {
+    profile_action->SetAccessibleName(accessible_name);
+  }
+}
+
+void BrowserCommandController::UpdateActionsForSharingHubPolicy() {
+#if !BUILDFLAG(IS_CHROMEOS)
+  // Update the visibility of the QR code generator, send tab to self, and copy
+  // link actions based on the sharing hub policy. This matches the fact that
+  // these actions' visibility in the app menu.
+  const bool sharing_enabled =
+      profile()->GetPrefs()->GetBoolean(prefs::kDesktopSharingHubEnabled);
+
+  auto update_action_visibility =
+      [this, &sharing_enabled](actions::ActionId action_id) {
+        if (auto* action_item = FindAction(action_id, browser_)) {
+          action_item->SetVisible(sharing_enabled);
+        }
+      };
+  update_action_visibility(kActionQrCodeGenerator);
+  update_action_visibility(kActionSendTabToSelf);
+  update_action_visibility(kActionCopyUrl);
+#endif  // !BUILDFLAG(IS_CHROMEOS)
+}
+
+void BrowserCommandController::UpdateQRCodeGeneratorActionEnabledState() {
+  bool qr_code_generator_enabled = g_browser_process->local_state()->GetBoolean(
+      prefs::kQRCodeGeneratorEnabled);
+  if (auto* qr_code_action_item =
+          FindAction(kActionQrCodeGenerator, browser_)) {
+    qr_code_action_item->SetEnabled(qr_code_generator_enabled);
   }
 }
 

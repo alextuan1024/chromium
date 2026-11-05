@@ -60,6 +60,10 @@ graph TD
     Main -->|10. Accept (Keep CL) or Reject (Abandon CL)| Main
 ```
 
+- **Subagent Model Policy**: Pass `Model: 'flash'` when invoking **Implementer**
+  and **Pinpoint** subagents; use `Model: 'inherit'` (the default) for all other
+  subagents (**Explorer**, **Profiler**, and **Reviewer**).
+
 ______________________________________________________________________
 
 ## Step 1: Bottleneck & Opportunity Discovery
@@ -155,6 +159,9 @@ ______________________________________________________________________
 >   `topic:chrome-perf-opt-rejected` or `topic:chrome-perf-opt-accepted`. Do NOT
 >   combine multiple separate optimizations into a single CL; each optimization
 >   must stand on its own merits as an independent CL.
+> - **Avoid Changes Ineffective on LTO/PGO Builds**: Changes unlikely to make an
+>   effect on LTO/PGO builds (like moving functions to headers for better
+>   inlining) should be avoided; Pinpoint uses ThinLTO and other bots use PGO.
 > - **No Micro-Tweaks**: Do NOT propose single variable renames, isolated
 >   trivial bound checks, or micro-helpers that produce `< 0.1%` change and
 >   vanish in Pinpoint noise.
@@ -207,7 +214,7 @@ Verify correctness locally in the worktree before uploading to Gerrit:
 
    ```bash
    autoninja -C out/release chrome chromedriver
-   ./third_party/crossbench/cb.py speedometer_3.1 --browser=out/release/chrome --driver-path=out/release/chromedriver --stories=<TargetStory> --headless
+   tools/perf/cb speedometer_3.1 --browser=out/release/chrome --driver-path=out/release/chromedriver --stories=<TargetStory> --headless
    ```
 
 ______________________________________________________________________
@@ -226,10 +233,13 @@ on the candidate branch:
      - Does it take prohibited architectural shortcuts (e.g. bypassing security
        checks, skipping required style updates, or breaking lifecycle
        guarantees) that only create an illusory speedup?
-   - **Veto Rule**: If the change is fundamentally flawed or unviable, the
-     subagent issues a `VETO` decision and aborts immediately. The candidate is
-     **discarded without uploading to Gerrit or triggering Pinpoint**, saving
-     hours of expensive Apple Silicon bot time.
+     - Does it rely on changes unlikely to affect LTO/PGO builds (like moving
+       functions to headers for inlining)? These should be avoided.
+   - **Veto Rule**: If the change is fundamentally flawed, unviable, or
+     introduces irreparable correctness bugs, the subagent issues a `VETO`
+     decision and aborts immediately. The candidate is **discarded without
+     uploading to Gerrit or triggering Pinpoint**, saving hours of expensive
+     Apple Silicon bot time.
 
 2. **Chromium & V8 Code Quality Audit Checklist**: If conceptually sound, the
    subagent audits the diff against core engine standards:
@@ -340,17 +350,16 @@ ______________________________________________________________________
 
 ## Step 7: Evaluate Results & Autonomous Decision
 
-1. Check comparison results once the job completes:
+1. Evaluate the job once it completes:
 
    ```bash
    vpython3 .agents/skills/chrome-performance-optimizer/scripts/pinpoint_evaluator.py --action evaluate --job-id <JOB_ID>
    ```
 
-   Or inspect the comparison table directly:
-
-   ```bash
-   pp s <JOB_ID>
-   ```
+   The script's `Decision:` line is the verdict. The raw table
+   (`pp s --show-all <JOB_ID>`) is for diagnostics only: it has no
+   multiple-testing correction, and without `--show-all` it hides rows with
+   `p >= 0.01`, usually including `Score`.
 
 2. **Metric Direction Interpretation**:
 
@@ -358,16 +367,48 @@ ______________________________________________________________________
      Direction is `smaller-better` (duration/latency in ms).
      - **Negative change (`-X.X%`)**: Faster / Improvement (Win).
      - **Positive change (`+X.X%`)**: Slower / Regression (Loss).
-   - **Composite Score (`Score`)**: Direction is `larger-better` (higher score =
-     faster).
+   - **Composite Score (`Score`)**: Direction is `bigger-better` /
+     `larger-better` (higher score = faster).
      - **Positive change (`+X.X%`)**: Improvement (Win).
      - **Negative change (`-X.X%`)**: Regression (Loss).
 
-3. **Decision Rules**:
+3. **Statistical Evaluation** (as implemented by `pinpoint_evaluator.py`, with
+   `alpha = 0.05`):
 
-   - ✅ **Statistically Significant Improvement ($p < 0.05$)**:
-     - Significant reduction in subtest durations (`-X%` on `smaller-better`) or
-       increase in composite `Score` with zero significant regressions.
+   - `Score` (`Total` for JetStream) is the primary endpoint: it counts as
+     improved or regressed at unadjusted `p < 0.05`. Because `Score` already
+     integrates all subtests, a statistically significant `Score` improvement
+     (`p < 0.05`) **always keeps the CL**, even if one or more individual
+     subtests regressed.
+   - Subtests are corrected for testing all `m` of them at once: an improvement
+     or a regression is confirmed by directional Benjamini-Hochberg
+     (`q_BH < 0.05`, FDR), applied separately to each direction. Subtests with
+     raw `p < 0.05` that fail the correction are listed as noise and ignored.
+   - Subtest-only wins (when `Score` is not significantly improved) are kept
+     only if at least one subtest has a confirmed improvement (`q_BH < 0.05`),
+     zero subtests have a confirmed regression (`q_BH < 0.05`), `Score` did not
+     regress, and no `Score` veto fired (a `Score` drop of more than 0.05% with
+     `p < 0.20` rejects a subtest-only win).
+   - The output includes 95% confidence intervals and the minimum detectable
+     effect (`MDE`) at 80% power. A non-significant result does not rule out
+     effects smaller than the `MDE`.
+   - A win confined to subtests with a non-significant `Score` is tentative, and
+     the `Decision:` line says so: some subtests (notably `Editor-TipTap`) vary
+     more between jobs than the within-job error suggests. State this when
+     proposing such a CL.
+
+4. **Decision Actions**:
+
+   - ✅ **Keep** (`Decision: Propose / Keep CL`): `Score` improved significantly
+     (`p < 0.05`), OR at least one subtest improved with zero confirmed
+     regressions and no `Score` veto.
+     - If `Score` improved significantly *and* one or more subtests had a
+       confirmed regression (`q_BH < 0.05`), **do NOT abandon or tag
+       `chrome-perf-opt-rejected`** (which would blocklist the files in
+       `check_candidate_novelty.py`). You may optionally upload a targeted
+       Patchset 2 refinement on the same CL to eliminate avoidable collateral
+       overhead on the regressed subtest(s), or accept the CL directly if the
+       tradeoff is inherent.
      - Mark the CL as accepted on Gerrit:
        ```bash
        vpython3 .agents/skills/chrome-performance-optimizer/scripts/pinpoint_evaluator.py --action accept
@@ -377,9 +418,9 @@ ______________________________________________________________________
        git cl upload -m "Add Pinpoint M1 benchmark results (+X.X% improvement)"
        ```
      - Propose the change to the user and reviewers.
-   - ❌ **Neutral or Regressed**:
-     - Positive delta (`+X%`) on `smaller-better` metrics indicates a
-       **regression**, or no metric reaches $p < 0.05$.
+   - ❌ **Abandon** (`Decision: Abandon CL`): `Score` did not significantly
+     improve AND either no subtest improvement survives the correction, `Score`
+     or a subtest regressed, or the `Score` veto fired.
      - Mark as rejected on Gerrit and abandon the CL:
        ```bash
        vpython3 .agents/skills/chrome-performance-optimizer/scripts/pinpoint_evaluator.py --action reject

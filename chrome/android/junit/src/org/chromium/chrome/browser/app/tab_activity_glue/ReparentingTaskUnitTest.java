@@ -7,6 +7,7 @@ package org.chromium.chrome.browser.app.tab_activity_glue;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
@@ -18,8 +19,14 @@ import static org.mockito.Mockito.when;
 
 import android.content.Context;
 import android.content.Intent;
+import android.graphics.Color;
+import android.graphics.drawable.ColorDrawable;
 import android.os.Bundle;
 import android.provider.Browser;
+import android.view.ContextThemeWrapper;
+import android.view.View;
+
+import androidx.test.core.app.ApplicationProvider;
 
 import org.junit.After;
 import org.junit.Before;
@@ -38,6 +45,7 @@ import org.chromium.base.Token;
 import org.chromium.base.UserDataHost;
 import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.build.annotations.Nullable;
+import org.chromium.chrome.R;
 import org.chromium.chrome.browser.IntentHandler;
 import org.chromium.chrome.browser.app.tabmodel.AsyncTabParamsManagerSingleton;
 import org.chromium.chrome.browser.app.tabwindow.TabWindowManagerSingleton;
@@ -69,7 +77,7 @@ public class ReparentingTaskUnitTest {
     @Mock private WindowAndroid mWindowAndroid;
 
     @Mock private Tab mTab;
-    private final UserDataHost mUserDataHost = new UserDataHost();
+    private UserDataHost mUserDataHost;
     @Mock private ReparentingTask mTabReparentingTask;
     @Mock private WebContents mWebContents;
 
@@ -83,6 +91,7 @@ public class ReparentingTaskUnitTest {
 
     @Before
     public void setup() {
+        mUserDataHost = new UserDataHost();
         when(mTab.getUserDataHost()).thenReturn(mUserDataHost);
         when(mTab.getWebContents()).thenReturn(mWebContents);
         when(mTab.getId()).thenReturn(TAB_ID);
@@ -180,7 +189,7 @@ public class ReparentingTaskUnitTest {
 
     @Test
     public void testBegin_setsIntentParameters_incognito() {
-        when(mTab.isIncognito()).thenReturn(true);
+        when(mTab.isIncognitoBranded()).thenReturn(true);
         final ReparentingTask task = ReparentingTask.from(mTab);
         final Intent intent = new Intent();
 
@@ -203,6 +212,29 @@ public class ReparentingTaskUnitTest {
                 "#begin(...) should set the EXTRA_OPEN_NEW_INCOGNITO_TAB extra of the Intent if"
                         + " the Tab is incognito",
                 sentIntent.getBooleanExtra(IntentHandler.EXTRA_OPEN_NEW_INCOGNITO_TAB, false));
+    }
+
+    @Test
+    public void testBegin_setsIntentParameters_offTheRecordNonIncognito() {
+        when(mTab.isOffTheRecord()).thenReturn(true);
+        when(mTab.isIncognitoBranded()).thenReturn(false);
+        final ReparentingTask task = ReparentingTask.from(mTab);
+        final Intent intent = new Intent();
+
+        task.begin(mContext, intent, null, null);
+
+        final ArgumentCaptor<Intent> captor = ArgumentCaptor.forClass(Intent.class);
+        verify(mContext).startActivity(captor.capture(), any());
+        final Intent sentIntent = captor.getValue();
+
+        assertNull(
+                "#begin(...) should not populate the EXTRA_APPLICATION_ID extra for"
+                        + " non-incognito-branded OTR Tab",
+                sentIntent.getStringExtra(Browser.EXTRA_APPLICATION_ID));
+        assertFalse(
+                "#begin(...) should not set EXTRA_OPEN_NEW_INCOGNITO_TAB extra for"
+                        + " non-incognito-branded OTR Tab",
+                sentIntent.hasExtra(IntentHandler.EXTRA_OPEN_NEW_INCOGNITO_TAB));
     }
 
     @Test
@@ -337,7 +369,6 @@ public class ReparentingTaskUnitTest {
                 /* tabGroupTitle= */ "Group",
                 /* mhtmlTabTitle= */ null,
                 /* tabGroupCollapsed= */ false,
-                /* isGroupShared= */ false,
                 /* isIncognito= */ false);
     }
 
@@ -460,7 +491,14 @@ public class ReparentingTaskUnitTest {
         final WindowAndroid targetWindow = mock(WindowAndroid.class);
         final TabDelegateFactory targetTabDelegateFactory = mock(TabDelegateFactory.class);
         final Runnable finalizeCallback = mock(Runnable.class);
-        final CompositorViewHolder compositorViewHolder = mock(CompositorViewHolder.class);
+        final Context context =
+                new ContextThemeWrapper(
+                        ApplicationProvider.getApplicationContext(),
+                        R.style.Theme_BrowserUI_DayNight);
+        final CompositorViewHolder compositorViewHolder = new CompositorViewHolder(context, null);
+        final View compositorView = compositorViewHolder.getCompositorView();
+        // The view may already be white, so start from red to observe finish() changing it.
+        compositorView.setBackgroundColor(Color.RED);
         final ReparentingTask.Delegate delegate =
                 new ReparentingTask.Delegate() {
                     @Override
@@ -480,14 +518,20 @@ public class ReparentingTaskUnitTest {
                 };
 
         task.begin(mContext, intent, null, null);
+        assertEquals(Color.RED, getBackgroundColor(compositorView));
         task.finish(delegate, finalizeCallback);
 
         final InOrder inOrder = inOrder(mTab);
         inOrder.verify(mTab).updateAttachment(null, null);
         inOrder.verify(mTab).updateAttachment(targetWindow, targetTabDelegateFactory);
 
-        verify(compositorViewHolder).prepareForTabReparenting();
+        // finish() prepares the view for the reparented tab, which makes it white.
+        assertEquals(Color.WHITE, getBackgroundColor(compositorView));
         verify(mReparentingTaskNatives).attachTab(mWebContents);
         verify(finalizeCallback).run();
+    }
+
+    private static int getBackgroundColor(View view) {
+        return ((ColorDrawable) view.getBackground()).getColor();
     }
 }

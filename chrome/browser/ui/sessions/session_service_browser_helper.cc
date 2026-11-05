@@ -25,6 +25,7 @@
 #include "components/tabs/public/split_tab_data.h"
 #include "components/tabs/public/tab_group.h"
 #include "content/public/browser/web_contents.h"
+#include "ui/gfx/range/range.h"
 
 namespace {
 
@@ -32,6 +33,9 @@ void UpdateTabGroupSessionMetadata(Profile& profile,
                                    TabStripModel& tab_strip_model,
                                    SessionID session_id,
                                    const tab_groups::TabGroupId& group_id) {
+  if (!tab_strip_model.IsPersistableTabGroup(group_id)) {
+    return;
+  }
   SessionService* const session_service =
       SessionServiceFactory::GetForProfile(&profile);
   if (!session_service) {
@@ -42,6 +46,23 @@ void UpdateTabGroupSessionMetadata(Profile& profile,
       tab_strip_model.group_model()->GetTabGroup(group_id)->visual_data();
 
   session_service->SetTabGroupMetadata(session_id, group_id, visual_data);
+}
+
+void PromoteClosedTabsForGroup(Profile& profile,
+                               TabStripModel& tab_strip_model,
+                               const tab_groups::TabGroupId& group_id) {
+  if (!tab_strip_model.IsPersistableTabGroup(group_id)) {
+    return;
+  }
+  sessions::TabRestoreService* const tab_restore_service =
+      TabRestoreServiceFactory::GetForProfile(&profile);
+  if (!tab_restore_service) {
+    return;
+  }
+
+  const tab_groups::TabGroupVisualData* visual_data =
+      tab_strip_model.group_model()->GetTabGroup(group_id)->visual_data();
+  tab_restore_service->PromoteEphemeralTabGroup(group_id, *visual_data);
 }
 
 }  // namespace
@@ -180,6 +201,32 @@ void SessionServiceBrowserHelper::OnTabStripModelChanged(
   }
 }
 
+void SessionServiceBrowserHelper::OnTabGroupPromoted(
+    const tab_groups::TabGroupId& group) {
+  // See comment in `OnTabGroupChanged`.
+  CHECK(!IsRelevantToAppSessionService(browser_type_),
+        base::NotFatalUntil::M162);
+  CHECK(tab_strip_model_->group_model(), base::NotFatalUntil::M162);
+  // Promotion is only sent for a group that is in the model and is no longer
+  // ephemeral, so it is always persistable.
+  CHECK(tab_strip_model_->group_model()->ContainsTabGroup(group),
+        base::NotFatalUntil::M162);
+
+  // While the group was ephemeral, its tabs were written to the session as
+  // ungrouped and its metadata was not written. Write both now. The focused
+  // group is persisted by Browser::OnTabGroupPromoted().
+  const gfx::Range tab_range =
+      tab_strip_model_->group_model()->GetTabGroup(group)->ListTabs();
+  for (tabs::TabInterface* tab :
+       tab_strip_model_->GetTabsAtIndices(tab_range.ToIntVector())) {
+    UpdateTabGroupSessionDataForTab(tab, group);
+  }
+  UpdateTabGroupSessionMetadata(*profile_, *tab_strip_model_, session_id_,
+                                group);
+
+  PromoteClosedTabsForGroup(*profile_, *tab_strip_model_, group);
+}
+
 void SessionServiceBrowserHelper::OnTabGroupChanged(
     const TabGroupChange& change) {
   // If apps ever get tab grouping, this function needs to be updated to
@@ -187,8 +234,9 @@ void SessionServiceBrowserHelper::OnTabGroupChanged(
   // AppSessionService doesn't support SetTabGroupMetadata, so some
   // work to refactor the code to support that into SessionServiceBase
   // would be the best way to achieve that.
-  DCHECK(!IsRelevantToAppSessionService(browser_type_));
-  DCHECK(tab_strip_model_->group_model());
+  CHECK(!IsRelevantToAppSessionService(browser_type_),
+        base::NotFatalUntil::M162);
+  CHECK(tab_strip_model_->group_model(), base::NotFatalUntil::M162);
 
   if (change.type == TabGroupChange::kVisualsChanged) {
     UpdateTabGroupSessionMetadata(*profile_, *tab_strip_model_, session_id_,
@@ -220,6 +268,8 @@ void SessionServiceBrowserHelper::OnTabPinnedStateChanged(
     tabs::TabInterface* tab,
     int index) {
   // See comment in `OnTabGroupChanged`.
+  // TODO(crbug.com/575984047): CHECK-exclusion: Convert to a CHECK once we are
+  // confident it won't be triggered.
   DCHECK(!IsRelevantToAppSessionService(browser_type_));
   SessionService* session_service =
       SessionServiceFactory::GetForProfileIfExisting(&*profile_);
@@ -306,9 +356,9 @@ void SessionServiceBrowserHelper::SyncHistoryWithTabs(int index) {
         session_service->SetTabIndexInWindow(session_id_, tab_id,
                                              current_index);
 
-        std::optional<tab_groups::TabGroupId> group_id =
-            tab_strip_model_->GetTabGroupForTab(current_index);
-        session_service->SetTabGroup(session_id_, tab_id, std::move(group_id));
+        session_service->SetTabGroup(
+            session_id_, tab_id,
+            tab_strip_model_->GetPersistableTabGroupForTab(current_index));
       }
     }
     current_index++;
@@ -319,7 +369,11 @@ void SessionServiceBrowserHelper::UpdateTabGroupSessionDataForTab(
     tabs::TabInterface* tab,
     std::optional<tab_groups::TabGroupId> group) {
   // See comment in `OnTabGroupChanged`.
-  DCHECK(!IsRelevantToAppSessionService(browser_type_));
+  CHECK(!IsRelevantToAppSessionService(browser_type_),
+        base::NotFatalUntil::M162);
+  if (group.has_value() && !tab_strip_model_->IsPersistableTabGroup(*group)) {
+    group = std::nullopt;
+  }
   SessionService* const session_service =
       SessionServiceFactory::GetForProfile(&*profile_);
   if (!session_service) {
@@ -334,7 +388,8 @@ void SessionServiceBrowserHelper::UpdateTabGroupSessionDataForTab(
 void SessionServiceBrowserHelper::UpdateSplitTabSessionData(
     tabs::TabInterface* tab,
     std::optional<split_tabs::SplitTabId> split_id) {
-  DCHECK(!IsRelevantToAppSessionService(browser_type_));
+  CHECK(!IsRelevantToAppSessionService(browser_type_),
+        base::NotFatalUntil::M162);
   SessionService* const session_service =
       SessionServiceFactory::GetForProfile(&*profile_);
   if (!session_service) {

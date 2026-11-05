@@ -9,6 +9,7 @@
 #import <utility>
 
 #import "ios/chrome/browser/intelligence/bwg/metrics/gemini_metrics.h"
+#import "ios/chrome/browser/intelligence/bwg/model/gemini_shared_tabs_manager.h"
 #import "ios/chrome/browser/intelligence/features/features.h"
 #import "ios/chrome/browser/shared/public/commands/snackbar_commands.h"
 #import "ios/chrome/browser/shared/public/commands/tab_picker_commands.h"
@@ -55,8 +56,9 @@ constexpr NSUInteger kMaxTabAttachmentCount = 10;
   params.baseViewController = presentingViewController;
   params.maxTabAttachmentCount = kMaxTabAttachmentCount;
   params.logger = self;
-  if (self.selectedTabsProvider) {
-    params.preselectedWebStateIDs = self.selectedTabsProvider();
+  if (self.sharedTabsManager) {
+    params.preselectedWebStateIDs =
+        self.sharedTabsManager->GetSelectedTabsForTabPicker();
   }
   params.PDFEnabled = IsPageContextPDFEnabled();
 
@@ -116,10 +118,11 @@ constexpr NSUInteger kMaxTabAttachmentCount = 10;
 #pragma mark - Private
 
 // Handles tab picker completion with `selection`. If `selection` has a value,
-// invokes `selectionCallback` with the selected tab IDs.
+// notifies `sharedTabsManager` with the selected tab IDs.
 - (void)userDidPickTabs:(std::optional<TabPickerSelection>)selection {
-  if (selection.has_value() && self.selectionCallback) {
-    self.selectionCallback(selection->selected_ids);
+  if (selection.has_value() && self.sharedTabsManager) {
+    self.sharedTabsManager->OnTabPickerSelectionChanged(
+        selection->selected_ids);
   }
 }
 

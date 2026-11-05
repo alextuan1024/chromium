@@ -9,6 +9,8 @@ import android.text.TextUtils;
 
 import androidx.annotation.IntDef;
 
+import org.jni_zero.JniPtr;
+
 import org.chromium.base.supplier.OneshotSupplier;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
@@ -16,6 +18,9 @@ import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.profiles.ProfileProvider;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.tabmodel.TabModelSelector;
+import org.chromium.chrome.browser.ui.browser_window.ChromeAndroidTask.NativeBrowserWindowInterface;
+import org.chromium.content_public.browser.RenderFrameHost;
+import org.chromium.url.GURL;
 
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
@@ -34,9 +39,14 @@ public interface GlicKeyedService {
         GlicInvocationSource.TOP_CHROME_BUTTON,
         GlicInvocationSource.NUDGE,
         GlicInvocationSource.THREE_DOTS_MENU,
-        GlicInvocationSource.WEB_CONTENTS_CONTEXT_MENU,
+        GlicInvocationSource.SHARED_IMAGE,
         GlicInvocationSource.TOOLBAR_BUTTON,
         GlicInvocationSource.TAB_CONTEXT_MENU,
+        GlicInvocationSource.WEB_CONTENTS_CONTEXT_MENU_LINK,
+        GlicInvocationSource.WEB_CONTENTS_CONTEXT_MENU_PAGE,
+        GlicInvocationSource.WEB_CONTENTS_CONTEXT_MENU_TEXT_SELECTION,
+        GlicInvocationSource.ACTOR_TOOL,
+        GlicInvocationSource.ACTIVITY_LIST_BUBBLE,
         GlicInvocationSource.MAX_VALUE,
     })
     @Retention(RetentionPolicy.SOURCE)
@@ -45,24 +55,30 @@ public interface GlicKeyedService {
         int TOP_CHROME_BUTTON = 3;
         int NUDGE = 6;
         int THREE_DOTS_MENU = 7;
-        int WEB_CONTENTS_CONTEXT_MENU = 23;
+        int SHARED_IMAGE = 13;
         int TOOLBAR_BUTTON = 31;
         int TAB_CONTEXT_MENU = 41;
-        int MAX_VALUE = 42;
+        int WEB_CONTENTS_CONTEXT_MENU_LINK = 46;
+        int WEB_CONTENTS_CONTEXT_MENU_PAGE = 47;
+        int WEB_CONTENTS_CONTEXT_MENU_TEXT_SELECTION = 48;
+        int ACTOR_TOOL = 49;
+        int ACTIVITY_LIST_BUBBLE = 50;
+        // Must match the largest mojom value, since MAX_VALUE + 1 bounds Glic.EntryPoint.Click.
+        int MAX_VALUE = 50;
     }
 
-    // LINT.ThenChange(//chrome/browser/glic/host/glic.mojom:InvocationSource)
+    // LINT.ThenChange(//chrome/common/glic_enums.mojom:InvocationSource)
 
     /**
      * Toggles the Glic user interface.
      *
-     * @param browserWindowPtr The native pointer (long) to the BrowserWindowInterface.
+     * @param browserWindow The native {@code BrowserWindowInterface}.
      * @param preventClose Whether to prevent closing the UI if it's already open.
      * @param profile The {@link Profile} associated with this service instance.
      * @param invocationSource How the UI was triggered.
      */
     void toggleUI(
-            long browserWindowPtr,
+            JniPtr<NativeBrowserWindowInterface> browserWindow,
             boolean preventClose,
             Profile profile,
             @GlicInvocationSource int invocationSource);
@@ -84,11 +100,17 @@ public interface GlicKeyedService {
      * Invokes the Glic service with a prompt prepopulated in the input box.
      *
      * @param tab The {@link Tab} to target.
+     * @param frame The {@link RenderFrameHost} the prompt was taken from.
      * @param text The text prompt to populate.
      * @param invocationSource How the UI was triggered.
-     * @return true if Glic was successfully invoked with the prompt.
+     * @return true if Glic was invoked with the prompt attached. Enterprise policy checks run
+     *     afterwards and may still fail the invocation.
      */
-    boolean invokeWithPrompt(Tab tab, String text, @GlicInvocationSource int invocationSource);
+    boolean invokeWithPrompt(
+            Tab tab,
+            @Nullable RenderFrameHost frame,
+            String text,
+            @GlicInvocationSource int invocationSource);
 
     /**
      * Invokes the Glic service, opening the panel attached to the given tab without
@@ -169,6 +191,16 @@ public interface GlicKeyedService {
      */
     void showExperimentalOptInDialogForTesting(Tab tab); // IN-TEST
 
+    /**
+     * Shares the image at {@code srcUrl} (hosted in {@code renderFrameHost}) with Glic, opening the
+     * panel with the image attached as context (no auto-submit).
+     *
+     * @param tab The {@link Tab} to target.
+     * @param renderFrameHost The {@link RenderFrameHost} that hosts the image.
+     * @param srcUrl The source URL of the image.
+     */
+    void shareContextImage(Tab tab, @Nullable RenderFrameHost renderFrameHost, GURL srcUrl);
+
     /** Observer for global show/hide events. */
     interface GlobalShowHideObserver {
         /** Called when any Glic instance opens or closes. */
@@ -217,10 +249,10 @@ public interface GlicKeyedService {
     /**
      * Checks if the panel is showing for a specific browser window.
      *
-     * @param browserWindowPtr The native pointer (long) to the BrowserWindowInterface.
+     * @param browserWindow The native {@code BrowserWindowInterface}.
      * @return true if the panel is showing for the specified browser window.
      */
-    boolean isPanelShowingForBrowser(long browserWindowPtr);
+    boolean isPanelShowingForBrowser(JniPtr<NativeBrowserWindowInterface> browserWindow);
 
     /**
      * Checks if the user has enabled actuation on web.

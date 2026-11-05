@@ -30,7 +30,6 @@
 #include "chrome/browser/ui/ash/shelf/chrome_shelf_prefs.h"
 #include "chrome/browser/web_applications/policy/app_service_web_app_policy.h"
 #include "chrome/browser/web_applications/policy/web_app_policy_manager.h"
-#include "chrome/browser/web_applications/web_app_utils.h"
 #include "chromeos/ash/experiences/arc/arc_prefs.h"
 #include "chromeos/components/onc/onc_signature.h"
 #include "chromeos/components/onc/onc_utils.h"
@@ -391,6 +390,25 @@ void PinnedLauncherAppsPolicyHandler::ApplyList(base::ListValue filtered_list,
   }
   prefs->SetValue(ash::prefs::kPolicyPinnedLauncherApps,
                   base::Value(std::move(pinned_apps_list)));
+}
+
+AutoLaunchAndroidAppsPolicyHandler::AutoLaunchAndroidAppsPolicyHandler()
+    : ListPolicyHandler(key::kAutoLaunchAndroidApps,
+                        base::Value::Type::STRING) {}
+
+AutoLaunchAndroidAppsPolicyHandler::~AutoLaunchAndroidAppsPolicyHandler() =
+    default;
+
+bool AutoLaunchAndroidAppsPolicyHandler::CheckListEntry(
+    const base::Value& value) {
+  return web_app::IsArcAppPolicyId(value.GetString());
+}
+
+void AutoLaunchAndroidAppsPolicyHandler::ApplyList(
+    base::ListValue filtered_list,
+    PrefValueMap* prefs) {
+  prefs->SetValue(arc::prefs::kArcAutoLaunchApps,
+                  base::Value(std::move(filtered_list)));
 }
 
 DefaultHandlersForFileExtensionsPolicyHandler::

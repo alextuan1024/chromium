@@ -26,7 +26,6 @@
 #import "components/send_tab_to_self/metrics_util.h"
 #import "components/strings/grit/components_strings.h"
 #import "components/supervised_user/core/browser/supervised_user_utils.h"
-#import "ios/chrome/app/profile/first_run_profile_agent.h"
 #import "ios/chrome/browser/bookmarks/model/bookmark_model_factory.h"
 #import "ios/chrome/browser/bookmarks/ui_bundled/home/bookmarks_coordinator.h"
 #import "ios/chrome/browser/bring_android_tabs/model/bring_android_tabs_to_ios_service.h"
@@ -41,7 +40,7 @@
 #import "ios/chrome/browser/favicon/model/ios_chrome_favicon_loader_factory.h"
 #import "ios/chrome/browser/feature_engagement/model/tracker_factory.h"
 #import "ios/chrome/browser/find_in_page/model/find_tab_helper.h"
-#import "ios/chrome/browser/first_run/guided_tour/coordinator/guided_tour_coordinator.h"
+#import "ios/chrome/browser/first_run/guided_tour/coordinator/guided_tour_bubble_coordinator.h"
 #import "ios/chrome/browser/history/ui_bundled/history_coordinator_delegate.h"
 #import "ios/chrome/browser/history/ui_bundled/history_coordinator_factory.h"
 #import "ios/chrome/browser/history/ui_bundled/public/history_presentation_delegate.h"
@@ -279,7 +278,7 @@ bool FindNavigatorShouldBePresentedInBrowser(Browser* browser) {
 
 @implementation TabGridCoordinator {
   // Coordinator for the long press step of the guided tour.
-  GuidedTourCoordinator* _guidedTourCoordinator;
+  GuidedTourBubbleCoordinator* _guidedTourBubbleCoordinator;
 
   // The presenter for the pin tab IPH bubble.
   BubbleViewControllerPresenter* _pinTabBubblePresenter;
@@ -674,16 +673,24 @@ bool FindNavigatorShouldBePresentedInBrowser(Browser* browser) {
     [strongSelf setActiveMode:TabGridMode::kNormal];
     Browser* browser =
         incognito ? strongSelf.incognitoBrowser : strongSelf.regularBrowser;
-    if (!GetFirstResponderInWindowScene(
-            strongSelf.viewController.view.window.windowScene) &&
-        !FindNavigatorShouldBePresentedInBrowser(browser)) {
-      // It is possible to already have a first responder (for example the
-
-      [strongSelf.browserLayoutViewController
-              .browserViewController becomeFirstResponder];
-    }
     if (completion) {
       completion();
+    }
+
+    // Only restore the browser view controller as fallback responder when
+    // dismissing an active Tab Grid. During initial startup presentation,
+    // initial UI setup (e.g. Omnibox or web page focus) manages responder
+    // state, and synchronously forcing responder activation on `bvc` can
+    // trigger an infinite traversal in UIKit (crbug.com/562461210).
+    if (!strongSelf.firstPresentation) {
+      UIViewController* bvc =
+          strongSelf.browserLayoutViewController.browserViewController;
+      UIWindowScene* windowScene = bvc.view.window.windowScene;
+      if (!bvc.isFirstResponder &&
+          !GetFirstResponderInWindowScene(windowScene) &&
+          !FindNavigatorShouldBePresentedInBrowser(browser)) {
+        [bvc becomeFirstResponder];
+      }
     }
     strongSelf.firstPresentation = NO;
 
@@ -706,8 +713,8 @@ bool FindNavigatorShouldBePresentedInBrowser(Browser* browser) {
 
 // Handles the completion of a guided tour step.
 - (void)guidedTourStepCompleted {
-  [_guidedTourCoordinator stop];
-  _guidedTourCoordinator = nil;
+  [_guidedTourBubbleCoordinator stop];
+  _guidedTourBubbleCoordinator = nil;
 }
 
 // Hides tab group views.
@@ -821,8 +828,7 @@ bool FindNavigatorShouldBePresentedInBrowser(Browser* browser) {
 }
 
 // Handles the completion of the transition to the tab grid, including
-// displaying the "Bring Android Tabs" prompt if needed and notifying the
-// guided tour.
+// displaying the "Bring Android Tabs" prompt if needed.
 - (void)handleTransitionToTabGridCompletionWithBringAndroidTabsPrompt:
     (BOOL)shouldDisplayBringAndroidTabsPrompt {
   self.transitionInProgress = NO;
@@ -833,11 +839,6 @@ bool FindNavigatorShouldBePresentedInBrowser(Browser* browser) {
 
   self.transitionHandler = nil;
 
-  if (IsBestOfAppGuidedTourEnabled()) {
-    FirstRunProfileAgent* profileAgent = [FirstRunProfileAgent
-        agentFromProfile:browser->GetSceneState().profileState];
-    [profileAgent tabGridWasPresented];
-  }
   [self transitionToGridCompleteForAndroidTabsPrompt:
             shouldDisplayBringAndroidTabsPrompt];
 }
@@ -1214,8 +1215,8 @@ bool FindNavigatorShouldBePresentedInBrowser(Browser* browser) {
   [self.dispatcher stopDispatchingForProtocol:@protocol(SceneCommands)];
 
   self.transitionHandler = nil;
-  [_guidedTourCoordinator stop];
-  _guidedTourCoordinator = nil;
+  [_guidedTourBubbleCoordinator stop];
+  _guidedTourBubbleCoordinator = nil;
 
   [_pinTabBubblePresenter dismissAnimated:NO];
   _pinTabBubblePresenter = nil;
@@ -1924,17 +1925,17 @@ bool FindNavigatorShouldBePresentedInBrowser(Browser* browser) {
       completion();
     }
   };
-  _guidedTourCoordinator = [[GuidedTourCoordinator alloc]
+  _guidedTourBubbleCoordinator = [[GuidedTourBubbleCoordinator alloc]
             initWithStep:GuidedTourStep::kTabGridLongPress
       baseViewController:_viewController
                  browser:self.regularBrowser
          completionBlock:completionBlock];
-  [_guidedTourCoordinator start];
+  [_guidedTourBubbleCoordinator start];
 }
 
 - (void)hideTabGridGuidedTour {
-  [_guidedTourCoordinator stop];
-  _guidedTourCoordinator = nil;
+  [_guidedTourBubbleCoordinator stop];
+  _guidedTourBubbleCoordinator = nil;
 }
 
 - (void)presentPinTabBubble {
@@ -1986,10 +1987,8 @@ bool FindNavigatorShouldBePresentedInBrowser(Browser* browser) {
     return;
   }
 
-  NSString* title = l10n_util::GetNSString(
-      IDS_IOS_FIRST_RUN_GUIDED_TOUR_TAB_GRID_LONG_PRESS_IPH_TITLE);
-  NSString* text = l10n_util::GetNSString(
-      IDS_IOS_FIRST_RUN_GUIDED_TOUR_TAB_GRID_LONG_PRESS_IPH_TEXT);
+  NSString* text =
+      l10n_util::GetNSString(IDS_IOS_LEVEL_UP_TAB_GROUP_USER_EDUCATION);
   UIView* anchorView = [LayoutGuideCenterForBrowser(self.regularBrowser)
       referencedViewUnderName:kSelectedRegularCellGuide];
   if (!anchorView) {
@@ -2017,7 +2016,7 @@ bool FindNavigatorShouldBePresentedInBrowser(Browser* browser) {
   BubbleViewControllerPresenter* presenter =
       [[BubbleViewControllerPresenter alloc]
                initWithText:text
-                      title:title
+                      title:nil
              arrowDirection:direction
                   alignment:BubbleAlignmentCenter
                  bubbleType:BubbleViewTypeDefault

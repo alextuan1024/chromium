@@ -33,6 +33,16 @@ const base::FeatureParam<int> kMaxNumBackgroundTabs(
     "ContextualCueingV2MaxNumBackgroundTabs",
     10);
 
+const base::FeatureParam<int> kMaxNumHistoricalTabs(
+    &kContextualCueingV2,
+    "ContextualCueingV2MaxNumHistoricalTabs",
+    0);
+
+const base::FeatureParam<base::TimeDelta> kHistoricalTabsTimeWindow(
+    &kContextualCueingV2,
+    "ContextualCueingV2HistoricalTabsTimeWindow",
+    base::Hours(24));
+
 const base::FeatureParam<bool> kDisableCueBackoff(
     &kContextualCueingV2,
     "ContextualCueingV2DisableCueBackoff",
@@ -96,7 +106,7 @@ const base::FeatureParam<bool> kUsePrivateAi(&kContextualCueingV2,
 const base::FeatureParam<base::TimeDelta> kAnnotationTimeout(
     &kContextualCueingV2MultiSource,
     "ContextualCueingV2MultiSourceAnnotationTimeout",
-    base::Seconds(3));
+    base::Seconds(300));
 
 // UCB scorer hyperparameters. Defaults are a reasonable starting point;
 // tune via Finch once multi-source experiments are running.
@@ -148,5 +158,8 @@ const base::FeatureParam<bool> kEnablePrivateInsightsLogging(
     &kContextualCueingV2,
     "ContextualCueingV2EnablePrivateInsightsLogging",
     false);
+
+BASE_FEATURE(kHappinessTrackingSurveysForContextualCueingDismissed,
+             base::FEATURE_DISABLED_BY_DEFAULT);
 
 }  // namespace contextual_cueing

@@ -23,8 +23,8 @@
 #include "chrome/browser/pdf/pdf_pref_names.h"
 #include "chrome/browser/pdf/pdf_service.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/common/extensions/api/image_loader_private.h"
 #include "chrome/services/pdf/public/mojom/pdf_service.mojom.h"
+#include "chromeos/ash/experiences/extensions/common/api/image_loader_private.h"
 #include "components/prefs/pref_service.h"
 #include "components/signin/public/base/consent_level.h"
 #include "content/public/browser/browser_task_traits.h"
@@ -376,14 +376,11 @@ void ImageLoaderPrivateGetArcDocumentsProviderThumbnailFunction::GotContentUrls(
               &ImageLoaderPrivateGetArcDocumentsProviderThumbnailFunction::
                   GotArcThumbnailFileHandle,
               this),
-          mojo::ScopedHandle()));
+          mojo::PlatformHandle()));
 }
 
 void ImageLoaderPrivateGetArcDocumentsProviderThumbnailFunction::
-    GotArcThumbnailFileHandle(mojo::ScopedHandle handle) {
-  mojo::PlatformHandle platform_handle =
-      mojo::UnwrapPlatformHandle(std::move(handle));
-
+    GotArcThumbnailFileHandle(mojo::PlatformHandle platform_handle) {
   if (!platform_handle.is_valid()) {
     Respond(Error("File not found"));
     return;

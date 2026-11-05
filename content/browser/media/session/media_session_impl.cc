@@ -297,6 +297,12 @@ void MediaSessionImpl::RenderFrameDeleted(RenderFrameHost* rfh) {
 
 void MediaSessionImpl::PrimaryPageChanged(content::Page& page) {
   last_auto_picture_in_picture_info_.reset();
+
+  // Source icons are the primary page's favicons, so sync them with the new
+  // primary page, like Initialize() does. Waiting for DidUpdateFaviconURL() is
+  // not enough: pages without favicons (e.g. WebUIs) never call it, and pages
+  // restored from the back/forward cache don't call it again.
+  SetSourceIconsFromFavicons(web_contents()->GetFaviconURLs());
 }
 
 void MediaSessionImpl::DidFinishNavigation(
@@ -779,7 +785,9 @@ void MediaSessionImpl::Stop(SuspendType suspend_type) {
   if (audio_focus_state_ != State::SUSPENDED)
     OnSuspendInternal(suspend_type, State::SUSPENDED);
 
-  CHECK(audio_focus_state_ == State::SUSPENDED, base::NotFatalUntil::M160);
+  // TODO(crbug.com/563861408): CHECK-exclusion: Convert to a CHECK once we are
+  // confident it won't be triggered.
+  DCHECK(audio_focus_state_ == State::SUSPENDED);
   normal_players_.clear();
 
   AbandonSystemAudioFocusIfNeeded();
@@ -1356,6 +1364,10 @@ void MediaSessionImpl::EnterAutoPictureInPicture() {
     MaybeEnterBrowserInitiatedAutomaticPictureInPicture();
     return;
   }
+  if (!routed_service_->GetRenderFrameHost() ||
+      !routed_service_->GetRenderFrameHost()->IsInPrimaryMainFrame()) {
+    return;
+  }
 
   DidReceiveAction(
       media_session::mojom::MediaSessionAction::kEnterPictureInPicture,
@@ -1786,16 +1798,22 @@ RenderFrameHost* MediaSessionImpl::ComputeFrameForRouting(bool ensure_service) {
   std::map<RenderFrameHost*, size_t> map_rfh_to_depth;
 
   std::set<url::Origin> highest_player_origins;
+  std::set<RenderFrameHost*> highest_player_ancestors;
   size_t min_player_depth = std::numeric_limits<size_t>::max();
 
   for (RenderFrameHost* frame : frames) {
     size_t depth = ComputeFrameDepth(frame, &map_rfh_to_depth);
     if (depth < min_player_depth) {
       highest_player_origins.clear();
+      highest_player_ancestors.clear();
       min_player_depth = depth;
     }
     if (depth == min_player_depth) {
       highest_player_origins.insert(frame->GetLastCommittedOrigin());
+      for (RenderFrameHost* ancestor = frame->GetParentOrOuterDocument();
+           ancestor; ancestor = ancestor->GetParentOrOuterDocument()) {
+        highest_player_ancestors.insert(ancestor);
+      }
     }
     if (depth >= min_depth) {
       continue;
@@ -1808,8 +1826,8 @@ RenderFrameHost* MediaSessionImpl::ComputeFrameForRouting(bool ensure_service) {
   }
 
   // If we cannot find a suitable frame, take the top-most frame with an active
-  // MediaSessionService (and same-origin with the highest-level active player
-  // if one exists).
+  // MediaSessionService (that is either same-origin with or an ancestor of the
+  // highest-level active player if one exists).
   if (!best_frame) {
     // `FrameTree::Nodes()` iterates in breadth-first order, so this is
     // guaranteed to find the topmost (or tied topmost) frame with an active
@@ -1819,7 +1837,8 @@ RenderFrameHost* MediaSessionImpl::ComputeFrameForRouting(bool ensure_service) {
                                    .Nodes()) {
       RenderFrameHost* rfh = node->current_frame_host();
       if (!highest_player_origins.empty() &&
-          !highest_player_origins.contains(rfh->GetLastCommittedOrigin())) {
+          !highest_player_origins.contains(rfh->GetLastCommittedOrigin()) &&
+          !highest_player_ancestors.contains(rfh)) {
         continue;
       }
       if (IsServiceActiveForRenderFrameHost(rfh)) {
@@ -1931,11 +1950,15 @@ void MediaSessionImpl::RebuildAndNotifyActionsChanged() {
   }
 
   // If the website has specified an action handler for 'enterpictureinpicture',
-  // then we should expose EnterAutoPictureInPicture as an available action.
+  // then we should expose EnterAutoPictureInPicture as an available action if
+  // the routed service is in the primary main frame.
   if (actions.contains(
           media_session::mojom::MediaSessionAction::kEnterPictureInPicture)) {
-    actions.insert(
-        media_session::mojom::MediaSessionAction::kEnterAutoPictureInPicture);
+    if (routed_service_ && routed_service_->GetRenderFrameHost() &&
+        routed_service_->GetRenderFrameHost()->IsInPrimaryMainFrame()) {
+      actions.insert(
+          media_session::mojom::MediaSessionAction::kEnterAutoPictureInPicture);
+    }
     actions.insert(
         media_session::mojom::MediaSessionAction::kExitPictureInPicture);
   }

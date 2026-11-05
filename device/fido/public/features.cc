@@ -51,7 +51,15 @@ constexpr base::FeatureParam<PasskeyUnlockErrorUiExperimentArm>
         &kPasskeyUnlockErrorUi, "passkey_unlock_ui_experiment_arm",
         PasskeyUnlockErrorUiExperimentArm::kVerify,
         &kPasskeyUnlockErrorUiExperimentArms};
+
+// Not yet enabled by default.
+BASE_FEATURE(kPasskeyUnlockIdentityErrorUi, base::FEATURE_DISABLED_BY_DEFAULT);
 #endif
+
+#if BUILDFLAG(IS_MAC)
+// Not yet enabled by default.
+BASE_FEATURE(kPasskeyUnlockICloudRecovery, base::FEATURE_DISABLED_BY_DEFAULT);
+#endif  // BUILDFLAG(IS_MAC)
 
 #if BUILDFLAG(IS_WIN)
 // Permanent flag
@@ -64,30 +72,19 @@ BASE_FEATURE(kWebAuthUseNativeWinApi,
 // when actor mode is on.
 BASE_FEATURE(kWebAuthnActorCheck, base::FEATURE_ENABLED_BY_DEFAULT);
 
-// Enabled in M118. Remove in or after M121.
-BASE_FEATURE(kWebAuthnICloudKeychainForGoogle,
-             "WebAuthenticationICloudKeychainForGoogle",
-             base::FEATURE_ENABLED_BY_DEFAULT);
-
-// Enabled in M118. Remove in or after M121.
-BASE_FEATURE(kWebAuthnICloudKeychainForActiveWithDrive,
-             "WebAuthenticationICloudKeychainForActiveWithDrive",
-             base::FEATURE_ENABLED_BY_DEFAULT);
-
 // Not yet enabled by default.
 BASE_FEATURE(kWebAuthnICloudKeychainForActiveWithoutDrive,
              "WebAuthenticationICloudKeychainForActiveWithoutDrive",
              base::FEATURE_DISABLED_BY_DEFAULT);
 
-// Enabled in M118. Remove in or after M121.
-BASE_FEATURE(kWebAuthnICloudKeychainForInactiveWithDrive,
-             "WebAuthenticationICloudKeychainForInactiveWithDrive",
-             base::FEATURE_ENABLED_BY_DEFAULT);
-
 // Not yet enabled by default.
 BASE_FEATURE(kWebAuthnICloudKeychainForInactiveWithoutDrive,
              "WebAuthenticationICloudKeychainForInactiveWithoutDrive",
              base::FEATURE_DISABLED_BY_DEFAULT);
+
+// Enabled in M156. Remove in or after M159.
+BASE_FEATURE(kWebAuthnICloudKeychainUseDeviceConfiguredForPasskeys,
+             base::FEATURE_ENABLED_BY_DEFAULT);
 
 // Development flag. Must not be enabled by default once
 // kWebAuthnEnclaveAuthenticator is enabled.
@@ -172,4 +169,32 @@ BASE_FEATURE(kWebAuthnEnclaveUseAuthDataFromEnclave,
 COMPONENT_EXPORT(FIDO_PUBLIC)
 BASE_FEATURE(kWebAuthnModalProviderIcons, base::FEATURE_ENABLED_BY_DEFAULT);
 
+// Enabled by default in M157. Remove in or after M160.
+COMPONENT_EXPORT(FIDO_PUBLIC)
+BASE_FEATURE(kWebAuthnSoftwareKeysWhenTpmAbsent,
+             base::FEATURE_ENABLED_BY_DEFAULT);
+
+// Enabled by default in M157. Remove in or after M160.
+COMPONENT_EXPORT(FIDO_PUBLIC)
+BASE_FEATURE(kWebAuthnU2fFallbackRequiresPreferredEs256,
+             base::FEATURE_ENABLED_BY_DEFAULT);
+
+// Enabled by default in M157. Remove in or after M160.
+COMPONENT_EXPORT(FIDO_PUBLIC)
+BASE_FEATURE(kWebAuthnFilterAlgorithmsForAuthenticator,
+             base::FEATURE_ENABLED_BY_DEFAULT);
+
+// Not yet enabled by default.
+COMPONENT_EXPORT(FIDO_PUBLIC)
+BASE_FEATURE(kWebAuthnLocalGpmPasskeys, base::FEATURE_DISABLED_BY_DEFAULT);
+
+constexpr base::FeatureParam<LocalGpmPasskeysMode>::Option
+    kWebAuthnLocalGpmPasskeysModes[] = {
+        {LocalGpmPasskeysMode::kNewUsersOnly, "new_users_only"},
+        {LocalGpmPasskeysMode::kAllUsers, "all_users"},
+};
+constexpr base::FeatureParam<LocalGpmPasskeysMode>
+    kWebAuthnLocalGpmPasskeysMode{&kWebAuthnLocalGpmPasskeys, "mode",
+                                  LocalGpmPasskeysMode::kNewUsersOnly,
+                                  &kWebAuthnLocalGpmPasskeysModes};
 }  // namespace device

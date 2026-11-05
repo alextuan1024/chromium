@@ -35,8 +35,8 @@
 #include "content/public/test/test_navigation_observer.h"
 #include "google_apis/gaia/gaia_switches.h"
 #include "net/test/embedded_test_server/embedded_test_server.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
 #include "ui/base/page_transition_types.h"
-#include "ui/base/window_open_disposition.h"
 #include "url/gurl.h"
 
 // Tests the behavior of Chrome when it receives a Mirror response from Gaia:
@@ -84,7 +84,7 @@ class MirrorResponseBrowserTest : public InProcessBrowserTest {
   void NavigateToURL(const GURL& url,
                      std::optional<url::Origin> initiator_origin) {
     NavigateParams params(browser(), url, ui::PAGE_TRANSITION_TYPED);
-    params.disposition = WindowOpenDisposition::CURRENT_TAB;
+    params.disposition = ui::mojom::WindowOpenDisposition::kCurrentTab;
     if (initiator_origin) {
       // `is_renderer_initiated` requires non-null `initiator_origin`.
       params.is_renderer_initiated = true;
@@ -287,7 +287,7 @@ IN_PROC_BROWSER_TEST_F(MirrorResponseBrowserTest, BackgroundResponseIgnored) {
   NavigateParams params(browser(), url, ui::PAGE_TRANSITION_FROM_API);
   params.initiator_origin = url::Origin::Create(GURL("https://google.com"));
   // Use `NEW_BACKGROUND_TAB` to avoid activating `browser()`.
-  params.disposition = WindowOpenDisposition::NEW_BACKGROUND_TAB;
+  params.disposition = ui::mojom::WindowOpenDisposition::kNewBackgroundTab;
   params.is_renderer_initiated = true;
   Navigate(&params);
   EXPECT_TRUE(content::WaitForLoadStop(params.navigated_or_inserted_contents));
@@ -295,4 +295,84 @@ IN_PROC_BROWSER_TEST_F(MirrorResponseBrowserTest, BackgroundResponseIgnored) {
   // Incognito window should not have been displayed, the browser count stays
   // the same.
   EXPECT_EQ(GlobalBrowserCollection::GetInstance()->GetSize(), browser_count);
+}
+
+// When receiving "INCOGNITO" from Gaia in a background tab of an active
+// browser - an incognito tab should not be opened.
+IN_PROC_BROWSER_TEST_F(MirrorResponseBrowserTest,
+                       BackgroundTabIncognitoIgnored) {
+  ASSERT_TRUE(ui_test_utils::BringBrowserWindowToFront(browser()));
+  EXPECT_TRUE(browser()->GetWindow()->IsActive());
+
+  size_t browser_count = GlobalBrowserCollection::GetInstance()->GetSize();
+  GURL url = GetUrlWithManageAccountsHeader({{"action", "INCOGNITO"}});
+  NavigateParams params(browser(), url, ui::PAGE_TRANSITION_FROM_API);
+  params.initiator_origin = url::Origin::Create(GURL("https://google.com"));
+  // Use `NEW_BACKGROUND_TAB` to navigate in a background tab without activating
+  // it.
+  params.disposition = ui::mojom::WindowOpenDisposition::kNewBackgroundTab;
+  params.is_renderer_initiated = true;
+  Navigate(&params);
+  EXPECT_TRUE(content::WaitForLoadStop(params.navigated_or_inserted_contents));
+
+  EXPECT_NE(browser()->GetTabStripModel()->GetActiveWebContents(),
+            params.navigated_or_inserted_contents);
+
+  // Incognito window should not have been displayed because the request was in
+  // a background tab.
+  EXPECT_EQ(GlobalBrowserCollection::GetInstance()->GetSize(), browser_count);
+}
+
+// When receiving "ADDSESSION" from Gaia in a background tab of an active
+// browser - the account addition dialog should not be opened.
+IN_PROC_BROWSER_TEST_F(MirrorResponseBrowserTest,
+                       BackgroundTabAddSessionIgnored) {
+  ASSERT_TRUE(ui_test_utils::BringBrowserWindowToFront(browser()));
+  EXPECT_TRUE(browser()->GetWindow()->IsActive());
+
+  base::HistogramTester histogram_tester;
+  ash::test::ScopedFakeAccountManagerDialog fake_account_manager_dialog(
+      browser()->GetProfile());
+
+  GURL url = GetUrlWithManageAccountsHeader({{"action", "ADDSESSION"}});
+  NavigateParams params(browser(), url, ui::PAGE_TRANSITION_TYPED);
+  params.disposition = ui::mojom::WindowOpenDisposition::kNewBackgroundTab;
+  Navigate(&params);
+  EXPECT_TRUE(content::WaitForLoadStop(params.navigated_or_inserted_contents));
+
+  EXPECT_NE(browser()->GetTabStripModel()->GetActiveWebContents(),
+            params.navigated_or_inserted_contents);
+
+  // Account addition dialog should not have been opened because the request
+  // was in a background tab.
+  EXPECT_EQ(0,
+            fake_account_manager_dialog->show_account_addition_dialog_calls());
+  EXPECT_EQ(0, fake_account_manager_dialog
+                   ->show_account_reauthentication_dialog_calls());
+  histogram_tester.ExpectTotalCount(
+      account_manager::kAccountAdditionSourceHistogramName, 0);
+}
+
+// When receiving "DEFAULT" from Gaia in a background tab of an active
+// browser - settings should not be opened.
+IN_PROC_BROWSER_TEST_F(MirrorResponseBrowserTest, BackgroundTabDefaultIgnored) {
+  ASSERT_TRUE(ui_test_utils::BringBrowserWindowToFront(browser()));
+  EXPECT_TRUE(browser()->GetWindow()->IsActive());
+
+  ash::SystemWebAppManager::GetForTest(browser()->GetProfile())
+      ->InstallSystemAppsForTesting();
+
+  GURL url = GetUrlWithManageAccountsHeader({{"action", "DEFAULT"}});
+  NavigateParams params(browser(), url, ui::PAGE_TRANSITION_TYPED);
+  params.disposition = ui::mojom::WindowOpenDisposition::kNewBackgroundTab;
+  Navigate(&params);
+  EXPECT_TRUE(content::WaitForLoadStop(params.navigated_or_inserted_contents));
+
+  EXPECT_NE(browser()->GetTabStripModel()->GetActiveWebContents(),
+            params.navigated_or_inserted_contents);
+
+  ash::BrowserDelegate* settings_browser = ash::FindSystemWebAppBrowser(
+      browser()->GetProfile(), ash::SystemWebAppType::SETTINGS,
+      ash::BrowserType::kApp);
+  EXPECT_FALSE(settings_browser);
 }

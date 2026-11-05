@@ -8,7 +8,6 @@ import("//media/gpu/args.gni")
 import("//media/media_options.gni")
 import("//mojo/public/tools/bindings/mojom.gni")
 import("//printing/buildflags/buildflags.gni")
-import("//services/accessibility/buildflags.gni")
 import("//services/screen_ai/buildflags/features.gni")
 
 source_set("utility") {
@@ -47,6 +46,7 @@ source_set("utility") {
     "//content/public/common:content_descriptor_keys",
     "//content/public/utility:utility_sources",
     "//content/services/devtools_media_encoding_service",
+    "//content/services/resource_broker",
     "//content/utility/on_device_model:on_device_model_sandbox_init",
     "//content/utility/webnn:webnn_sandbox_init",
     "//device/vr/buildflags",
@@ -55,7 +55,6 @@ source_set("utility") {
     "//net",
     "//printing/buildflags",
     "//sandbox",
-    "//services/accessibility:buildflags",
     "//services/audio",
     "//services/data_decoder:lib",
     "//services/data_decoder/public/cpp",
@@ -116,10 +115,24 @@ source_set("utility") {
     }
   }
 
+  if (is_linux && enable_vr) {
+    # Pre-sandbox hook for the XR Device Service (kXrCompositing). Loads the
+    # OpenXR runtime and grants broker file access before the sandbox seals.
+    # enable_vr: this file's :lib target needs //device/vr:vr_base.
+    deps += [ "//content/services/isolated_xr_device:xr_sandbox_hook" ]
+  }
+
   if (is_win || ((is_chromeos || is_linux) && is_chrome_branded)) {
     deps += [
       "//services/shape_detection:lib",
       "//services/shape_detection/public/mojom",
+    ]
+  }
+
+  if (is_win || is_apple) {
+    deps += [
+      "//services/webnn:webnn_service",
+      "//services/webnn/public/mojom",
     ]
   }
 
@@ -130,10 +143,6 @@ source_set("utility") {
 
   if (enable_screen_ai_service && (is_linux || is_chromeos)) {
     deps += [ "//services/screen_ai:screen_ai_sandbox_hook" ]
-  }
-
-  if (enable_accessibility_service) {
-    deps += [ "//services/accessibility:lib" ]
   }
 
   if (enable_on_device_translation) {
@@ -148,11 +157,7 @@ source_set("utility") {
   }
 
   if (is_win) {
-    deps += [
-      ":delegate_data",
-      "//services/webnn:webnn_service",
-      "//services/webnn/public/mojom",
-    ]
+    deps += [ ":delegate_data" ]
   }
 }
 

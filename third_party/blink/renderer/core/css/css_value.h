@@ -35,6 +35,7 @@ namespace blink {
 
 class Document;
 class Length;
+class ResourceFetcher;
 class TreeScope;
 
 class CORE_EXPORT CSSValue : public GarbageCollected<CSSValue> {
@@ -254,7 +255,7 @@ class CORE_EXPORT CSSValue : public GarbageCollected<CSSValue> {
 
   bool IsRepeatValue() const { return class_type_ == kRepeatClass; }
 
-  bool HasFailedOrCanceledSubresources() const;
+  bool HasFailedOrCanceledSubresources(ResourceFetcher*) const;
   bool MayContainUrl() const;
   void ReResolveUrl(const Document&) const;
 
@@ -280,6 +281,10 @@ class CORE_EXPORT CSSValue : public GarbageCollected<CSSValue> {
 
   // Checks if a CSS random() function is present in the value.
   bool HasRandomFunctions() const;
+
+  // Whether the value can be converted to a computed value without depending
+  // on another property value.
+  bool IsComputationallyIndependent() const;
 
   void TraceAfterDispatch(blink::Visitor* visitor) const {}
   void Trace(Visitor*) const;

@@ -43,8 +43,6 @@ extern const base::FeatureParam<bool> kShowContextMenuHeaders;
 
 // Whether to show the smart compose in the composebox.
 extern const base::FeatureParam<bool> kShowSmartCompose;
-// Whether to exit AI mode when the user clicks outside the composebox.
-extern const base::FeatureParam<bool> kCloseComposeboxByClickOutside;
 
 bool IsNtpComposeboxEnabled(Profile* profile);
 
@@ -98,6 +96,13 @@ extern const base::FeatureParam<bool> kMultiLineEnabled;
 
 // Whether to enable the dynamic version of the AI Mode button in the realbox.
 BASE_DECLARE_FEATURE(kNtpRealboxDynamicAiModeButton);
+
+// With kNtpRealboxDynamicAiModeButton, the button's icon forces
+// `visibility: visible`, so it paints on its own before the NTP searchbox is
+// shown, which regressed Startup.FirstWebContents.NonEmptyPaint3. When enabled,
+// the icon inherits its visibility instead. Temporary; remove once enabled by
+// default.
+BASE_DECLARE_FEATURE(kNtpRealboxDynamicAiModeButtonPreventEarlyPaint);
 
 bool IsNtpRealboxNextEnabled(Profile* profile);
 

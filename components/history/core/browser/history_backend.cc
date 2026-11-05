@@ -18,7 +18,9 @@
 #include <vector>
 
 #include "base/compiler_specific.h"
+#include "base/containers/flat_map.h"
 #include "base/containers/flat_set.h"
+#include "base/containers/to_vector.h"
 #include "base/feature_list.h"
 #include "base/files/file_enumerator.h"
 #include "base/files/file_path.h"
@@ -176,15 +178,6 @@ const int kMaxRedirectCount = 32;
 // each time HistoryBackend::GetDomainDiversity() is called.
 constexpr int kDomainDiversityMaxBacktrackedDays = 7;
 
-// An offset that corrects possible error in date/time arithmetic caused by
-// fluctuation of day length due to Daylight Saving Time (DST). For example,
-// given midnight M, its next midnight can be computed as (M + 24 hour
-// + offset).LocalMidnight(). In most modern DST systems, the DST shift is
-// typically 1 hour. However, a larger value of 4 is chosen here to
-// accommodate larger DST shifts that have been used historically and to
-// avoid other potential issues.
-constexpr int kDSTRoundingOffsetHours = 4;
-
 // When batch-deleting foreign visits (i.e. visits coming from other devices),
 // this specifies how many visits to delete in a single HistoryDBTask. This
 // usually happens when history sync was turned off.
@@ -318,12 +311,6 @@ std::u16string FormatUrlForRedirectComparison(const GURL& url) {
           url_formatter::kFormatUrlOmitUsernamePassword |
           url_formatter::kFormatUrlOmitTrivialSubdomains,
       base::UnescapeRule::NONE, nullptr, nullptr, nullptr);
-}
-
-base::Time MidnightNDaysLater(base::Time time, int days) {
-  return (time.LocalMidnight() + base::Days(days) +
-          base::Hours(kDSTRoundingOffsetHours))
-      .LocalMidnight();
 }
 
 QueuedHistoryDBTask::QueuedHistoryDBTask(
@@ -702,6 +689,10 @@ void HistoryBackend::UpdateWithPageEndTime(ContextID context_id,
   TRACE_EVENT0("browser", "HistoryBackend::UpdateWithPageEndTime");
   // Will be filled with the URL ID and the visit ID of the last addition.
   VisitID visit_id = tracker_.GetLastVisit(context_id, nav_entry_id, url);
+  if (visit_id == kInvalidVisitID) {
+    return;
+  }
+
   UpdateVisitDuration(visit_id, end_ts);
 }
 
@@ -710,7 +701,7 @@ void HistoryBackend::SetPageLanguageForVisit(ContextID context_id,
                                              const GURL& url,
                                              const std::string& page_language) {
   VisitID visit_id = tracker_.GetLastVisit(context_id, nav_entry_id, url);
-  if (!visit_id) {
+  if (visit_id == kInvalidVisitID) {
     return;
   }
 
@@ -749,7 +740,7 @@ void HistoryBackend::SetPasswordStateForVisit(
     const GURL& url,
     VisitContentAnnotations::PasswordState password_state) {
   VisitID visit_id = tracker_.GetLastVisit(context_id, nav_entry_id, url);
-  if (!visit_id) {
+  if (visit_id == kInvalidVisitID) {
     return;
   }
 
@@ -1275,8 +1266,7 @@ void HistoryBackend::AddPage(const HistoryAddPageArgs& request) {
       ui::PageTransitionCoreTypeIs(request_transition,
                                    ui::PAGE_TRANSITION_MANUAL_SUBFRAME);
   if (!is_subframe_navigation && !is_keyword_generated &&
-      request.response_code_category !=
-          history::VisitResponseCodeCategory::k404 &&
+      request.response_code_category != VisitResponseCodeCategory::k404 &&
       current_visit_was_successfully_added) {
     tracker_.AddVisit(request.context_id, request.nav_entry_id, request.url,
                       last_visit_id);
@@ -1356,11 +1346,10 @@ void HistoryBackend::InitImpl(
   {
     std::unique_ptr<InMemoryHistoryBackend> mem_backend(
         new InMemoryHistoryBackend);
-    if (mem_backend->Init(history_name)) {
+    if (mem_backend->Init(*db_)) {
       delegate_->SetInMemoryBackend(std::move(mem_backend));
     }
   }
-  db_->BeginExclusiveMode();  // Must be after the mem backend read the data.
   if (!local_device_originator_cache_guid_.empty()) {
     db_->SetLocalDeviceOriginatorCacheGuid(local_device_originator_cache_guid_);
   }
@@ -1473,7 +1462,6 @@ std::pair<URLID, VisitID> HistoryBackend::AddPageVisit(
       DLOG(ERROR) << "AddPageVisit: Adding URL failed: " << url_info.url();
       return std::make_pair(0, 0);
     }
-    UMA_HISTOGRAM_BOOLEAN("History.URLRowAddedAsHidden", url_info.hidden());
     url_info.set_id(url_id);
   }
 
@@ -1544,12 +1532,6 @@ std::pair<URLID, VisitID> HistoryBackend::AddPageVisit(
   }
 
   if (visit_info.visit_id) {
-    // For redirect chains that end in a 404 visit, the redirect visits are
-    // saved due to the 404 visit. Here, the `response_code_category` is
-    // always for the final navigation in the chain.
-    UMA_HISTOGRAM_BOOLEAN(
-        "History.VisitAddedDueTo404",
-        response_code_category == VisitResponseCodeCategory::k404);
     // Broadcast a notification of the visit.
     NotifyURLVisited(VisitedURLInfo(
         url_info, visit_info, response_code_category, local_navigation_id));
@@ -2161,6 +2143,21 @@ std::vector<journeys::Journey> HistoryBackend::GetAllJourneysWithVisits() {
   return journeys::GetAllJourneysWithResolvedVisits(*db_);
 }
 
+std::optional<journeys::Journey> HistoryBackend::GetJourneyWithVisits(
+    const std::string& journey_id) {
+  if (!db_) {
+    return std::nullopt;
+  }
+  return journeys::GetJourneyWithResolvedVisits(*db_, journey_id);
+}
+
+size_t HistoryBackend::GetUnresolvableJourneysCountForFishfood() {
+  if (!db_) {
+    return 0;
+  }
+  return journeys::GetUnresolvableJourneysCountForFishfood(*db_);
+}
+
 bool HistoryBackend::DeleteAllJourneys() {
   if (!db_) {
     return false;
@@ -2203,14 +2200,15 @@ DomainDiversityResults HistoryBackend::GetDomainDiversity(
     metric_set.end_time = current_midnight;
 
     if (metric_type_bitmask & kEnableLast1DayMetric) {
-      base::Time last_midnight = MidnightNDaysLater(current_midnight, -1);
+      base::Time last_midnight = current_midnight.LocalMidnightWithOffset(-1);
       auto domains = db_->CountUniqueDomainsVisited(
           last_midnight, current_midnight, policy_for_404_visits);
       metric_set.one_day_metric = DomainMetricCountType(domains, last_midnight);
     }
 
     if (metric_type_bitmask & kEnableLast7DayMetric) {
-      base::Time seven_midnights_ago = MidnightNDaysLater(current_midnight, -7);
+      base::Time seven_midnights_ago =
+          current_midnight.LocalMidnightWithOffset(-7);
       auto domains = db_->CountUniqueDomainsVisited(
           seven_midnights_ago, current_midnight, policy_for_404_visits);
       metric_set.seven_day_metric =
@@ -2219,7 +2217,7 @@ DomainDiversityResults HistoryBackend::GetDomainDiversity(
 
     if (metric_type_bitmask & kEnableLast28DayMetric) {
       base::Time twenty_eight_midnights_ago =
-          MidnightNDaysLater(current_midnight, -28);
+          current_midnight.LocalMidnightWithOffset(-28);
       auto domains = db_->CountUniqueDomainsVisited(
           twenty_eight_midnights_ago, current_midnight, policy_for_404_visits);
       metric_set.twenty_eight_day_metric =
@@ -2227,7 +2225,7 @@ DomainDiversityResults HistoryBackend::GetDomainDiversity(
     }
     result.push_back(metric_set);
 
-    current_midnight = MidnightNDaysLater(current_midnight, -1);
+    current_midnight = current_midnight.LocalMidnightWithOffset(-1);
   }
 
   return result;
@@ -2640,7 +2638,7 @@ void HistoryBackend::AddVisitsToCluster(ClusterId cluster_id,
 }
 
 void HistoryBackend::AddVisitToSyncedCluster(
-    const history::ClusterVisit& cluster_visit,
+    const ClusterVisit& cluster_visit,
     const std::string& originator_cache_guid,
     ClusterId originator_cluster_id) {
   TRACE_EVENT0("browser", "HistoryBackend::AddVisitToSyncedCluster");
@@ -2682,7 +2680,7 @@ void HistoryBackend::HideVisits(const std::vector<VisitID>& visit_ids) {
   db_->HideVisits(visit_ids);
 }
 
-void HistoryBackend::UpdateClusterVisit(history::ClusterVisit cluster_visit) {
+void HistoryBackend::UpdateClusterVisit(ClusterVisit cluster_visit) {
   TRACE_EVENT0("browser", "HistoryBackend::UpdateClusterVisit");
   if (!db_) {
     return;
@@ -2890,6 +2888,8 @@ QueryResults HistoryBackend::QueryHistory(const std::u16string& text_query,
 // Basic time-based querying of history.
 void HistoryBackend::QueryHistoryBasic(const QueryOptions& options,
                                        QueryResults* result) {
+  base::ElapsedTimer timer;
+
   // First get all visits.
   VisitVector visits;
   bool has_more_results = db_->GetVisibleVisitsInRange(options, &visits);
@@ -2899,6 +2899,109 @@ void HistoryBackend::QueryHistoryBasic(const QueryOptions& options,
   GetVisitsSource(visits, &sources);
 
   // Now add them and the URL rows to the results.
+  std::vector<URLResult> matching_results =
+      base::FeatureList::IsEnabled(kHistoryQueryBatchedLookups)
+          ? QueryHistoryBasicBatched(visits, sources)
+          : QueryHistoryBasicLegacy(visits, sources);
+
+  base::UmaHistogramTimes("History.QueryHistoryBasic.Duration",
+                          timer.Elapsed());
+  base::UmaHistogramCounts1000("History.QueryHistoryBasic.ResultCount",
+                               matching_results.size());
+
+  result->SetURLResults(std::move(matching_results));
+
+  // TODO(crbug.com/580789349): This doesn't handle query continuation
+  // correctly for a bounded `begin_time`: `reached_beginning` is only set when
+  // `begin_time` precedes the oldest visit in the database, so callers paging
+  // through a bounded range are never told to stop. Consider replacing
+  // `reached_beginning` with `has_more_results`.
+  if (!has_more_results && options.begin_time <= first_recorded_time_) {
+    result->set_reached_beginning(true);
+  }
+}
+
+std::vector<URLResult> HistoryBackend::QueryHistoryBasicBatched(
+    const VisitVector& visits,
+    const VisitSourceMap& sources) {
+  // Phase 1: Collect unique URL IDs and visit IDs for batched database
+  // lookups.
+  std::vector<URLID> unique_url_ids;
+  unique_url_ids.reserve(visits.size());
+  std::vector<VisitID> visit_ids;
+  visit_ids.reserve(visits.size());
+  for (const auto& visit : visits) {
+    unique_url_ids.push_back(visit.url_id);
+    visit_ids.push_back(visit.visit_id);
+  }
+  std::ranges::sort(unique_url_ids);
+  auto to_remove = std::ranges::unique(unique_url_ids);
+  unique_url_ids.erase(to_remove.begin(), to_remove.end());
+
+  base::flat_map<URLID, URLRow> url_rows;
+  db_->GetURLRows(unique_url_ids, &url_rows);
+
+  base::flat_map<VisitID, VisitContentAnnotations> content_annotations_map;
+  db_->GetContentAnnotationsForVisits(visit_ids, &content_annotations_map);
+
+  // Phase 2: Assemble matching results in original visit order.
+  std::vector<URLResult> matching_results;
+  matching_results.reserve(visits.size());
+  for (const auto& visit : visits) {
+    // Add a result row for this visit, get the URL info from the DB.
+    auto url_it = url_rows.find(visit.url_id);
+    if (url_it == url_rows.end()) {
+      DLOG(ERROR) << "Failed to get id " << visit.url_id
+                  << " from history.urls.";
+      continue;  // DB out of sync and URL doesn't exist, try to recover.
+    }
+
+    const URLRow& url_row = url_it->second;
+    if (!url_row.url().is_valid()) {
+      DVLOG(0) << "Got invalid URL from history.urls with id " << visit.url_id
+               << ":  " << url_row.url().possibly_invalid_spec();
+      continue;  // Don't report invalid URLs in case of corruption.
+    }
+
+    URLResult url_result(url_row);
+    url_result.set_visit_id(visit.visit_id);
+    url_result.set_visit_time(visit.visit_time);
+    url_result.set_app_id(visit.app_id);
+
+    auto annot_it = content_annotations_map.find(visit.visit_id);
+    if (annot_it != content_annotations_map.end()) {
+      url_result.set_content_annotations(std::move(annot_it->second));
+    }
+
+    VisitSource visit_source;
+    if (visit.source.has_value()) {
+      visit_source = visit.source.value();
+    } else {
+      auto source_it = sources.find(visit.visit_id);
+      if (source_it == sources.end()) {
+        visit_source = VisitSource::SOURCE_BROWSED;
+      } else {
+        visit_source = source_it->second;
+      }
+    }
+    url_result.set_actor_source(visit_source == VisitSource::SOURCE_ACTOR);
+
+    // Set whether the visit was blocked for a managed user by looking at the
+    // transition type.
+    url_result.set_blocked_visit(
+        (visit.transition & ui::PAGE_TRANSITION_BLOCKED) != 0);
+
+    // We don't set any of the query-specific parts of the URLResult, since
+    // snippets and stuff don't apply to basic querying.
+    matching_results.push_back(std::move(url_result));
+  }
+  return matching_results;
+}
+
+std::vector<URLResult> HistoryBackend::QueryHistoryBasicLegacy(
+    const VisitVector& visits,
+    const VisitSourceMap& sources) {
+  // Legacy per-visit loop: executes 2 individual queries per visit.
   std::vector<URLResult> matching_results;
   URLResult url_result;
   for (const auto& visit : visits) {
@@ -2921,32 +3024,27 @@ void HistoryBackend::QueryHistoryBasic(const QueryOptions& options,
 
     VisitContentAnnotations content_annotations;
     db_->GetContentAnnotationsForVisit(visit.visit_id, &content_annotations);
-    url_result.set_content_annotations(content_annotations);
+    url_result.set_content_annotations(std::move(content_annotations));
 
     VisitSource visit_source;
     if (visit.source.has_value()) {
       visit_source = visit.source.value();
-    } else if (sources.count(visit.visit_id) == 0) {
-      visit_source = VisitSource::SOURCE_BROWSED;
     } else {
-      visit_source = sources[visit.visit_id];
+      auto source_it = sources.find(visit.visit_id);
+      if (source_it == sources.end()) {
+        visit_source = VisitSource::SOURCE_BROWSED;
+      } else {
+        visit_source = source_it->second;
+      }
     }
     url_result.set_actor_source(visit_source == VisitSource::SOURCE_ACTOR);
 
-    // Set whether the visit was blocked for a managed user by looking at the
-    // transition type.
     url_result.set_blocked_visit(
         (visit.transition & ui::PAGE_TRANSITION_BLOCKED) != 0);
 
-    // We don't set any of the query-specific parts of the URLResult, since
-    // snippets and stuff don't apply to basic querying.
     matching_results.push_back(std::move(url_result));
   }
-  result->SetURLResults(std::move(matching_results));
-
-  if (!has_more_results && options.begin_time <= first_recorded_time_) {
-    result->set_reached_beginning(true);
-  }
+  return matching_results;
 }
 
 // Text-based querying of history.
@@ -2977,10 +3075,15 @@ void HistoryBackend::QueryHistoryText(const std::u16string& text_query,
   }
 
   std::vector<URLResult> matching_visits;
+  // Whether any per-URL visit query was truncated by `options.max_count`. If
+  // so, older matching visits exist beyond what is returned.
+  bool has_more_results = false;
   for (const auto& text_match : text_matches) {
     // Get all visits for given URL match.
     VisitVector visits;
-    db_->GetVisibleVisitsForURL(text_match.id(), options, &visits);
+    if (db_->GetVisibleVisitsForURL(text_match.id(), options, &visits)) {
+      has_more_results = true;
+    }
 
     VisitSourceMap sources;
     GetVisitsSource(visits, &sources);
@@ -2990,10 +3093,6 @@ void HistoryBackend::QueryHistoryText(const std::u16string& text_query,
       url_result.set_visit_id(visit.visit_id);
       url_result.set_visit_time(visit.visit_time);
       url_result.set_app_id(visit.app_id);
-
-      VisitContentAnnotations content_annotations;
-      db_->GetContentAnnotationsForVisit(visit.visit_id, &content_annotations);
-      url_result.set_content_annotations(content_annotations);
 
       VisitSource visit_source;
       if (visit.source.has_value()) {
@@ -3015,13 +3114,28 @@ void HistoryBackend::QueryHistoryText(const std::u16string& text_query,
   size_t max_results = options.max_count == 0
                            ? std::numeric_limits<size_t>::max()
                            : static_cast<int>(options.max_count);
-  bool has_more_results = false;
   if (matching_visits.size() > max_results) {
     has_more_results = true;
     matching_visits.resize(max_results);
   }
+
+  // Read annotations only for the returned visits, in a single batched query.
+  // Before trimming, `matching_visits` can hold up to `max_count` visits per
+  // matching URL.
+  std::vector<VisitID> visit_ids =
+      base::ToVector(matching_visits, &URLResult::visit_id);
+  base::flat_map<VisitID, VisitContentAnnotations> content_annotations_map;
+  db_->GetContentAnnotationsForVisits(visit_ids, &content_annotations_map);
+  for (URLResult& url_result : matching_visits) {
+    auto annot_it = content_annotations_map.find(url_result.visit_id());
+    if (annot_it != content_annotations_map.end()) {
+      url_result.set_content_annotations(std::move(annot_it->second));
+    }
+  }
   result->SetURLResults(std::move(matching_visits));
 
+  // TODO(crbug.com/580789349): See the corresponding TODO in
+  // QueryHistoryBasic().
   if (!has_more_results && options.begin_time <= first_recorded_time_) {
     result->set_reached_beginning(true);
   }
@@ -3139,8 +3253,8 @@ KeywordSearchTermVisitList HistoryBackend::QueryMostRepeatedQueriesForKeyword(
   }
 
   KeywordSearchTermVisitList search_terms;
-  history::GetMostRepeatedSearchTermsFromEnumerator(*enumerator, result_count,
-                                                    &search_terms);
+  GetMostRepeatedSearchTermsFromEnumerator(*enumerator, result_count,
+                                           &search_terms);
   DCHECK_LE(search_terms.size(), result_count);
   base::UmaHistogramTimes("History.QueryMostRepeatedQueriesTimeV2",
                           query_timer.Elapsed());
@@ -3902,7 +4016,7 @@ void HistoryBackend::NotifyURLsModified(const URLRows& changed_urls,
 
 void HistoryBackend::NotifyDeletions(DeletionInfo deletion_info) {
   std::set<GURL> origins;
-  for (const history::URLRow& row : deletion_info.deleted_rows()) {
+  for (const URLRow& row : deletion_info.deleted_rows()) {
     origins.insert(row.url().DeprecatedGetOriginAsURL());
   }
 

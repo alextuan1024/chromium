@@ -106,12 +106,16 @@ class VIZ_COMMON_EXPORT CompositorFrameMetadata {
   gfx::PointF root_scroll_offset;
   float page_scale_factor = 0.f;
 
+  // Requested scale for retained surface root render-pass backings, matching
+  // the resolution at which the frame content was rasterized. This changes
+  // backing resolution, not its intended on-screen scale. Invalid values and a
+  // missing Mojo field are treated as 1.
+  float surface_backing_size_scale_factor = 1.f;
+
   gfx::SizeF scrollable_viewport_size;
 
   // The size of the viewport for the visible region in pixels.
   gfx::Size visible_viewport_size;
-
-  gfx::ContentColorUsage content_color_usage = gfx::ContentColorUsage::kSRGB;
 
   bool may_contain_video = false;
 

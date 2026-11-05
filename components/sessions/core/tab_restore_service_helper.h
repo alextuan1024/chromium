@@ -21,6 +21,7 @@
 #include "components/sessions/core/sessions_export.h"
 #include "components/sessions/core/tab_restore_service.h"
 #include "components/sessions/core/tab_restore_types.h"
+#include "ui/base/mojom/window_open_disposition.mojom-forward.h"
 
 namespace sessions {
 
@@ -53,6 +54,10 @@ class SESSIONS_EXPORT TabRestoreServiceHelper
 
     // Invoked when navigations from entries have been deleted.
     virtual void OnNavigationEntriesDeleted();
+
+    // Invoked when fields of existing entries have been modified in place and
+    // the persisted entries need to be rewritten.
+    virtual void OnEntriesModified();
 
     // Invoked before the entry is restored. |entry_iterator| points to the
     // entry corresponding to the session identified by |id|.
@@ -100,14 +105,20 @@ class SESSIONS_EXPORT TabRestoreServiceHelper
   void AddObserver(TabRestoreServiceObserver* observer);
   void RemoveObserver(TabRestoreServiceObserver* observer);
   std::optional<SessionID> CreateHistoricalTab(LiveTab* live_tab, int index);
-  void BrowserClosing(LiveTabContext* context);
+  std::optional<SessionID> BrowserClosing(LiveTabContext* context);
   void BrowserClosed(LiveTabContext* context);
-  void CreateHistoricalGroup(LiveTabContext* context,
-                             const tab_groups::TabGroupId& id);
+  std::optional<SessionID> CreateHistoricalGroup(
+      LiveTabContext* context,
+      const tab_groups::TabGroupId& id);
   void CreateHistoricalSplit(LiveTabContext* context,
                              const split_tabs::SplitTabId& id);
   void GroupClosed(const tab_groups::TabGroupId& group);
   void GroupCloseStopped(const tab_groups::TabGroupId& group);
+  void PromoteEphemeralTabGroup(
+      const tab_groups::TabGroupId& group_id,
+      const tab_groups::TabGroupVisualData& visual_data);
+  void UpdateSavedTabGroupId(const tab_groups::TabGroupId& group_id,
+                             const base::Uuid& saved_group_id);
   void SplitClosed(const split_tabs::SplitTabId& id);
   void SplitCloseStopped(const split_tabs::SplitTabId& id);
   void ClearEntries();
@@ -120,20 +131,26 @@ class SESSIONS_EXPORT TabRestoreServiceHelper
   std::optional<std::vector<LiveTab*>> RestoreEntryById(
       LiveTabContext* context,
       SessionID id,
-      WindowOpenDisposition disposition);
+      ui::mojom::WindowOpenDisposition disposition);
   bool IsRestoring() const;
 
   // Notifies observers the entries have changed.
   void NotifyEntriesChanged();
 
+  // Notifies the persistence observer that existing entries were modified in
+  // place, and the entries observers unless a restore is in progress (in which
+  // case RestoreEntryById() notifies once it finishes).
+  void NotifyEntriesModified();
+
   // Notifies observers the service has loaded.
   void NotifyLoaded();
 
-  // Adds |entry| to the list of entries. If |prune| is true |PruneAndNotify| is
-  // invoked. If |to_front| is true the entry is added to the front, otherwise
+  // Adds |entry| to the list of entries. If |notify| is true, observers are
+  // notified. If |to_front| is true the entry is added to the front, otherwise
   // the back. Normal closes go to the front, but tab/window closes from the
-  // previous session are added to the back.
-  void AddEntry(std::unique_ptr<Entry> entry, bool prune, bool to_front);
+  // previous session are added to the back. Returns true if the entry was stored,
+  // false if it failed FilterEntry or if the service is full and |to_front| is false.
+  bool AddEntry(std::unique_ptr<Entry> entry, bool notify, bool to_front);
 
   // Prunes |entries_| to contain only kMaxEntries, and removes uninteresting
   // entries.
@@ -175,7 +192,7 @@ class SESSIONS_EXPORT TabRestoreServiceHelper
   // alongside other tabs inside the same group or window.
   LiveTabContext* RestoreTab(const Tab& tab,
                              LiveTabContext* context,
-                             WindowOpenDisposition disposition,
+                             ui::mojom::WindowOpenDisposition disposition,
                              sessions::tab_restore::Type session_restore_type,
                              LiveTab** live_tab,
                              bool is_restoring_group_or_window);
@@ -187,7 +204,7 @@ class SESSIONS_EXPORT TabRestoreServiceHelper
       Window& window,
       SessionID id,
       LiveTabContext* context,
-      WindowOpenDisposition disposition,
+      ui::mojom::WindowOpenDisposition disposition,
       std::vector<base::WeakPtr<LiveTab>>* live_tabs);
 
   // Helper function for RestoreEntryById(). Restores a single tab from the
@@ -196,7 +213,7 @@ class SESSIONS_EXPORT TabRestoreServiceHelper
       Split& split,
       SessionID id,
       LiveTabContext** context,
-      WindowOpenDisposition disposition,
+      ui::mojom::WindowOpenDisposition disposition,
       sessions::tab_restore::Type session_restore_type,
       std::vector<base::WeakPtr<LiveTab>>& live_tabs);
 
@@ -205,7 +222,7 @@ class SESSIONS_EXPORT TabRestoreServiceHelper
   bool RestoreSplitFromGroup(Group& group,
                              SessionID id,
                              LiveTabContext** context,
-                             WindowOpenDisposition disposition,
+                             ui::mojom::WindowOpenDisposition disposition,
                              std::vector<base::WeakPtr<LiveTab>>& live_tabs);
 
   // Helper function for CreateHistoricalGroup. Returns a Group populated with

@@ -32,14 +32,17 @@ public class BottomSheetRecyclerScrollListenerTest {
     @Rule public MockitoRule mMockitoRule = MockitoJUnit.rule();
 
     @Mock private BottomSheetController mMockBottomSheetController;
+    @Mock private BottomSheetContent mMockBottomSheetContent;
 
     private BottomSheetRecyclerScrollListener mScrollListener;
     private Context mContext;
 
     @Before
     public void setUp() {
-        mContext = Robolectric.setupActivity(Activity.class);
-        mScrollListener = new BottomSheetRecyclerScrollListener(mMockBottomSheetController);
+        mContext = Robolectric.buildActivity(Activity.class).setup().get();
+        mScrollListener =
+                new BottomSheetRecyclerScrollListener(
+                        mMockBottomSheetController, mMockBottomSheetContent);
     }
 
     /** Creates a test RecyclerView with deterministic scroll offset. */
@@ -120,7 +123,8 @@ public class BottomSheetRecyclerScrollListenerTest {
         RecyclerView recyclerView = createRecyclerViewWithOffset(0);
 
         when(mMockBottomSheetController.getSheetState()).thenReturn(SheetState.HALF);
-        when(mMockBottomSheetController.isLargeFormFactorUiEnabled(null)).thenReturn(false);
+        when(mMockBottomSheetController.isLargeFormFactorUiEnabled(mMockBottomSheetContent))
+                .thenReturn(false);
 
         mScrollListener.onScrolled(recyclerView, 0, 0);
 
@@ -134,7 +138,8 @@ public class BottomSheetRecyclerScrollListenerTest {
         RecyclerView recyclerView = createRecyclerViewWithOffset(0);
 
         when(mMockBottomSheetController.getSheetState()).thenReturn(SheetState.HALF);
-        when(mMockBottomSheetController.isLargeFormFactorUiEnabled(null)).thenReturn(true);
+        when(mMockBottomSheetController.isLargeFormFactorUiEnabled(mMockBottomSheetContent))
+                .thenReturn(true);
 
         mScrollListener.onScrolled(recyclerView, 0, 0);
 

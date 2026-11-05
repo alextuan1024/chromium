@@ -9,6 +9,7 @@
 #include <string_view>
 
 #include "base/android/library_loader/anchor_functions.h"
+#include "base/compiler_specific.h"
 #include "base/debug/leak_annotations.h"
 #include "base/debug/stack_trace.h"
 #include "base/functional/bind.h"
@@ -225,15 +226,17 @@ struct FrameDetails {
   // Sets Chrome's module info for the frame.
   void SetChromeModuleInfo() {
     module_base_address = executable_start_addr();
+    // SAFETY: `executable_start_addr()` is the address of `__executable_start`,
+    // a linker-defined symbol at the start of the ELF image of the module
+    // containing this code, which has been loaded, and thus fully mapped into
+    // memory.
     static const std::optional<std::string_view> library_name =
-        base::debug::ReadElfLibraryName(
-            reinterpret_cast<void*>(executable_start_addr()));
-    static const base::NoDestructor<std::string> chrome_debug_id([] {
-      base::debug::ElfBuildIdBuffer build_id;
-      size_t build_id_length = base::debug::ReadElfBuildId(
-          reinterpret_cast<void*>(executable_start_addr()), true, build_id);
-      return std::string(build_id, build_id_length);
-    }());
+        UNSAFE_BUFFERS(base::debug::ReadElfLibraryName(
+            reinterpret_cast<void*>(executable_start_addr())));
+    // SAFETY: As above.
+    static const base::NoDestructor<std::string> chrome_debug_id(
+        UNSAFE_BUFFERS(base::debug::ReadElfBuildId(
+            reinterpret_cast<void*>(executable_start_addr()), true)));
     if (library_name) {
       module_name = std::string(*library_name);
     }
@@ -375,8 +378,8 @@ void TracingSamplerProfiler::DataSource::StartTracing(
     }
     profile_builder_ptr->SetUnwinderType(unwinder_type);
     sampling_profiler = std::make_unique<base::StackSamplingProfiler>(
-        profiler->sampled_thread_token_, params, std::move(profile_builder),
-        std::move(core_unwinders_factory));
+        profiler->sampled_thread_token_.Clone(), params,
+        std::move(profile_builder), std::move(core_unwinders_factory));
   }
 #else   // BUILDFLAG(IS_ANDROID)
   if (unwinder_type == UnwinderType::kUnknown) {
@@ -384,8 +387,8 @@ void TracingSamplerProfiler::DataSource::StartTracing(
   }
   profile_builder_ptr->SetUnwinderType(unwinder_type);
   sampling_profiler = std::make_unique<base::StackSamplingProfiler>(
-      profiler->sampled_thread_token_, params, std::move(profile_builder),
-      base::CreateCoreUnwindersFactory());
+      profiler->sampled_thread_token_.Clone(), params,
+      std::move(profile_builder), base::CreateCoreUnwindersFactory());
 #endif  // BUILDFLAG(IS_ANDROID)
 
   if (sampling_profiler != nullptr) {
@@ -790,7 +793,7 @@ TracingSamplerProfiler::TracingSamplerProfiler(
     base::SamplingProfilerThreadToken sampled_thread_token,
     CoreUnwindersCallback core_unwinders_factory_function,
     UnwinderType unwinder_type)
-    : sampled_thread_token_(sampled_thread_token),
+    : sampled_thread_token_(std::move(sampled_thread_token)),
       core_unwinders_factory_function_(
           std::move(core_unwinders_factory_function)),
       unwinder_type_(unwinder_type) {

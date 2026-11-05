@@ -14,7 +14,7 @@
 #include "base/android/callback_android.h"
 #include "base/android/jni_android.h"
 #include "base/android/jni_string.h"
-#include "base/android/token_android.h"
+#include "base/android/token_android.h"  // IWYU pragma: keep
 #include "base/check_is_test.h"
 #include "base/memory/ptr_util.h"
 #include "base/memory/raw_ptr.h"
@@ -26,7 +26,6 @@
 #include "cc/slim/layer.h"
 #include "chrome/browser/android/background_tab_manager.h"
 #include "chrome/browser/android/compositor/tab_content_manager.h"
-#include "chrome/browser/android/media_state_observer.h"
 #include "chrome/browser/android/selection/chrome_selection_dropdown_menu_delegate.h"
 #include "chrome/browser/android/tab_features.h"
 #include "chrome/browser/android/tab_web_contents_delegate_android.h"
@@ -53,7 +52,6 @@
 #include "chrome/browser/ui/browser_window/public/browser_window_interface_iterator.h"
 #include "chrome/browser/ui/navigator/browser_navigator_params.h"
 #include "chrome/browser/ui/startup/bad_flags_prompt.h"
-#include "chrome/browser/ui/tab_helpers.h"
 #include "chrome/browser/ui/tabs/alert/tab_alert_controller.h"
 #include "components/android_autofill/browser/android_autofill_client.h"
 #include "components/android_autofill/browser/android_autofill_manager.h"
@@ -88,7 +86,6 @@
 #include "third_party/blink/public/common/associated_interfaces/associated_interface_provider.h"
 #include "third_party/blink/public/common/renderer_preferences/renderer_preferences.h"
 #include "ui/android/view_android.h"
-#include "ui/base/window_open_disposition.h"
 #include "url/android/gurl_android.h"
 #include "url/gurl.h"
 
@@ -152,12 +149,6 @@ TabAndroid* TabAndroid::FromTabHandle(tabs::TabHandle handle) {
 // static
 TabAndroid* TabAndroid::GetNativeTab(JNIEnv* env, const JavaRef<jobject>& obj) {
   return reinterpret_cast<TabAndroid*>(Java_TabImpl_getNativePtr(env, obj));
-}
-
-// static
-void TabAndroid::AttachTabHelpers(content::WebContents* web_contents) {
-  DCHECK(web_contents);
-  TabHelpers::AttachTabHelpers(web_contents);
 }
 
 TabAndroid::TabAndroid(JNIEnv* env,
@@ -263,11 +254,37 @@ int TabAndroid::GetUserAgent() const {
   return Java_TabImpl_getUserAgent(env, GetJavaObject(env));
 }
 
+content::NavigationController::UserAgentOverrideOption
+TabAndroid::CalculateUserAgentOverrideOption(const GURL& url) const {
+  JNIEnv* env = AttachCurrentThread();
+  auto j_obj = GetJavaObject(env);
+  if (!j_obj) {
+    return content::NavigationController::UA_OVERRIDE_INHERIT;
+  }
+  return Java_TabImpl_calculateUserAgentOverrideOption(env, j_obj, url);
+}
+
 bool TabAndroid::IsNativePage() const {
   JNIEnv* env = AttachCurrentThread();
   return Java_TabImpl_isNativePage(env, GetJavaObject(env));
 }
 
+bool TabAndroid::IsPdf() const {
+  JNIEnv* env = AttachCurrentThread();
+  return Java_TabImpl_isPdf(env, GetJavaObject(env));
+}
+
+std::string TabAndroid::GetCanonicalFilepath() const {
+  JNIEnv* env = AttachCurrentThread();
+  return Java_TabImpl_getCanonicalFilepath(env, GetJavaObject(env));
+}
+
+void TabAndroid::SetPdfNativePageForTesting(const std::string& url,
+                                            const std::string& filepath) {
+  JNIEnv* env = AttachCurrentThread();
+  Java_TabImpl_setPdfNativePageForTesting(  // IN-TEST
+      env, GetJavaObject(env), url, filepath);
+}
 
 bool TabAndroid::IsUserInteractable() const {
   JNIEnv* env = AttachCurrentThread();
@@ -285,10 +302,13 @@ bool TabAndroid::IsOffscreenRendering() const {
 
 sync_sessions::SyncedTabDelegate* TabAndroid::GetSyncedTabDelegate() {
   if (!synced_tab_delegate_) {
-    synced_tab_delegate_ =
-        std::make_unique<browser_sync::SyncedTabDelegateAndroid>(this);
+    synced_tab_delegate_ = std::make_unique<SyncedTabDelegateAndroid>(this);
     if (web_contents_) {
-      synced_tab_delegate_->SetWebContents(web_contents_.get());
+      synced_tab_delegate_->SetWebContents(
+          web_contents_.get(),
+          tab_features_ ? tab_features_->task_tab_helper() : nullptr,
+          tab_features_ ? tab_features_->supervised_user_navigation_observer()
+                        : nullptr);
     }
   }
   return synced_tab_delegate_.get();
@@ -340,6 +360,11 @@ void TabAndroid::SetWindowSessionID(SessionID window_id) {
   session_tab_helper->SetWindowID(session_window_id_);
 }
 
+bool TabAndroid::IsClosing() const {
+  JNIEnv* env = AttachCurrentThread();
+  return Java_TabImpl_isClosing(env, GetJavaObject(env));
+}
+
 bool TabAndroid::IsCustomTab() const {
   JNIEnv* env = AttachCurrentThread();
   return Java_TabImpl_isCustomTab(env, GetJavaObject(env));
@@ -389,25 +414,27 @@ void TabAndroid::InitWebContents(
     const JavaRef<jobject>& jweb_contents_delegate,
     const JavaRef<jobject>& jcontext_menu_populator_factory) {
   web_contents_.reset(web_contents);
-  DCHECK(web_contents_.get());
+  CHECK(web_contents_.get(), base::NotFatalUntil::M161);
 
   night_mode::WebContentsThemeClient::CreateForWebContents(web_contents_.get());
 
-  renderer_preferences_util::UpdateFromSystemSettings(
-      web_contents_->GetMutableRendererPrefs(),
-      Profile::FromBrowserContext(web_contents_->GetBrowserContext()));
+  if (!base::FeatureList::IsEnabled(
+          chrome::android::kClankStartupTabOptimizations)) {
+    renderer_preferences_util::UpdateFromSystemSettings(
+        web_contents_->GetMutableRendererPrefs(),
+        Profile::FromBrowserContext(web_contents_->GetBrowserContext()));
+  }
   web_contents_->SetOwnerLocationForDebug(FROM_HERE);
 
   tabs::TabLookupFromWebContents::CreateForWebContents(web_contents_.get(),
                                                        this);
   web_contents_delegate_ =
       std::make_unique<android::TabWebContentsDelegateAndroid>(
-          env, jweb_contents_delegate);
+          env, jweb_contents_delegate, web_contents_.get());
   web_contents_->SetDelegate(web_contents_delegate_.get());
   web_contents_->SetSelectionPopupDelegate(
       std::make_unique<android::ChromeSelectionDropdownMenuDelegate>());
 
-  AttachTabHelpers(web_contents_.get());
   tab_features_ =
       std::make_unique<tabs::TabFeatures>(web_contents_.get(), profile());
   // When restoring a frame that was unloaded we re-create the TabAndroid and
@@ -438,7 +465,9 @@ void TabAndroid::InitWebContents(
       ->SetPopulatorFactory(jcontext_menu_populator_factory);
 
   if (synced_tab_delegate_) {
-    synced_tab_delegate_->SetWebContents(web_contents_.get());
+    synced_tab_delegate_->SetWebContents(
+        web_contents_.get(), tab_features_->task_tab_helper(),
+        tab_features_->supervised_user_navigation_observer());
   }
 
   // Verify that the WebContents this tab represents matches the expected
@@ -455,7 +484,6 @@ void TabAndroid::InitWebContents(
   // Shows a warning notification for dangerous flags in about:flags.
   ShowBadFlagsPrompt(web_contents_.get());
 
-  MediaStateObserver::CreateForWebContents(web_contents_.get());
   if (glic::GlicEnabling::IsProfileEligible(profile())) {
     glic_tab_indicator_helper_ =
         std::make_unique<glic::GlicTabIndicatorHelper>(this);
@@ -464,7 +492,13 @@ void TabAndroid::InitWebContents(
   alert_to_show_subscription_ =
       tab_alert_controller_->AddAlertToShowChangedCallback(base::BindRepeating(
           &TabAndroid::OnAlertStateChanged, base::Unretained(this)));
-  OnAlertStateChanged(tab_alert_controller_->GetAlertToShow());
+  std::optional<tabs::TabAlert> initial_alert =
+      tab_alert_controller_->GetAlertToShow();
+  if (initial_alert.has_value() ||
+      !base::FeatureList::IsEnabled(
+          chrome::android::kClankStartupTabOptimizations)) {
+    OnAlertStateChanged(initial_alert);
+  }
 
   for (Observer& observer : observers_) {
     observer.OnInitWebContents(this);
@@ -514,8 +548,9 @@ void TabAndroid::GetMemoryUsageBytes(
 }
 
 void TabAndroid::InitializeAutofillIfNecessary() {
-  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
-  DCHECK(autofill::AutofillProvider::FromWebContents(web_contents_.get()));
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
+  CHECK(autofill::AutofillProvider::FromWebContents(web_contents_.get()),
+        base::NotFatalUntil::M161);
   if (autofill::ContentAutofillClient::FromWebContents(web_contents_.get())) {
     // We need to initialize the keyboard suppressor before creating any
     // AutofillManagers and after the autofill client is available.
@@ -543,27 +578,27 @@ void TabAndroid::UpdateDelegates(
       ->SetPopulatorFactory(jcontext_menu_populator_factory);
   web_contents_delegate_ =
       std::make_unique<android::TabWebContentsDelegateAndroid>(
-          env, jweb_contents_delegate);
+          env, jweb_contents_delegate, web_contents());
   web_contents()->SetDelegate(web_contents_delegate_.get());
 }
 
-void TabAndroid::SendDidActivateUpdate(JNIEnv* env) {
+void TabAndroid::SendDidActivateUpdate() {
   // On Android, visibility and activation are currently synonymous.
   did_become_visible_callback_list_.Notify(this);
   did_activate_callback_list_.Notify(this);
 }
 
-void TabAndroid::SendWillDeactivateUpdate(JNIEnv* env) {
+void TabAndroid::SendWillDeactivateUpdate() {
   // On Android, visibility and activation are currently synonymous.
   will_become_hidden_callback_list_.Notify(this);
   will_deactivate_callback_list_.Notify(this);
 }
 
-void TabAndroid::SendDidInsertUpdate(JNIEnv* env) {
+void TabAndroid::SendDidInsertUpdate() {
   did_insert_callback_list_.Notify(this);
 }
 
-void TabAndroid::SendWillDetachUpdate(JNIEnv* env, int32_t detach_reason) {
+void TabAndroid::SendWillDetachUpdate(int32_t detach_reason) {
   will_detach_callback_list_.Notify(
       this, static_cast<tabs::TabInterface::DetachReason>(detach_reason));
 }
@@ -578,6 +613,13 @@ void WillRemoveWebContentsFromTab(content::WebContents* contents,
   contents->GetNativeView()->GetLayer()->RemoveFromParent();
 
   if (clear_delegate) {
+    // A beforeunload auto-close suppression mark belongs to a closure of the
+    // tab this WebContents is leaving, and the delegate being detached here is
+    // the only thing that consumes one. Dropping it keeps it from being spent
+    // on a later closure under a different delegate. A completion arriving
+    // while there is no delegate closes nothing either way.
+    android::TabWebContentsDelegateAndroid::SetSuppressBeforeUnloadAutoClose(
+        contents, /*suppress=*/false);
     contents->SetDelegate(nullptr);
   }
 }
@@ -610,11 +652,11 @@ tabs::TabDestroyStatus TabAndroid::DestroyWebContents() {
   }
 
   ResetTabAlertController();
-  tab_features_.reset();
-  web_contents_.reset();
   if (synced_tab_delegate_) {
     synced_tab_delegate_->ResetWebContents();
   }
+  tab_features_.reset();
+  web_contents_.reset();
   content_layer_.reset();
 
   return tabs::TabDestroyStatus::FAST_SHUTDOWN;
@@ -646,6 +688,9 @@ std::unique_ptr<content::WebContents> TabAndroid::ReleaseWebContentsInternal(
   WillRemoveWebContentsFromTab(web_contents(), clear_delegate);
 
   ResetTabAlertController();
+  if (synced_tab_delegate_) {
+    synced_tab_delegate_->ResetWebContents();
+  }
   tab_features_.reset();
   std::unique_ptr<content::WebContents> released_contents =
       std::move(web_contents_);
@@ -659,9 +704,6 @@ std::unique_ptr<content::WebContents> TabAndroid::ReleaseWebContentsInternal(
     ClearSessionId();
   }
 
-  if (synced_tab_delegate_) {
-    synced_tab_delegate_->ResetWebContents();
-  }
   content_layer_.reset();
   return released_contents;
 }
@@ -670,7 +712,7 @@ std::unique_ptr<content::WebContents> TabAndroid::ReleaseWebContentsInternal(
 std::unique_ptr<content::WebContents> TabAndroid::TakeWebContentsAndDestroyTab(
     TabAndroid* tab,
     base::PassKey<TabModelJniBridge>) {
-  DCHECK(tab);
+  CHECK(tab, base::NotFatalUntil::M161);
   content::WebContents* raw_contents = tab->web_contents();
   JNIEnv* env = base::android::AttachCurrentThread();
   // WARNING: This call synchronously deletes `tab`. Do not access `tab` after
@@ -698,11 +740,16 @@ void TabAndroid::OnPhysicalBackingSizeChanged(
 
 void TabAndroid::SetActiveNavigationEntryTitleForUrl(const std::string& url,
                                                      std::u16string title) {
-  DCHECK(web_contents());
+  CHECK(web_contents(), base::NotFatalUntil::M161);
 
   content::NavigationEntry* entry =
       web_contents()->GetController().GetVisibleEntry();
-  if (entry && url == entry->GetVirtualURL().spec()) {
+  // Some native pages are shown for an entry whose virtual URL differs from the
+  // native page URL, e.g. a PdfPage for a web PDF has the internal
+  // chrome-native://pdf URL, while the virtual URL is the PDF URL. Accept a
+  // match against either URL.
+  if (entry &&
+      (url == entry->GetVirtualURL().spec() || url == entry->GetURL().spec())) {
     entry->SetTitle(std::move(title));
   }
 }
@@ -1035,24 +1082,11 @@ void TabAndroid::UpdateProperties() {
     ancestor = ancestor->GetParentCollection();
   }
 
-  SetIsPinned(pinned);
-  SetTabGroupId(tab_group_id);
-}
-
-void TabAndroid::SetIsPinned(bool is_pinned) {
   JNIEnv* env = AttachCurrentThread();
-  Java_TabImpl_setIsPinned(env, GetJavaObject(env), is_pinned);
-}
-
-void TabAndroid::SetTabGroupId(
-    std::optional<tab_groups::TabGroupId> tab_group_id) {
-  JNIEnv* env = AttachCurrentThread();
-  ScopedJavaLocalRef<jobject> java_token;
-  if (tab_group_id) {
-    java_token =
-        base::android::TokenAndroid::Create(env, tab_group_id->token());
-  }
-  Java_TabImpl_setTabGroupId(env, GetJavaObject(env), java_token);
+  std::optional<base::Token> tab_group_token =
+      tab_groups::TabGroupId::ToOptionalToken(tab_group_id);
+  Java_TabImpl_updateParentCollectionProperties(env, GetJavaObject(env), pinned,
+                                                tab_group_token);
 }
 
 ScopedJavaLocalRef<jobject> TabAndroid::GetJavaObject(JNIEnv* env) const {

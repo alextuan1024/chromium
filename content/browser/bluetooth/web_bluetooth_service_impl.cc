@@ -856,6 +856,23 @@ void WebBluetoothServiceImpl::RequestDevice(
     return;
   }
 
+  // Ensure the requesting document is still active and has transient user
+  // activation to prevent inactive/pending-deletion frames or compromised
+  // renderers from opening choosers without user intent.
+  if (!render_frame_host().IsActive()) {
+    std::move(callback).Run(
+        blink::mojom::WebBluetoothResult::DOCUMENT_NOT_ACTIVE,
+        /*device=*/nullptr);
+    return;
+  }
+
+  if (!render_frame_host().HasTransientUserActivation()) {
+    std::move(callback).Run(
+        blink::mojom::WebBluetoothResult::USER_ACTIVATION_REQUIRED,
+        /*device=*/nullptr);
+    return;
+  }
+
   if (!GetAdapter() &&
       !BluetoothAdapterFactoryWrapper::Get().IsLowEnergySupported()) {
     std::move(callback).Run(
@@ -920,6 +937,7 @@ void WebBluetoothServiceImpl::ForgetDevice(
     if (!device_address.empty()) {
       allowed_devices().RemoveDevice(device_address);
     }
+    CleanupDeviceState(device_id);
     std::move(callback).Run();
     return;
   }
@@ -1645,6 +1663,21 @@ void WebBluetoothServiceImpl::RequestScanningStart(
     return;
   }
 
+  // Ensure the requesting document is still active and has transient user
+  // activation to prevent inactive/pending-deletion frames or compromised
+  // renderers from opening scanning prompts without user intent.
+  if (!render_frame_host().IsActive()) {
+    std::move(callback).Run(
+        blink::mojom::WebBluetoothResult::DOCUMENT_NOT_ACTIVE);
+    return;
+  }
+
+  if (!render_frame_host().HasTransientUserActivation()) {
+    std::move(callback).Run(
+        blink::mojom::WebBluetoothResult::USER_ACTIVATION_REQUIRED);
+    return;
+  }
+
   if (!GetAdapter() &&
       !BluetoothAdapterFactoryWrapper::Get().IsLowEnergySupported()) {
     std::move(callback).Run(
@@ -1747,17 +1780,22 @@ void WebBluetoothServiceImpl::RequestScanningStartImpl(
     return;
   }
 
+  if (!render_frame_host().IsActive()) {
+    std::move(callback).Run(
+        blink::mojom::WebBluetoothResult::DOCUMENT_NOT_ACTIVE);
+    return;
+  }
+
   if (request_scanning_start_callback_) {
     std::move(callback).Run(blink::mojom::WebBluetoothResult::PROMPT_CANCELED);
     return;
   }
 
   if (ble_scan_discovery_session_) {
-    auto scanning_client = std::make_unique<ScanningClient>(
-        /*service=*/this, std::move(client_remote), std::move(options),
-        std::move(callback));
-
-    if (AreScanFiltersAllowed(scanning_client->scan_options().filters)) {
+    if (AreScanFiltersAllowed(options->filters)) {
+      auto scanning_client = std::make_unique<ScanningClient>(
+          /*service=*/this, std::move(client_remote), std::move(options),
+          std::move(callback));
       scanning_client->RunCallback(blink::mojom::WebBluetoothResult::SUCCESS);
       scanning_client->set_allow_send_event(true);
       scanning_clients_.push_back(std::move(scanning_client));
@@ -1766,9 +1804,20 @@ void WebBluetoothServiceImpl::RequestScanningStartImpl(
 
     // By resetting |device_scanning_prompt_controller_|, it returns an error if
     // there are duplicate calls to RequestScanningStart().
+    // Closing the prompt may synchronously destroy `this`.
+    base::WeakPtr<WebBluetoothServiceImpl> weak_this =
+        weak_ptr_factory_.GetWeakPtr();
+    device_scanning_prompt_controller_.reset();
+    if (!weak_this) {
+      return;
+    }
+
+    auto scanning_client = std::make_unique<ScanningClient>(
+        /*service=*/this, std::move(client_remote), std::move(options),
+        std::move(callback));
     device_scanning_prompt_controller_ =
         std::make_unique<BluetoothDeviceScanningPromptController>(
-            this, render_frame_host());
+            weak_ptr_factory_.GetWeakPtr(), render_frame_host());
     scanning_client->SetPromptController(
         device_scanning_prompt_controller_.get());
     scanning_clients_.push_back(std::move(scanning_client));
@@ -1800,22 +1849,39 @@ void WebBluetoothServiceImpl::OnStartDiscoverySessionForScanning(
   CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M160);
   CHECK(!ble_scan_discovery_session_, base::NotFatalUntil::M160);
 
+  if (!render_frame_host().IsActive()) {
+    std::move(request_scanning_start_callback_)
+        .Run(blink::mojom::WebBluetoothResult::DOCUMENT_NOT_ACTIVE);
+    MaybeStopDiscovery();
+    return;
+  }
+
   ble_scan_discovery_session_ = std::move(session);
 
-  auto scanning_client = std::make_unique<ScanningClient>(
-      /*service=*/this, std::move(client_remote), std::move(options),
-      std::move(request_scanning_start_callback_));
-
-  if (AreScanFiltersAllowed(scanning_client->scan_options().filters)) {
+  if (AreScanFiltersAllowed(options->filters)) {
+    auto scanning_client = std::make_unique<ScanningClient>(
+        /*service=*/this, std::move(client_remote), std::move(options),
+        std::move(request_scanning_start_callback_));
     scanning_client->RunCallback(blink::mojom::WebBluetoothResult::SUCCESS);
     scanning_client->set_allow_send_event(true);
     scanning_clients_.push_back(std::move(scanning_client));
     return;
   }
 
+  // Closing an open prompt may synchronously destroy `this`.
+  base::WeakPtr<WebBluetoothServiceImpl> weak_this =
+      weak_ptr_factory_.GetWeakPtr();
+  device_scanning_prompt_controller_.reset();
+  if (!weak_this) {
+    return;
+  }
+
+  auto scanning_client = std::make_unique<ScanningClient>(
+      /*service=*/this, std::move(client_remote), std::move(options),
+      std::move(request_scanning_start_callback_));
   device_scanning_prompt_controller_ =
       std::make_unique<BluetoothDeviceScanningPromptController>(
-          this, render_frame_host());
+          weak_ptr_factory_.GetWeakPtr(), render_frame_host());
   scanning_client->SetPromptController(
       device_scanning_prompt_controller_.get());
   scanning_clients_.push_back(std::move(scanning_client));
@@ -1825,7 +1891,13 @@ void WebBluetoothServiceImpl::OnStartDiscoverySessionForScanning(
 void WebBluetoothServiceImpl::OnDiscoverySessionErrorForScanning() {
   CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M160);
 
+  // Closing an open prompt may synchronously destroy `this`.
+  base::WeakPtr<WebBluetoothServiceImpl> weak_this =
+      weak_ptr_factory_.GetWeakPtr();
   device_scanning_prompt_controller_.reset();
+  if (!weak_this) {
+    return;
+  }
 
   std::move(request_scanning_start_callback_)
       .Run(blink::mojom::WebBluetoothResult::NO_BLUETOOTH_ADAPTER);
@@ -1839,6 +1911,13 @@ void WebBluetoothServiceImpl::RequestDeviceImpl(
   // The renderer should never send invalid options.
   if (!IsValidRequestDeviceOptions(options)) {
     ReceivedBadMessage(bad_message::BDH_INVALID_OPTIONS);
+    return;
+  }
+
+  if (!render_frame_host().IsActive()) {
+    std::move(callback).Run(
+        blink::mojom::WebBluetoothResult::DOCUMENT_NOT_ACTIVE,
+        /*device=*/nullptr);
     return;
   }
 
@@ -2079,6 +2158,13 @@ void WebBluetoothServiceImpl::OnGetDevice(
     blink::mojom::WebBluetoothRequestDeviceOptionsPtr options,
     const std::string& device_address) {
   device_chooser_controller_.reset();
+
+  if (!render_frame_host().IsActive()) {
+    std::move(callback).Run(
+        blink::mojom::WebBluetoothResult::DOCUMENT_NOT_ACTIVE,
+        /*device=*/nullptr);
+    return;
+  }
 
   if (result != blink::mojom::WebBluetoothResult::SUCCESS) {
     // Errors are recorded by |device_chooser_controller_|.
@@ -2609,6 +2695,56 @@ void WebBluetoothServiceImpl::ClearAdvertisementClients() {
 
   allowed_scan_filters_.clear();
   accept_all_advertisements_ = false;
+
+  MaybeStopDiscovery();
+}
+
+void WebBluetoothServiceImpl::CleanupDeviceState(
+    const blink::WebBluetoothDeviceId& device_id) {
+  connected_devices_->CloseConnectionToDeviceWithId(device_id);
+
+  pending_connection_device_ids_.erase(device_id);
+
+  std::erase_if(watch_advertisements_clients_,
+                [&](const std::unique_ptr<WatchAdvertisementsClient>& client) {
+                  return client->device_id() == device_id;
+                });
+
+  std::vector<RemoteCharacteristicStartNotificationsCallback> callbacks_to_fail;
+
+  for (auto& [characteristic_id, session_data] :
+       characteristic_id_to_notify_session_) {
+    if (session_data->device_id == device_id &&
+        session_data->start_notifications_callback) {
+      callbacks_to_fail.push_back(
+          std::move(session_data->start_notifications_callback));
+    }
+  }
+  std::erase_if(characteristic_id_to_notify_session_, [&](const auto& pair) {
+    return pair.second->device_id == device_id;
+  });
+
+  for (auto& [characteristic_id, deferred_queue] :
+       characteristic_id_to_deferred_start_) {
+    if (!deferred_queue.empty() &&
+        deferred_queue.front()->device_id == device_id) {
+      while (!deferred_queue.empty()) {
+        CHECK_EQ(deferred_queue.front()->device_id, device_id);
+        callbacks_to_fail.push_back(
+            std::move(deferred_queue.front()->callback));
+        deferred_queue.pop();
+      }
+    }
+  }
+  std::erase_if(characteristic_id_to_deferred_start_,
+                [](const auto& pair) { return pair.second.empty(); });
+
+  MaybeStopDiscovery();
+
+  for (auto& callback : callbacks_to_fail) {
+    std::move(callback).Run(
+        blink::mojom::WebBluetoothResult::GATT_NOT_AUTHORIZED);
+  }
 }
 
 bool WebBluetoothServiceImpl::IsAllowedToAccessAtLeastOneService(

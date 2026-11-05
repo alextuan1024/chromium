@@ -20,6 +20,7 @@
 #include "base/observer_list.h"
 #include "base/sequence_checker.h"
 #include "base/timer/timer.h"
+#include "base/types/expected.h"
 #include "base/types/optional_ref.h"
 #include "components/download/public/background_service/download_params.h"
 #include "components/optimization_guide/core/delivery/model_enums.h"
@@ -28,7 +29,6 @@
 #include "components/optimization_guide/core/delivery/prediction_model_download_observer.h"
 #include "components/optimization_guide/core/delivery/prediction_model_fetch_timer.h"
 #include "components/optimization_guide/core/delivery/prediction_model_store.h"
-#include "components/optimization_guide/core/optimization_guide_enums.h"
 #include "components/optimization_guide/optimization_guide_internals/webui/optimization_guide_internals.mojom.h"
 #include "components/optimization_guide/proto/models.pb.h"
 #include "url/origin.h"
@@ -55,6 +55,7 @@ namespace optimization_guide {
 class OptimizationTargetModelObserver;
 class PredictionModelDownloadManager;
 class PredictionModelFetcher;
+enum class PredictionModelFetchError;
 class PredictionModelStore;
 class ProfileDownloadServiceTracker;
 
@@ -172,7 +173,8 @@ class PredictionManager : public PredictionModelDownloadObserver,
   // Service is updated, even when the response is empty.
   void OnModelsFetched(
       const std::vector<proto::ModelInfo> models_request_info,
-      std::unique_ptr<proto::GetModelsResponse> get_models_response_data);
+      base::expected<proto::GetModelsResponse, PredictionModelFetchError>
+          get_models_response_data);
 
   // Gets the model task runner to use for the target.
   scoped_refptr<base::SequencedTaskRunner> GetModelTaskRunner(

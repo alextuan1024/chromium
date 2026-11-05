@@ -7,16 +7,18 @@ import '//resources/cr_elements/cr_icon/cr_icon.js';
 import '//resources/cr_elements/icons.html.js';
 import '/shared/icon_from_table.js';
 
+import {TrackedElementManager} from '//resources/js/tracked_element/tracked_element_manager.js';
 import {CrLitElement} from '//resources/lit/v3_0/lit.rollup.js';
 import type {PropertyValues} from '//resources/lit/v3_0/lit.rollup.js';
+import {HelpBubbleAnchorMixin, HighlightTracker} from '/shared/toolbar_button.js';
 import type {AvatarControlState} from '/shared/toolbar_ui_api_data_model.mojom-webui.js';
 import {AvatarToolbarButtonState} from '/shared/toolbar_ui_api_data_model.mojom-webui.js';
 
 import {getCss} from './avatar_button.css.js';
 import {getHtml} from './avatar_button.html.js';
 import {BrowserProxyImpl} from './browser_proxy.js';
+import type {OverflowableButtonState} from './overflowable_button.js';
 import {OverflowableButtonMixin} from './overflowable_button.js';
-import {BUTTON_LEFT, HelpBubbleAnchorMixin, setHasHelpBubble} from './toolbar_button.js';
 import type {ToolbarChipButtonElement} from './toolbar_chip_button.js';
 
 export interface AvatarButtonElement {
@@ -51,18 +53,6 @@ export class AvatarButtonElement extends AvatarButtonElementBase {
   override connectedCallback() {
     super.connectedCallback();
     this.classList.add('initial-load');
-    this.registerHelpBubble('kToolbarAvatarButtonElementId', this.$.button, {
-      onHighlightChanged: (highlighted: boolean) => {
-        this.classList.toggle('anchor-highlight', highlighted);
-      },
-      onHelpBubbleShown: () => setHasHelpBubble(this, true),
-      onHelpBubbleHidden: () => setHasHelpBubble(this, false),
-    });
-  }
-
-  override disconnectedCallback() {
-    super.disconnectedCallback();
-    this.unregisterHelpBubble('kToolbarAvatarButtonElementId');
   }
 
   override updated(changedProperties: PropertyValues<this>) {
@@ -71,9 +61,12 @@ export class AvatarButtonElement extends AvatarButtonElementBase {
       BrowserProxyImpl.getInstance()
           .toolbarUIHandler.setAvatarButtonIphPromoShowing(this.hasHelpBubble);
     }
+    if (changedProperties.has('state')) {
+      this.toggleAttribute('has-label', !!this.state.text);
+    }
   }
 
-  override accessor state: AvatarControlState = {
+  override accessor state: AvatarControlState&OverflowableButtonState = {
     state: AvatarToolbarButtonState.kNormal,
     icon: {handleId: 0n},
     text: '',
@@ -82,7 +75,13 @@ export class AvatarButtonElement extends AvatarButtonElementBase {
     accessibilityDescription: '',
     enabled: true,
     hasLinearGradientRing: false,
+
+    // This field is from OverflowableButtonState (in addition to
+    // AvatarControlState), and is used by OverflowableButtonMixin.
+    preventOverflow: false,
   };
+
+  protected highlightTracker: HighlightTracker = new HighlightTracker();
 
   protected getTooltip_(): string {
     return this.adjustTooltipForHelpBubble(this.state?.tooltip || '');
@@ -118,15 +117,10 @@ export class AvatarButtonElement extends AvatarButtonElementBase {
   }
 
   protected onClick_(e: PointerEvent) {
-    // TODO(behamilton): Log an error if this fails.
-    BrowserProxyImpl.getInstance().toolbarUIHandler.showAvatarMenu(
-        e.pointerType !== '');
-  }
-
-  protected onPointerdown_(e: PointerEvent) {
-    if (e.button === BUTTON_LEFT) {
-      BrowserProxyImpl.getInstance()
-          .toolbarUIHandler.onAvatarButtonMousePressed();
+    if (!this.highlightTracker.shouldSkipClick(e)) {
+      TrackedElementManager.getInstance().notifyElementActivated(this);
+      // TODO(behamilton): Log an error if this fails.
+      BrowserProxyImpl.getInstance().toolbarUIHandler.showAvatarMenu();
     }
   }
 

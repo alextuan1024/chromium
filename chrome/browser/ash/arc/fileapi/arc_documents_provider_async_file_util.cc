@@ -19,12 +19,11 @@
 #include "chrome/browser/ash/arc/fileapi/arc_documents_provider_root.h"
 #include "chrome/browser/ash/arc/fileapi/arc_documents_provider_root_map.h"
 #include "chrome/browser/ash/arc/fileapi/arc_documents_provider_util.h"
-#include "chrome/browser/profiles/profile.h"
 #include "chromeos/ash/experiences/arc/arc_util.h"
 #include "components/services/filesystem/public/mojom/types.mojom.h"
 #include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/browser_thread.h"
-#include "storage/browser/blob/shareable_file_reference.h"
+#include "storage/browser/blob/scoped_file.h"
 #include "storage/browser/file_system/file_system_operation_context.h"
 #include "storage/browser/file_system/file_system_url.h"
 
@@ -501,8 +500,7 @@ void ArcDocumentsProviderAsyncFileUtil::CreateSnapshotFile(
   CHECK_CURRENTLY_ON(BrowserThread::IO, base::NotFatalUntil::M160);
   NOTIMPLEMENTED();  // TODO(crbug.com/40496703): Implement this function.
   std::move(callback).Run(base::File::FILE_ERROR_FAILED, base::File::Info(),
-                          base::FilePath(),
-                          scoped_refptr<storage::ShareableFileReference>());
+                          base::FilePath(), storage::ScopedFile());
 }
 
 }  // namespace arc

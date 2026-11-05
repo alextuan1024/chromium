@@ -149,7 +149,7 @@ class CORE_EXPORT LocalFrameClientImpl final : public LocalFrameClient {
       bool has_rel_opener,
       mojo::PendingReceiver<
           mojom::blink::NavigationResumeDeferredCommitListener>,
-      std::optional<base::UnguessableToken> script_tool_invocation_id,
+      std::optional<ToolInvocationToken> script_tool_invocation_id,
       const String& script_injector_host) override;
   void DispatchWillSendSubmitEvent(HTMLFormElement*) override;
   void DidStartLoading() override;
@@ -169,7 +169,8 @@ class CORE_EXPORT LocalFrameClientImpl final : public LocalFrameClient {
       base::TimeTicks max_event_end,
       PerformanceTimelineEntryIdInfo interaction_id,
       PerformanceTimelineEntryIdInfo navigation_id) override;
-  void DidChangeCpuTiming(base::TimeDelta) override;
+  void DidChangeCpuTiming(base::TimeDelta time,
+                          base::TimeDelta ad_time) override;
   void DidObserveLoadingBehavior(LoadingBehaviorFlag) override;
   void DidObserveJavaScriptFrameworks(
       const JavaScriptFrameworkDetectionResult&) override;
@@ -199,11 +200,6 @@ class CORE_EXPORT LocalFrameClientImpl final : public LocalFrameClient {
   void TransitionToCommittedForNewPage() override;
   LocalFrame* CreateFrame(const AtomicString& name,
                           HTMLFrameOwnerElement*) override;
-
-  RemoteFrame* CreateFencedFrame(
-      HTMLFencedFrameElement*,
-      mojo::PendingAssociatedReceiver<mojom::blink::FencedFrameOwnerHost>)
-      override;
 
   WebPluginContainerImpl* CreatePlugin(HTMLPlugInElement&,
                                        const KURL&,

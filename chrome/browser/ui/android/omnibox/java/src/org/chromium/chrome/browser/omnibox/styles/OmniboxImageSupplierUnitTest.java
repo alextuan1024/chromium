@@ -12,6 +12,7 @@ import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.lenient;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoMoreInteractions;
@@ -39,9 +40,12 @@ import org.mockito.quality.Strictness;
 
 import org.chromium.base.Callback;
 import org.chromium.base.ContextUtils;
+import org.chromium.base.MemoryPressureLevel;
+import org.chromium.base.MemoryPressureListener;
 import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.base.test.RobolectricUtil;
 import org.chromium.chrome.browser.omnibox.R;
+import org.chromium.chrome.browser.omnibox.styles.OmniboxImageSupplier.FallbackIconType;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.components.favicon.LargeIconBridge;
 import org.chromium.components.favicon.LargeIconBridge.LargeIconCallback;
@@ -74,6 +78,7 @@ public final class OmniboxImageSupplierUnitTest {
     @Captor private ArgumentCaptor<LargeIconCallback> mIconCallbackCaptor;
     @Captor private ArgumentCaptor<Drawable> mDrawableCaptor;
     @Captor private ArgumentCaptor<ImageFetcher.Params> mParamCaptor;
+    @Captor private ArgumentCaptor<Callback<Bitmap>> mBitmapCallbackCaptor;
 
     private OmniboxImageSupplier mSupplier;
     private @Px int mFaviconSize;
@@ -196,7 +201,7 @@ public final class OmniboxImageSupplierUnitTest {
     @Test
     public void generateFavicon_globe() {
         mSupplier.onNativeInitialized();
-        mSupplier.generateFavicon(NAV_URL, OmniboxImageSupplier.FallbackIconType.GLOBE, mCallback1);
+        mSupplier.generateFavicon(NAV_URL, FallbackIconType.GLOBE, mCallback1);
         RobolectricUtil.runAllBackgroundAndUi();
 
         verify(mCallback1).onResult(mDrawableCaptor.capture());
@@ -432,7 +437,7 @@ public final class OmniboxImageSupplierUnitTest {
         verify(mImageFetcher).fetchImage(any(), callbackCaptor.capture());
         verifyNoMoreInteractions(mImageFetcher, mCallback1);
 
-        // Simulate end of Omnibox interaction.
+        // Simulate cache reset.
         mSupplier.resetCache();
         verify(mImageFetcher).clear();
         verifyNoMoreInteractions(mImageFetcher, mCallback1);
@@ -440,6 +445,25 @@ public final class OmniboxImageSupplierUnitTest {
         // Emit late reply. The callback should not be delivered.
         callbackCaptor.getValue().onResult(mBitmap1);
         verifyNoMoreInteractions(mImageFetcher, mCallback1);
+    }
+
+    @Test
+    public void fetchImage_resultsAfterClearPendingRequestsAreDiscardedWithoutClearingCache() {
+        mSupplier.setImageFetcherForTesting(mImageFetcher);
+
+        var url = JUnitTestGURLs.RED_1;
+
+        mSupplier.fetchImage(url, mCallback1);
+        verify(mImageFetcher).fetchImage(any(), mBitmapCallbackCaptor.capture());
+
+        // Simulate end of Omnibox interaction: pending callbacks are dropped without clearing
+        // cache.
+        mSupplier.clearPendingRequests();
+        verify(mImageFetcher, never()).clear();
+
+        // Emit late reply. The callback should not be delivered.
+        mBitmapCallbackCaptor.getValue().onResult(mBitmap1);
+        verify(mCallback1, never()).onResult(any());
     }
 
     @Test
@@ -518,5 +542,28 @@ public final class OmniboxImageSupplierUnitTest {
 
         // Observe listeners receiving no notification.
         verifyNoMoreInteractions(mCallback1, mCallback2);
+    }
+
+    @Test
+    public void memoryPressureListener_resetsCacheWhenUnderPressureAndStopsAfterDestroy() {
+        mSupplier.setImageFetcherForTesting(mImageFetcher);
+
+        MemoryPressureListener.notifyMemoryPressure(MemoryPressureLevel.NONE);
+        verify(mImageFetcher, never()).clear();
+
+        MemoryPressureListener.notifyMemoryPressure(MemoryPressureLevel.MODERATE);
+        verify(mImageFetcher).clear();
+        clearInvocations(mImageFetcher);
+
+        MemoryPressureListener.notifyMemoryPressure(MemoryPressureLevel.CRITICAL);
+        verify(mImageFetcher).clear();
+        clearInvocations(mImageFetcher);
+
+        mSupplier.destroy();
+        verify(mImageFetcher).destroy();
+        clearInvocations(mImageFetcher);
+
+        MemoryPressureListener.notifyMemoryPressure(MemoryPressureLevel.CRITICAL);
+        verify(mImageFetcher, never()).clear();
     }
 }

@@ -34,8 +34,6 @@
 #include "base/task/thread_pool.h"
 #include "base/timer/timer.h"
 #include "base/trace_event/trace_event.h"
-#include "chrome/browser/apps/app_service/app_service_proxy.h"
-#include "chrome/browser/apps/app_service/app_service_proxy_factory.h"
 #include "chrome/browser/apps/app_service/browser_app_launcher.h"
 #include "chrome/browser/apps/app_service/policy_util.h"
 #include "chrome/browser/apps/platform_apps/app_load_service.h"
@@ -46,7 +44,6 @@
 #include "chrome/browser/ash/login/demo_mode/demo_setup_controller.h"
 #include "chrome/browser/ash/policy/core/browser_policy_connector_ash.h"
 #include "chrome/browser/ash/system_web_apps/system_web_app_manager.h"
-#include "chrome/browser/metrics/chrome_metrics_service_accessor.h"
 #include "chrome/browser/profiles/profile_manager.h"
 #include "chrome/browser/ui/ash/system/system_tray_client_impl.h"
 #include "chrome/browser/ui/ash/system_web_apps/system_web_app_ui_utils.h"
@@ -56,7 +53,6 @@
 #include "chromeos/ash/components/growth/growth_metrics.h"
 #include "chromeos/ash/components/system/statistics_provider.h"
 #include "chromeos/constants/chromeos_features.h"
-#include "components/account_manager_core/pref_names.h"
 #include "components/application_locale_storage/application_locale_storage.h"
 #include "components/language/core/browser/pref_names.h"
 #include "components/policy/core/common/policy_pref_names.h"
@@ -598,8 +594,7 @@ void DemoSession::OnSessionStateChanged() {
       if (features::IsDemoModeSecondaryGoogleAccountSigninAllowedFalse()) {
         // Prevent users from signing in with their own account.
         ProfileManager::GetActiveUserProfile()->GetPrefs()->SetBoolean(
-            account_manager::prefs::kSecondaryGoogleAccountSigninAllowed,
-            false);
+            policy::policy_prefs::kSecondaryGoogleAccountSigninAllowed, false);
       }
 
       RestoreDefaultLocaleForNextSession();
@@ -723,7 +718,8 @@ void DemoSession::ShowSplashScreen(base::FilePath image_path) {
 }
 
 void DemoSession::ConfigureAndStartSplashScreen() {
-  const std::string current_locale = application_locale_storage_->Get();
+  const std::string current_locale(
+      application_locale_storage_->GetTag().tag_string());
   base::FilePath localized_image_path = components_->resources_component_path()
                                             .Append(kSplashScreensPath)
                                             .Append(current_locale + ".jpg");

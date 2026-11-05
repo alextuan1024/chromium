@@ -12,6 +12,7 @@
 
 #include "base/check_op.h"
 #include "base/compiler_specific.h"
+#include "base/containers/map_util.h"
 #include "base/containers/span.h"
 #include "base/debug/debugging_buildflags.h"
 #include "base/files/file_path.h"
@@ -67,7 +68,7 @@ constexpr auto kSwitchPrefixes = std::to_array<CommandLine::StringViewType>({
 size_t switch_prefix_count = std::size(kSwitchPrefixes);
 
 bool IsSwitchNameValid(std::string_view switch_name) {
-  return ToLowerASCII(switch_name) == switch_name;
+  return std::ranges::none_of(switch_name, &IsAsciiUpper<char>);
 }
 
 #if BUILDFLAG(IS_WIN)
@@ -145,7 +146,10 @@ std::wstring QuoteForCommandLineToArgvWInternal(
     return arg;
   }
 
-  std::wstring out(1, L'"');
+  std::wstring out;
+  // Reserve for the arg string plus two quotes.
+  out.reserve(arg.size() + 2);
+  out.push_back(L'"');
   for (size_t i = 0; i < arg.size(); ++i) {
     if (arg[i] == L'\\') {
       // Finds the extent of this run of backslashes.
@@ -451,7 +455,7 @@ void CommandLine::AppendSwitchNative(std::string_view switch_string,
     g_duplicate_switch_handler->ResolveDuplicate(key, value,
                                                  switches_[std::string(key)]);
   } else {
-    switches_[std::string(key)] = StringType(value);
+    InsertOrAssign(switches_, key, StringType(value));
   }
 
   // Preserve existing switch prefixes in |argv_|; only append one if necessary.
@@ -709,8 +713,8 @@ CommandLine::StringType CommandLine::GetArgumentsStringInternal(
         // `has_single_argument_switch_` is true.
         DCHECK(!appended_single_argument_switch);
         appended_single_argument_switch = true;
-        params.append(base::StrCat(
-            {kSwitchPrefixes[0], kSingleArgument, FILE_PATH_LITERAL(" ")}));
+        base::StrAppend(&params, {kSwitchPrefixes[0], kSingleArgument,
+                                  FILE_PATH_LITERAL(" ")});
       } else {
         arg = QuoteForCommandLineToArgvWInternal(arg,
                                                  allow_unsafe_insert_sequences);
@@ -731,8 +735,7 @@ CommandLine::StringType CommandLine::GetCommandLineString() const {
 #endif
   StringType params(GetArgumentsString());
   if (!params.empty()) {
-    string.append(FILE_PATH_LITERAL(" "));
-    string.append(params);
+    base::StrAppend(&string, {FILE_PATH_LITERAL(" "), params});
   }
   return string;
 }
@@ -753,10 +756,9 @@ std::wstring CommandLine::QuoteForCommandLineToArgvW(const std::wstring& arg) {
 // applications installed using the old syntax, etc.
 CommandLine::StringType CommandLine::GetCommandLineStringForShell() const {
   DCHECK(GetArgs().empty());
-  StringType command_line_string = GetCommandLineString();
-  return command_line_string + FILE_PATH_LITERAL(" ") +
-         StringType(kSwitchPrefixes[0]) + kSingleArgument +
-         FILE_PATH_LITERAL(" %1");
+  return base::StrCat({GetCommandLineString(), FILE_PATH_LITERAL(" "),
+                       StringType(kSwitchPrefixes[0]), kSingleArgument,
+                       FILE_PATH_LITERAL(" %1")});
 }
 
 CommandLine::StringType
@@ -768,8 +770,7 @@ CommandLine::GetCommandLineStringWithUnsafeInsertSequences() const {
   StringType params(
       GetArgumentsStringInternal(/*allow_unsafe_insert_sequences=*/true));
   if (!params.empty()) {
-    string.append(FILE_PATH_LITERAL(" "));
-    string.append(params);
+    base::StrAppend(&string, {FILE_PATH_LITERAL(" "), params});
   }
   return string;
 }

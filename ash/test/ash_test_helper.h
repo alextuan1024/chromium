@@ -10,6 +10,7 @@
 #include <memory>
 #include <optional>
 #include <utility>
+#include <vector>
 
 #include "ash/public/cpp/test/test_system_tray_client.h"
 #include "ash/quick_pair/common/quick_pair_browser_delegate.h"
@@ -17,6 +18,8 @@
 #include "ash/session/test_pref_service_provider.h"
 #include "ash/session/test_session_controller_client.h"
 #include "ash/shell_delegate.h"
+#include "ash/test/login_info.h"
+#include "base/check_deref.h"
 #include "base/functional/callback.h"
 #include "base/memory/raw_ptr.h"
 #include "base/test/scoped_command_line.h"
@@ -24,7 +27,9 @@
 #include "chromeos/ash/components/system/fake_statistics_provider.h"
 #include "chromeos/ash/services/bluetooth_config/scoped_bluetooth_config_test_helper.h"
 #include "components/session_manager/core/session_manager.h"
+#include "components/session_manager/test/user_session_test_environment.h"
 #include "ui/aura/test/aura_test_helper.h"
+#include "ui/base/ime/ash/scoped_input_method_manager_for_testing.h"
 
 class BrowserWithTestWindowTest;
 class PrefService;
@@ -75,10 +80,6 @@ namespace input_method {
 class MockInputMethodManagerImpl;
 }  // namespace input_method
 
-namespace test {
-class UserSessionTestEnvironment;
-}  // namespace test
-
 // A helper class that does common initialization required for Ash. Creates a
 // root window and an ash::Shell instance with a test delegate.
 class AshTestHelper : public aura::test::AuraTestHelper {
@@ -89,8 +90,16 @@ class AshTestHelper : public aura::test::AuraTestHelper {
     InitParams& operator=(InitParams&&) = default;
     ~InitParams();
 
-    // True if the user should log in.
-    bool start_session = true;
+    // Users to be created and logged in during `SetUp()`.
+    // Users are logged in sequentially in the order they appear in `users`
+    // (i.e., `users.front()` becomes the primary user), and `users.back()`
+    // becomes the active session at the end of `SetUp()`.
+    // Initialized with a single empty `LoginInfo{}` by default. Clear this if
+    // no user session should be started during `SetUp()`. When adding multiple
+    // users, explicitly specifying a distinct `LoginInfo::account_id` for each
+    // user (after clearing the default entry) is required, as multiple users
+    // cannot share the same `AccountId`.
+    std::vector<LoginInfo> users;
 
     // True if the signin pref services should be created.
     bool create_signin_pref_service = true;
@@ -98,6 +107,14 @@ class AshTestHelper : public aura::test::AuraTestHelper {
     // If this is not set, a TestShellDelegate will be used automatically.
     std::unique_ptr<ShellDelegate> delegate;
     raw_ptr<PrefService> local_state = nullptr;
+
+    // Passed to `UserSessionTestEnvironment` created during `SetUp()`, e.g. to
+    // integrate with ProfileManager. Must not be set if
+    // `UserSessionTestEnvironment` is not created by `AshTestHelper`, i.e.,
+    // when UserManager or SessionManager is already initialized before
+    // `SetUp()`.
+    std::unique_ptr<ash::test::UserSessionTestEnvironment::Delegate>
+        user_session_test_environment_delegate;
 
     // True if a fake global `CrasAudioHandler` should be created.
     bool create_global_cras_audio_handler = true;
@@ -155,15 +172,12 @@ class AshTestHelper : public aura::test::AuraTestHelper {
   display::Display GetSecondaryDisplay() const;
 
   // Simulates a user sign-in. It creates and adds a new session based on the
-  // information provided in `login_info`, `account_id` and `pref_service',
-  // switches the active user, then may enter to the active session state if
-  // `LoginInfo.activate_session` is true. It returns AccountId for the new
-  // session.  Please see `TestSessionControllerClient::AddUserSession` for more
-  // details.
-  AccountId SimulateUserLogin(
-      LoginInfo login_info,
-      std::optional<AccountId> account_id,
-      std::unique_ptr<PrefService> pref_service = nullptr);
+  // information provided in `login_info`, switches the active user, then may
+  // enter to the active session state if `activate_session` is true. It returns
+  // AccountId for the new session. Please see
+  // `TestSessionControllerClient::AddUserSession` for more details.
+  AccountId SimulateUserLogin(const LoginInfo& login_info,
+                              bool activate_session = true);
 
   // Stabilizes the variable UI components (such as the battery view).
   void StabilizeUIForPixelTest();
@@ -200,9 +214,9 @@ class AshTestHelper : public aura::test::AuraTestHelper {
     return sync_service_provider_.get();
   }
 
-  input_method::MockInputMethodManagerImpl* input_method_manager() {
-    return input_method_manager_;
-  }
+  // Returns null if the test installed its own InputMethodManager before
+  // SetUp().
+  input_method::MockInputMethodManagerImpl* input_method_manager();
 
   hotspot_config::CrosHotspotConfigTestHelper*
   cros_hotspot_config_test_helper() {
@@ -211,6 +225,10 @@ class AshTestHelper : public aura::test::AuraTestHelper {
 
   FakeDlcserviceClient* dlc_service_client() {
     return dlc_service_client_.get();
+  }
+
+  ash::test::UserSessionTestEnvironment& user_session_test_environment() {
+    return CHECK_DEREF(user_session_test_environment_.get());
   }
 
   template <typename T>
@@ -272,10 +290,11 @@ class AshTestHelper : public aura::test::AuraTestHelper {
   std::optional<bluetooth_config::ScopedBluetoothConfigTestHelper>
       scoped_bluetooth_config_test_helper_;
 
-  // InputMethodManager is not owned by this class. It is stored in a
-  // global that is registered via InputMethodManager::Initialize().
-  raw_ptr<input_method::MockInputMethodManagerImpl> input_method_manager_ =
-      nullptr;
+  // Owns the global InputMethodManager, but only if SetUp() installed it.
+  // Empty if the test installed its own instance before SetUp().
+  std::optional<input_method::ScopedInputMethodManagerForTesting<
+      input_method::MockInputMethodManagerImpl>>
+      scoped_input_method_manager_;
 
   // True if a fake global `CrasAudioHandler` should be created.
   bool create_global_cras_audio_handler_ = true;

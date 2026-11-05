@@ -24,6 +24,7 @@
 #include "chrome/common/buildflags.h"
 #include "components/user_education/common/new_badge/new_badge_controller.h"
 #include "content/public/browser/web_contents.h"
+#include "ui/base/mojom/window_open_disposition.mojom-forward.h"
 #include "ui/base/mojom/window_show_state.mojom-forward.h"
 
 #if !BUILDFLAG(IS_ANDROID)
@@ -109,6 +110,7 @@ class TestBrowserWindow : public BrowserWindow,
   bool IsFullscreen() const override;
   LocationBar* GetLocationBar() const override;
   ui::AcceleratorProvider* GetAcceleratorProvider() override;
+  PinnedToolbarActions* GetPinnedToolbarActions() override;
   autofill::AutofillBubbleHandler* GetAutofillBubbleHandler() override;
   void SetFocusToLocationBar(bool is_user_initiated) override {}
   void UpdateReloadStopState(bool is_loading, bool force) override {}
@@ -119,7 +121,8 @@ class TestBrowserWindow : public BrowserWindow,
   void FocusToolbar() override {}
   void ToolbarSizeChanged(bool is_animating) override {}
   void TabDraggingStatusChanged(bool is_dragging) override {}
-  void LinkOpeningFromGesture(WindowOpenDisposition disposition) override {}
+  void LinkOpeningFromGesture(
+      ui::mojom::WindowOpenDisposition disposition) override {}
   void FocusAppMenu() override {}
   void ShowAppMenu() override {}
   void PreHandleDragUpdate(const content::DropData& drop_data,
@@ -173,8 +176,6 @@ class TestBrowserWindow : public BrowserWindow,
   web_modal::WebContentsModalDialogHost* GetWebContentsModalDialogHostFor(
       content::WebContents* web_contents) override;
   void ShowAvatarBubbleFromAvatarButton(bool is_source_keyboard) override {}
-  void MaybeShowProfileSwitchIPH() override {}
-  void MaybeShowSupervisedUserProfileSignInIPH() override {}
 
 #if BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_WIN) || \
     BUILDFLAG(IS_LINUX)

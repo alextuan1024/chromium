@@ -6,6 +6,7 @@
 
 #include <memory>
 
+#include "base/auto_reset.h"
 #include "base/files/file_util.h"
 #include "base/files/scoped_temp_dir.h"
 #include "base/functional/callback_helpers.h"
@@ -23,6 +24,7 @@
 #include "chrome/browser/ui/omnibox/omnibox_next_features.h"
 #include "chrome/browser/ui/omnibox/omnibox_popup_state_manager.h"
 #include "chrome/browser/ui/omnibox/omnibox_popup_view.h"
+#include "chrome/browser/ui/omnibox/omnibox_popup_webui_creation.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/views/location_bar/location_bar_view.h"
@@ -33,6 +35,7 @@
 #include "chrome/common/chrome_features.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "components/lens/lens_features.h"
+#include "components/omnibox/common/omnibox_features.h"
 #include "content/public/test/browser_test.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "ui/shell_dialogs/fake_select_file_dialog.h"
@@ -57,6 +60,11 @@ class OmniboxPopupFileSelectorBrowserTest : public InProcessBrowserTest {
   }
 
  private:
+  // These tests read the AI Mode popup's page, which production creates ahead
+  // of time but browser tests otherwise create only when it is shown (see
+  // `InProcessBrowserTest`).
+  base::AutoReset<bool> create_popup_webui_on_demand_ =
+      omnibox::SetCreatePopupWebUIOnDemandForTesting(false);
   base::test::ScopedFeatureList scoped_feature_list_;
 };
 
@@ -145,7 +153,7 @@ IN_PROC_BROWSER_TEST_F(OmniboxPopupFileSelectorBrowserTest,
   base::RunLoop run_loop;
   EXPECT_CALL(mock_edit_model,
               OpenAiMode(OmniboxEditModel::AimActivation::kContextMenu))
-      .WillOnce(testing::InvokeWithoutArgs([&run_loop]() { run_loop.Quit(); }));
+      .WillOnce([&run_loop]() { run_loop.Quit(); });
 
   // Trigger the file selection.
   file_selector.FileSelected(
@@ -166,6 +174,30 @@ IN_PROC_BROWSER_TEST_F(OmniboxPopupFileSelectorBrowserTest,
   const auto& file_attachment = context->file_infos[0]->get_file_attachment();
   EXPECT_EQ(file_attachment->name, "test.txt");
   EXPECT_EQ(file_attachment->mime_type, "text/plain");
+}
+
+IN_PROC_BROWSER_TEST_F(OmniboxPopupFileSelectorBrowserTest,
+                       ImageDialogIncludesHeifExtensions) {
+  auto* factory = ui::FakeSelectFileDialog::RegisterFactory();
+  factory->SetOpenCallback(base::DoNothing());
+  auto* omnibox_controller = BrowserWindow::FromBrowser(browser())
+                                 ->GetLocationBar()
+                                 ->GetOmniboxController();
+  MockOmniboxEditModel mock_edit_model(omnibox_controller);
+  OmniboxPopupFileSelector file_selector(
+      browser()->GetWindow()->GetNativeWindow());
+
+  file_selector.OpenFileUploadDialog(
+      browser()->GetTabStripModel()->GetActiveWebContents(),
+      /*is_image=*/true, &mock_edit_model, std::nullopt,
+      /*was_ai_mode_open=*/false);
+
+  ui::FakeSelectFileDialog* dialog = factory->GetLastDialog();
+  ASSERT_TRUE(dialog);
+  ASSERT_EQ(dialog->file_types().extensions.size(), 1u);
+  const auto& extensions = dialog->file_types().extensions[0];
+  EXPECT_THAT(extensions, testing::Contains(FILE_PATH_LITERAL("heic")));
+  EXPECT_THAT(extensions, testing::Contains(FILE_PATH_LITERAL("heif")));
 }
 
 IN_PROC_BROWSER_TEST_F(OmniboxPopupFileSelectorBrowserTest,
@@ -196,7 +228,7 @@ IN_PROC_BROWSER_TEST_F(OmniboxPopupFileSelectorBrowserTest,
   base::RunLoop run_loop;
   EXPECT_CALL(mock_edit_model,
               OpenAiMode(OmniboxEditModel::AimActivation::kContextMenu))
-      .WillOnce(testing::InvokeWithoutArgs([&run_loop]() { run_loop.Quit(); }));
+      .WillOnce([&run_loop]() { run_loop.Quit(); });
 
   // Trigger the file selection.
   file_selector.FileSelected(
@@ -238,6 +270,49 @@ IN_PROC_BROWSER_TEST_F(OmniboxPopupFileSelectorBrowserTest,
   file_selector.MultiFilesSelected(files);
 
   // Assert.
+  SearchboxContextData* searchbox_context_data =
+      SearchboxContextData::From(browser());
+  ASSERT_TRUE(searchbox_context_data);
+
+  auto context = searchbox_context_data->TakePendingContext();
+  ASSERT_TRUE(context);
+  ASSERT_EQ(context->file_infos.size(), 1u);
+
+  const auto& file_attachment = context->file_infos[0]->get_file_attachment();
+  EXPECT_EQ(file_attachment->error_type.value(),
+            contextual_search::ContextUploadErrorType::
+                kBrowserProcessingMaxImagesExceededError);
+}
+
+IN_PROC_BROWSER_TEST_F(OmniboxPopupFileSelectorBrowserTest,
+                       UploadLimitExceededForHeicTriggersMaxImagesError) {
+  auto* omnibox_controller = BrowserWindow::FromBrowser(browser())
+                                 ->GetLocationBar()
+                                 ->GetOmniboxController();
+  MockOmniboxEditModel mock_edit_model(omnibox_controller);
+
+  OmniboxPopupFileSelector file_selector(
+      browser()->GetWindow()->GetNativeWindow());
+
+  auto* web_contents = browser()->GetTabStripModel()->GetActiveWebContents();
+
+  // Open as a generic file upload (`is_image = false`) so `IsImageFile` is
+  // exercised on the `.HEIC` extension.
+  file_selector.OpenFileUploadDialog(web_contents,
+                                     /*is_image=*/false, &mock_edit_model,
+                                     std::nullopt,
+                                     /*was_ai_mode_open=*/false);
+
+  std::vector<ui::SelectedFileInfo> files;
+  for (int i = 0; i < 11; ++i) {
+    base::FilePath path(FILE_PATH_LITERAL("IMG_1234.HEIC"));
+    files.emplace_back(path, path);
+  }
+
+  EXPECT_CALL(mock_edit_model, OpenAiMode(testing::_)).Times(0);
+
+  file_selector.MultiFilesSelected(files);
+
   SearchboxContextData* searchbox_context_data =
       SearchboxContextData::From(browser());
   ASSERT_TRUE(searchbox_context_data);
@@ -348,7 +423,9 @@ class OmniboxPopupFileSelectorAimBrowserTest : public InProcessBrowserTest {
          omnibox::internal::kWebUIOmniboxPopup,
          omnibox::kOmniboxKeepOpenOnFileSelection},
         {lens::features::kLensSendRawFileMediaTypes,
-         features::kWebUILocationBar});
+         features::kWebUILocationBar,
+         // Drives the AIM popup directly, without an AIM-eligible profile.
+         omnibox::kOmniboxAimPopupRequireEligibility});
   }
 
   void SetUpOnMainThread() override {

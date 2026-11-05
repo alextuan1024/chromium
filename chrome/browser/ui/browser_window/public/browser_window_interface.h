@@ -12,7 +12,7 @@
 #include "content/public/browser/page_navigator.h"
 
 #if !BUILDFLAG(IS_ANDROID)
-#include "ui/base/window_open_disposition.h"
+#include "ui/base/mojom/window_open_disposition.mojom-forward.h"
 #endif
 
 // This is the public interface for a browser window. Most features in
@@ -146,10 +146,12 @@ class BrowserWindowInterface : public content::PageNavigator {
     // strip).
     TYPE_APP_POPUP,
 #if !BUILDFLAG(IS_ANDROID)
-    // Document picture-in-picture browser.  It's mostly the same as a
-    // TYPE_POPUP, except that it floats above other windows.  It also has some
-    // additional restrictions, like it cannot navigated, to prevent misuse.
-    TYPE_PICTURE_IN_PICTURE,
+    // Floating browser (e.g. Document Picture-in-Picture or always-on-top
+    // popup). It's mostly the same as a TYPE_POPUP, except that it floats
+    // above other windows and uses a minimal frame. Document Picture-in-Picture
+    // windows also have additional restrictions (see
+    // DesktopBrowserWindowCapabilities::IsDocumentPictureInPicture()).
+    TYPE_FLOATING,
 #endif
 #if BUILDFLAG(IS_ANDROID)
     // TODO(https://crbug.com/493668475): Revisit if this type is needed.
@@ -226,7 +228,7 @@ class BrowserWindowInterface : public content::PageNavigator {
   // Opens a URL, with the given disposition. This is a convenience wrapper
   // around OpenURL from content::PageNavigator.
   virtual void OpenGURL(const GURL& gurl,
-                        WindowOpenDisposition disposition) = 0;
+                        ui::mojom::WindowOpenDisposition disposition) = 0;
 
   // Never nullptr.
   //

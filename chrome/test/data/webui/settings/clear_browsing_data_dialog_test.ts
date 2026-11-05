@@ -8,9 +8,8 @@ import {webUIListenerCallback} from 'chrome://resources/js/cr.js';
 import {PromiseResolver} from 'chrome://resources/js/promise_resolver.js';
 import type {ClearBrowsingDataResult, SettingsCheckboxElement, SettingsClearBrowsingDataDialogElement, SettingsHistoryDeletionDialogElement} from 'chrome://settings/lazy_load.js';
 import {BrowsingDataType, ClearBrowsingDataBrowserProxyImpl, getDataTypePrefName, getTimePeriodString, TimePeriod} from 'chrome://settings/lazy_load.js';
-import {loadTimeData, MetricsBrowserProxyImpl, PrefService, resetRouterForTesting, Router, routes, SignedInState, StatusAction, SyncBrowserProxyImpl} from 'chrome://settings/settings.js';
+import {AiSettingsSection, loadTimeData, MetricsBrowserProxyImpl, PrefService, resetRouterForTesting, Router, routes, SignedInState, StatusAction, SyncBrowserProxyImpl} from 'chrome://settings/settings.js';
 import {assertArrayEquals, assertEquals, assertFalse, assertNotReached, assertTrue} from 'chrome://webui-test/chai_assert.js';
-import {flushTasks} from 'chrome://webui-test/polymer_test_util.js';
 import {eventToPromise, isVisible, microtasksFinished} from 'chrome://webui-test/test_util.js';
 
 import {TestClearBrowsingDataBrowserProxy} from './test_clear_browsing_data_browser_proxy.js';
@@ -41,7 +40,10 @@ suite('DeleteBrowsingDataDialog', function() {
     MetricsBrowserProxyImpl.setInstance(testMetricsBrowserProxy);
 
     await setClearBrowsingDataPrefs(false);
-    loadTimeData.overrideValues({showGlicSettings: true});
+    loadTimeData.overrideValues({
+      aiSettingsSection: AiSettingsSection.GEMINI,
+      showDeleteSkillsDataType: false,
+    });
     return createDialog();
   });
 
@@ -65,6 +67,8 @@ suite('DeleteBrowsingDataDialog', function() {
     await prefService.setPrefValue(
         getDataTypePrefName(BrowsingDataType.HOSTED_APPS_DATA),
         enableCheckboxes);
+    await prefService.setPrefValue(
+        getDataTypePrefName(BrowsingDataType.SKILLS), enableCheckboxes);
   }
 
   async function createDialog() {
@@ -117,7 +121,7 @@ suite('DeleteBrowsingDataDialog', function() {
 
     // Open the 'More' dropdown menu.
     dialog.$.timePicker.$.moreButton.click();
-    await flushTasks();
+    await microtasksFinished();
     const menuItems =
         dialog.$.timePicker.shadowRoot.querySelectorAll<HTMLElement>(
             '.dropdown-item');
@@ -135,7 +139,48 @@ suite('DeleteBrowsingDataDialog', function() {
 
   test('CancelButton', async function() {
     dialog.$.cancelButton.click();
+    await testMetricsBrowserProxy.whenCalled(
+        'recordClearBrowsingDataCancelled');
     await eventToPromise('close', dialog);
+  });
+
+  test('DialogEscapeKey', async function() {
+    // Pressing Escape on the native dialog dispatches 'cancel', which should
+    // record cancellation when deletion is not in progress.
+    dialog.$.deleteBrowsingDataDialog.getNative().dispatchEvent(
+        new Event('cancel'));
+    await testMetricsBrowserProxy.whenCalled(
+        'recordClearBrowsingDataCancelled');
+  });
+
+  test('DialogCancelIgnoredWhileDeleting', async function() {
+    // Neither clicking the disabled Cancel button nor a native 'cancel' event
+    // while deletion is in progress should record cancellation.
+    const historyCheckbox = getCheckboxForDataType(BrowsingDataType.HISTORY);
+    assertTrue(!!historyCheckbox);
+    historyCheckbox.$.checkbox.click();
+    await microtasksFinished();
+
+    const promiseResolver = new PromiseResolver<ClearBrowsingDataResult>();
+    testClearBrowsingDataBrowserProxy.setClearBrowsingDataPromise(
+        promiseResolver.promise);
+    dialog.$.deleteButton.click();
+    await testClearBrowsingDataBrowserProxy.whenCalled('clearBrowsingData');
+    await microtasksFinished();
+
+    assertTrue(dialog.$.cancelButton.disabled);
+    dialog.$.cancelButton.click();
+    dialog.$.deleteBrowsingDataDialog.getNative().dispatchEvent(
+        new Event('cancel'));
+    await microtasksFinished();
+    assertEquals(
+        0,
+        testMetricsBrowserProxy.getCallCount(
+            'recordClearBrowsingDataCancelled'));
+
+    promiseResolver.resolve(
+        {showHistoryNotice: false, showPasswordsNotice: false});
+    await promiseResolver.promise;
   });
 
   test('DeleteButton', async function() {
@@ -161,7 +206,7 @@ suite('DeleteBrowsingDataDialog', function() {
 
     // The Delete button should be enabled if a checkbox is selected.
     historyCheckbox.$.checkbox.click();
-    await flushTasks();
+    await microtasksFinished();
     assertFalse(dialog.$.deleteButton.disabled);
 
     const promiseResolver = new PromiseResolver<ClearBrowsingDataResult>();
@@ -172,7 +217,7 @@ suite('DeleteBrowsingDataDialog', function() {
     // button should be disabled and the spinner should be visible.
     dialog.$.deleteButton.click();
     await testClearBrowsingDataBrowserProxy.whenCalled('clearBrowsingData');
-    await flushTasks();
+    await microtasksFinished();
     assertTrue(dialog.$.deleteButton.disabled);
     assertTrue(dialog.$.cancelButton.disabled);
     assertTrue(isVisible(dialog.$.spinner));
@@ -192,7 +237,7 @@ suite('DeleteBrowsingDataDialog', function() {
       signedInState: SignedInState.SIGNED_OUT,
       hasError: false,
     });
-    await flushTasks();
+    await microtasksFinished();
     assertEquals(
         loadTimeData.getString('deleteDataFromDevice'),
         dialog.$.deleteButton.innerText.trim());
@@ -202,7 +247,7 @@ suite('DeleteBrowsingDataDialog', function() {
       signedInState: SignedInState.SIGNED_IN_PAUSED,
       hasError: false,
     });
-    await flushTasks();
+    await microtasksFinished();
     assertEquals(
         loadTimeData.getString('deleteDataFromDevice'),
         dialog.$.deleteButton.innerText.trim());
@@ -212,7 +257,7 @@ suite('DeleteBrowsingDataDialog', function() {
       signedInState: SignedInState.WEB_ONLY_SIGNED_IN,
       hasError: false,
     });
-    await flushTasks();
+    await microtasksFinished();
     assertEquals(
         loadTimeData.getString('deleteDataFromDevice'),
         dialog.$.deleteButton.innerText.trim());
@@ -222,7 +267,7 @@ suite('DeleteBrowsingDataDialog', function() {
       signedInState: SignedInState.SIGNED_IN,
       hasError: false,
     });
-    await flushTasks();
+    await microtasksFinished();
     assertEquals(
         loadTimeData.getString('clearData'),
         dialog.$.deleteButton.innerText.trim());
@@ -232,7 +277,7 @@ suite('DeleteBrowsingDataDialog', function() {
       signedInState: SignedInState.SYNCING,
       hasError: false,
     });
-    await flushTasks();
+    await microtasksFinished();
     assertEquals(
         loadTimeData.getString('clearData'),
         dialog.$.deleteButton.innerText.trim());
@@ -243,10 +288,42 @@ suite('DeleteBrowsingDataDialog', function() {
       hasError: true,
       statusAction: StatusAction.REAUTHENTICATE,
     });
-    await flushTasks();
+    await microtasksFinished();
     assertEquals(
         loadTimeData.getString('deleteDataFromDevice'),
         dialog.$.deleteButton.innerText.trim());
+
+    // Undefined signedInState (e.g. ChromeOS Guest mode): Button label should
+    // be "delete data from device".
+    webUIListenerCallback('sync-status-changed', {});
+    await microtasksFinished();
+    assertEquals(
+        loadTimeData.getString('deleteDataFromDevice'),
+        dialog.$.deleteButton.innerText.trim());
+  });
+
+  test('EmptySyncStatusGuestMode', async function() {
+    // Simulate ChromeOS guest mode where getSyncStatus returns an empty object.
+    testSyncBrowserProxy.testSyncStatus = {};
+    await createDialog();
+
+    assertEquals(
+        loadTimeData.getString('deleteDataFromDevice'),
+        dialog.$.deleteButton.innerText.trim());
+
+    // Verify "Show More" button works when signedInState is undefined.
+    assertTrue(isVisible(dialog.$.showMoreButton));
+    dialog.$.showMoreButton.click();
+    await microtasksFinished();
+    assertFalse(isVisible(dialog.$.showMoreButton));
+
+    // Verify "Manage Other Data" row works when signedInState is undefined.
+    dialog.$.manageOtherGoogleDataRow.click();
+    await microtasksFinished();
+    const otherGoogleDataDialog =
+        dialog.shadowRoot.querySelector('settings-other-google-data-dialog');
+    assertTrue(!!otherGoogleDataDialog);
+    assertTrue(otherGoogleDataDialog.$.dialog.open);
   });
 
   test('MetricsDialogCreated', async function() {
@@ -431,7 +508,7 @@ suite('DeleteBrowsingDataDialog', function() {
         getDataTypePrefName(BrowsingDataType.FORM_DATA), true);
     await prefService.setPrefValue(
         getDataTypePrefName(BrowsingDataType.HOSTED_APPS_DATA), true);
-    await flushTasks();
+    await microtasksFinished();
 
     // Pref changes should not change checkbox expansion state.
     verifyCheckboxesVisibleForDataTypesInOrder([
@@ -486,6 +563,99 @@ suite('DeleteBrowsingDataDialog', function() {
     assertEquals(
         'browser.clear_data.hosted_apps_data',
         getDataTypePrefName(BrowsingDataType.HOSTED_APPS_DATA));
+    assertEquals(
+        'browser.clear_data.skills',
+        getDataTypePrefName(BrowsingDataType.SKILLS));
+  });
+
+  test('SkillsCheckboxHiddenWhenUnavailable', async function() {
+    dialog.$.showMoreButton.click();
+    await microtasksFinished();
+
+    assertEquals(undefined, getCheckboxForDataType(BrowsingDataType.SKILLS));
+  });
+
+  test('SkillsCheckboxVisibleWhenAvailable', async function() {
+    loadTimeData.overrideValues({showDeleteSkillsDataType: true});
+    await createDialog();
+
+    verifyCheckboxesVisibleForDataTypesInOrder([
+      BrowsingDataType.HISTORY,
+      BrowsingDataType.SITE_DATA,
+      BrowsingDataType.CACHE,
+    ]);
+
+    dialog.$.showMoreButton.click();
+    await microtasksFinished();
+
+    verifyCheckboxesVisibleForDataTypesInOrder([
+      BrowsingDataType.HISTORY,
+      BrowsingDataType.SITE_DATA,
+      BrowsingDataType.CACHE,
+      BrowsingDataType.DOWNLOADS,
+      BrowsingDataType.FORM_DATA,
+      BrowsingDataType.SITE_SETTINGS,
+      BrowsingDataType.HOSTED_APPS_DATA,
+      BrowsingDataType.SKILLS,
+    ]);
+
+    const skillsCheckbox = getCheckboxForDataType(BrowsingDataType.SKILLS);
+    assertTrue(!!skillsCheckbox);
+    assertEquals(
+        loadTimeData.getString('clearSkills'),
+        skillsCheckbox.querySelector('.checkbox-title')!.textContent.trim());
+
+    webUIListenerCallback(
+        'browsing-data-counter-text-update', 'browser.clear_data.skills',
+        'skills result');
+    await microtasksFinished();
+    assertEquals(
+        'skills result',
+        getCheckboxForDataType(BrowsingDataType.SKILLS)!.subLabelHtml);
+  });
+
+  test('SkillsCheckboxExpandedWhenPrefSelected', async function() {
+    loadTimeData.overrideValues({showDeleteSkillsDataType: true});
+    await prefService.setPrefValue(
+        getDataTypePrefName(BrowsingDataType.SKILLS), true);
+    await createDialog();
+
+    verifyCheckboxesVisibleForDataTypesInOrder([
+      BrowsingDataType.HISTORY,
+      BrowsingDataType.SITE_DATA,
+      BrowsingDataType.CACHE,
+      BrowsingDataType.SKILLS,
+    ]);
+  });
+
+  test('ClearSkillsData', async function() {
+    loadTimeData.overrideValues({showDeleteSkillsDataType: true});
+    await createDialog();
+
+    dialog.$.showMoreButton.click();
+    await microtasksFinished();
+    const skillsCheckbox = getCheckboxForDataType(BrowsingDataType.SKILLS);
+    assertTrue(!!skillsCheckbox);
+    skillsCheckbox.$.checkbox.click();
+    await microtasksFinished();
+    assertFalse(dialog.$.deleteButton.disabled);
+
+    const promiseResolver = new PromiseResolver<ClearBrowsingDataResult>();
+    testClearBrowsingDataBrowserProxy.setClearBrowsingDataPromise(
+        promiseResolver.promise);
+    dialog.$.deleteButton.click();
+
+    // Verify the Skills pref is updated.
+    assertEquals(true, prefService.getPref('browser.clear_data.skills').value);
+
+    // Verify the Skills datatype is sent to the proxy.
+    const args =
+        await testClearBrowsingDataBrowserProxy.whenCalled('clearBrowsingData');
+    assertArrayEquals(['browser.clear_data.skills'], args[0]);
+
+    promiseResolver.resolve(
+        {showHistoryNotice: false, showPasswordsNotice: false});
+    await promiseResolver.promise;
   });
 
   test('TimePeriodChangesRestartCounters', async function() {
@@ -494,7 +664,7 @@ suite('DeleteBrowsingDataDialog', function() {
 
     // Set the selected TimePeriod to LAST_WEEK.
     await selectTimePeriodFromTimePicker(TimePeriod.LAST_WEEK);
-    await flushTasks();
+    await microtasksFinished();
 
     const timePeriod =
         await testClearBrowsingDataBrowserProxy.whenCalled('restartCounters');
@@ -509,7 +679,7 @@ suite('DeleteBrowsingDataDialog', function() {
     webUIListenerCallback('sync-status-changed', {
       signedInState: SignedInState.SIGNED_IN,
     });
-    await flushTasks();
+    await microtasksFinished();
 
     const timePeriod =
         await testClearBrowsingDataBrowserProxy.whenCalled('restartCounters');
@@ -523,7 +693,7 @@ suite('DeleteBrowsingDataDialog', function() {
     webUIListenerCallback(
         'browsing-data-counter-text-update',
         'browser.clear_data.browsing_history', 'history result');
-    await flushTasks();
+    await microtasksFinished();
 
     const historyCheckbox = getCheckboxForDataType(BrowsingDataType.HISTORY);
     assertTrue(!!historyCheckbox);
@@ -565,7 +735,7 @@ suite('DeleteBrowsingDataDialog', function() {
         getCheckboxForDataType(BrowsingDataType.HOSTED_APPS_DATA);
     assertTrue(!!hostedAppsDataCheckbox);
     hostedAppsDataCheckbox.$.checkbox.click();
-    await flushTasks();
+    await microtasksFinished();
 
     // Trigger the deletion.
     const promiseResolver = new PromiseResolver<ClearBrowsingDataResult>();
@@ -624,7 +794,7 @@ suite('DeleteBrowsingDataDialog', function() {
 
   test('OtherGoogleDataRow', async function() {
     loadTimeData.overrideValues({
-      showGlicSettings: false,
+      aiSettingsSection: AiSettingsSection.NONE,
     });
     await createDialog();
     function setSignedInAndDseState(
@@ -639,7 +809,7 @@ suite('DeleteBrowsingDataDialog', function() {
 
     // Case 1: User is signed-in and has Google as their DSE.
     setSignedInAndDseState(SignedInState.SIGNED_IN, /*isGoogleDse=*/ true);
-    await flushTasks();
+    await microtasksFinished();
 
     assertEquals(
         loadTimeData.getString('manageOtherGoogleDataLabel'),
@@ -650,7 +820,7 @@ suite('DeleteBrowsingDataDialog', function() {
 
     // Case 2: User is syncing and has Google as their DSE.
     setSignedInAndDseState(SignedInState.SYNCING, /*isGoogleDse=*/ true);
-    await flushTasks();
+    await microtasksFinished();
 
     assertEquals(
         loadTimeData.getString('manageOtherGoogleDataLabel'),
@@ -662,7 +832,7 @@ suite('DeleteBrowsingDataDialog', function() {
     // Case 3: User is signed-in paused and has Google as their DSE.
     setSignedInAndDseState(
         SignedInState.SIGNED_IN_PAUSED, /*isGoogleDse=*/ true);
-    await flushTasks();
+    await microtasksFinished();
 
     assertEquals(
         loadTimeData.getString('manageOtherGoogleDataLabel'),
@@ -673,7 +843,7 @@ suite('DeleteBrowsingDataDialog', function() {
 
     // Case 4: User is signed-in and does not have Google as their DSE.
     setSignedInAndDseState(SignedInState.SIGNED_IN, /*isGoogleDse=*/ false);
-    await flushTasks();
+    await microtasksFinished();
 
     assertEquals(
         loadTimeData.getString('manageOtherDataLabel'),
@@ -684,7 +854,7 @@ suite('DeleteBrowsingDataDialog', function() {
 
     // Case 5: User is signed-out and does not have Google as their DSE.
     setSignedInAndDseState(SignedInState.SIGNED_OUT, /*isGoogleDse=*/ false);
-    await flushTasks();
+    await microtasksFinished();
 
     assertEquals(
         loadTimeData.getString('manageOtherDataLabel'),
@@ -696,7 +866,7 @@ suite('DeleteBrowsingDataDialog', function() {
     // Case 6: User has web only sign-in and Google as their DSE.
     setSignedInAndDseState(
         SignedInState.WEB_ONLY_SIGNED_IN, /*isGoogleDse=*/ true);
-    await flushTasks();
+    await microtasksFinished();
 
     assertEquals(
         loadTimeData.getString('manageOtherGoogleDataLabel'),
@@ -707,11 +877,11 @@ suite('DeleteBrowsingDataDialog', function() {
 
     // Case 7: User is signed-out, has Google as DSE, and actor flags are ON.
     loadTimeData.overrideValues({
-      showGlicSettings: true,
+      aiSettingsSection: AiSettingsSection.GEMINI,
     });
     await createDialog();
     setSignedInAndDseState(SignedInState.SIGNED_OUT, /*isGoogleDse=*/ true);
-    await flushTasks();
+    await microtasksFinished();
     assertEquals(
         loadTimeData.getString('manageOtherGoogleDataLabel'),
         dialog.$.manageOtherGoogleDataRow.label);
@@ -722,7 +892,7 @@ suite('DeleteBrowsingDataDialog', function() {
     // Case 8: User is signed out, does not have Google as DSE. Actor flags are
     // on.
     setSignedInAndDseState(SignedInState.SIGNED_OUT, /*isGoogleDse=*/ false);
-    await flushTasks();
+    await microtasksFinished();
     assertEquals(
         loadTimeData.getString('manageOtherDataLabel'),
         dialog.$.manageOtherGoogleDataRow.label);
@@ -732,7 +902,7 @@ suite('DeleteBrowsingDataDialog', function() {
 
     // Case 9: User is signed in, does not have Google as DSE. Actor flags on.
     setSignedInAndDseState(SignedInState.SIGNED_IN, /*isGoogleDse=*/ false);
-    await flushTasks();
+    await microtasksFinished();
     assertEquals(
         loadTimeData.getString('manageOtherDataLabel'),
         dialog.$.manageOtherGoogleDataRow.label);
@@ -742,7 +912,7 @@ suite('DeleteBrowsingDataDialog', function() {
 
     // Case 10: User is signed-in, has Google as DSE. Actor flags are on.
     setSignedInAndDseState(SignedInState.SIGNED_IN, /*isGoogleDse=*/ true);
-    await flushTasks();
+    await microtasksFinished();
     assertEquals(
         loadTimeData.getString('manageOtherGoogleDataLabel'),
         dialog.$.manageOtherGoogleDataRow.label);
@@ -757,7 +927,7 @@ suite('DeleteBrowsingDataDialog', function() {
     assertFalse(!!otherGoogleDataDialog);
 
     dialog.$.manageOtherGoogleDataRow.click();
-    await flushTasks();
+    await microtasksFinished();
     assertEquals(
         'Settings.DeleteBrowsingData.OtherDataEntryPointClick',
         await testMetricsBrowserProxy.whenCalled('recordAction'));
@@ -775,7 +945,7 @@ suite('DeleteBrowsingDataDialog', function() {
     cancelButton.click();
 
     await eventToPromise('close', otherGoogleDataDialog);
-    await flushTasks();
+    await microtasksFinished();
 
     assertFalse(otherGoogleDataDialog.$.dialog.open);
 
@@ -791,7 +961,7 @@ suite('DeleteBrowsingDataDialog', function() {
     const historyCheckbox = getCheckboxForDataType(BrowsingDataType.HISTORY);
     assertTrue(!!historyCheckbox);
     historyCheckbox.$.checkbox.click();
-    await flushTasks();
+    await microtasksFinished();
 
     const promiseResolver = new PromiseResolver<ClearBrowsingDataResult>();
     testClearBrowsingDataBrowserProxy.setClearBrowsingDataPromise(
@@ -803,7 +973,7 @@ suite('DeleteBrowsingDataDialog', function() {
     promiseResolver.resolve(
         {showHistoryNotice: true, showPasswordsNotice: false});
     await promiseResolver.promise;
-    await flushTasks();
+    await microtasksFinished();
 
     const historyNoticeDialog =
         dialog.shadowRoot.querySelector<SettingsHistoryDeletionDialogElement>(
@@ -817,7 +987,7 @@ suite('DeleteBrowsingDataDialog', function() {
     // Tapping the ok button will close the notice.
     historyNoticeDialog.$.okButton.click();
     await eventToPromise('close', historyNoticeDialog);
-    await flushTasks();
+    await microtasksFinished();
 
     // Verify all dialogs should be closed after closing the history notice
     // dialog.
@@ -828,13 +998,13 @@ suite('DeleteBrowsingDataDialog', function() {
   test('DeletionConfirmationToastLabel', async function() {
     // Case 1: Last 15 minutes selected, event should pass 'last 15 minutes
     // deleted' as the toast label.
-    selectTimePeriodFromTimePicker(TimePeriod.LAST_15_MINUTES);
+    await selectTimePeriodFromTimePicker(TimePeriod.LAST_15_MINUTES);
 
     // Select a datatype for deletion to enable the delete button.
     const historyCheckbox = getCheckboxForDataType(BrowsingDataType.HISTORY);
     assertTrue(!!historyCheckbox);
     historyCheckbox.$.checkbox.click();
-    await flushTasks();
+    await microtasksFinished();
 
     dialog.$.deleteButton.click();
     const deletionEvent1 =
@@ -849,13 +1019,13 @@ suite('DeleteBrowsingDataDialog', function() {
     // Case 2: All time selected, event should pass 'deleted' as the toast
     // label.
     await createDialog();
-    selectTimePeriodFromTimePicker(TimePeriod.ALL_TIME);
+    await selectTimePeriodFromTimePicker(TimePeriod.ALL_TIME);
 
     // Select a datatype for deletion to enable the delete button.
     const cookiesCheckbox = getCheckboxForDataType(BrowsingDataType.SITE_DATA);
     assertTrue(!!cookiesCheckbox);
     cookiesCheckbox.$.checkbox.click();
-    await flushTasks();
+    await microtasksFinished();
 
     dialog.$.deleteButton.click();
     const deletionEvent2 =
@@ -872,8 +1042,8 @@ suite('DeleteBrowsingDataDialog', function() {
     // actual signOut string is passed from the C++ side.
     webUIListenerCallback(
         'browsing-data-counter-text-update', 'browser.clear_data.cookies',
-        `<a href="#" id="signOutLink"></a>`);
-    await flushTasks();
+        '<a href="#" id="signOutLink"></a>');
+    await microtasksFinished();
 
     const cookiesCheckbox = getCheckboxForDataType(BrowsingDataType.SITE_DATA);
     assertTrue(!!cookiesCheckbox);

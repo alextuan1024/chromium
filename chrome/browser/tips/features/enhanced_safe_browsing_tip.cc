@@ -12,6 +12,7 @@
 #include "chrome/browser/tips/core/tips_prefs.h"
 #include "chrome/browser/tips/core/tips_types.h"
 #include "chrome/browser/tips/core/tips_utils.h"
+#include "chrome/grit/generated_resources.h"
 #include "components/prefs/pref_service.h"
 #include "components/safe_browsing/core/common/safe_browsing_prefs.h"
 #include "components/segmentation_platform/public/features.h"
@@ -41,8 +42,7 @@ bool EnhancedSafeBrowsingTip::IsEligible(
     const std::map<std::string, float>& signal_values,
     const PrefService& pref_service) const {
   if (!base::FeatureList::IsEnabled(
-          segmentation_platform::features::kAndroidTipsNotifications) ||
-      !segmentation_platform::features::kEnableEnhancedSafeBrowsingTip.Get()) {
+          segmentation_platform::features::kAndroidTipsNotifications)) {
     return false;
   }
 
@@ -71,7 +71,9 @@ bool EnhancedSafeBrowsingTip::IsEligible(
 
 notifications::NotificationData EnhancedSafeBrowsingTip::GetNotificationData()
     const {
-  return GetTipsNotificationData(GetFeatureType());
+  return CreateTipsNotificationData(
+      GetFeatureType(), IDS_TIPS_NOTIFICATIONS_ENHANCED_SAFE_BROWSING_TITLE,
+      IDS_TIPS_NOTIFICATIONS_ENHANCED_SAFE_BROWSING_SUBTITLE);
 }
 
 }  // namespace tips

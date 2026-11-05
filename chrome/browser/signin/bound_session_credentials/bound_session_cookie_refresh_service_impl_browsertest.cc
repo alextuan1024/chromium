@@ -58,7 +58,7 @@
 #include "services/network/public/cpp/network_switches.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
-#include "ui/base/window_open_disposition.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
 
 namespace {
 using ::net::CanonicalCookie;
@@ -183,7 +183,7 @@ struct CookieRotationResponseParams {
       const std::string& cookie_name2,
       bool block_server_response = false,
       base::TimeDelta expiry_offset = base::Minutes(10)) {
-    static const std::string kSetCookieHeaderKey = "Set-Cookie";
+    static constexpr std::string_view kSetCookieHeaderKey = "Set-Cookie";
     HeaderVector headers;
     for (const std::string& cookie_attribute_line :
          GetTwoCookiesAttributesLines(url, cookie_name1, cookie_name2,
@@ -197,7 +197,7 @@ struct CookieRotationResponseParams {
   static CookieRotationResponseParams CreateChallengeRequired(
       const std::string& session_id,
       bool block_server_response = false) {
-    static const std::string kChallengeHeaderKey =
+    static constexpr std::string_view kChallengeHeaderKey =
         "Sec-Session-Google-Challenge";
     HeaderVector headers;
     headers.emplace_back(
@@ -507,7 +507,8 @@ testing::AssertionResult SimulateBtmBounce(BrowserWindowInterface* browser,
                                            const GURL& bounce_url,
                                            const GURL& final_url) {
   if (!ui_test_utils::NavigateToURLWithDisposition(
-          browser, initial_url, WindowOpenDisposition::NEW_FOREGROUND_TAB,
+          browser, initial_url,
+          ui::mojom::WindowOpenDisposition::kNewForegroundTab,
           ui_test_utils::BROWSER_TEST_WAIT_FOR_TAB |
               ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP)) {
     return testing::AssertionFailure()

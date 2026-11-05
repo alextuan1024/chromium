@@ -51,14 +51,18 @@ import org.chromium.chrome.browser.omnibox.suggestions.action.OmniboxActionInSug
 import org.chromium.chrome.browser.omnibox.suggestions.base.BaseSuggestionViewProperties;
 import org.chromium.chrome.browser.share.ShareDelegate;
 import org.chromium.chrome.browser.tab.Tab;
+import org.chromium.chrome.browser.ui.theme.BrandedColorScheme;
 import org.chromium.components.metrics.OmniboxEventProtosIntDef.PageClassification;
 import org.chromium.components.omnibox.AutocompleteInput;
 import org.chromium.components.omnibox.AutocompleteMatch;
 import org.chromium.components.omnibox.AutocompleteMatchBuilder;
 import org.chromium.components.omnibox.DocumentType;
 import org.chromium.components.omnibox.OmniboxCapabilities;
+import org.chromium.components.omnibox.OmniboxSuggestionKind;
 import org.chromium.components.omnibox.OmniboxSuggestionType;
 import org.chromium.components.omnibox.SuggestTemplateInfoProto.SuggestTemplateInfo;
+import org.chromium.components.omnibox.SuggestTemplateInfoProtoIntDef.ActionType;
+import org.chromium.components.omnibox.SuggestTemplateInfoProtoIntDef.IconType;
 import org.chromium.components.omnibox.action.ActionPresentationMode;
 import org.chromium.components.omnibox.action.OmniboxActionDelegate;
 import org.chromium.components.search_engines.StarterPackId;
@@ -139,6 +143,7 @@ public class BasicSuggestionProcessorUnitTest {
     private AutocompleteMatch mSuggestion;
     private PropertyModel mModel;
     private AutocompleteInput mInput;
+    private OmniboxResourceProvider mResourceProvider;
 
     private static class BookmarkPredicate implements BasicSuggestionProcessor.BookmarkState {
         boolean mState;
@@ -156,9 +161,11 @@ public class BasicSuggestionProcessorUnitTest {
         var context =
                 new ContextThemeWrapper(
                         ContextUtils.getApplicationContext(), R.style.Theme_BrowserUI_DayNight);
+        mResourceProvider = new OmniboxResourceProvider(context, BrandedColorScheme.APP_DEFAULT);
         mUiContext =
                 new AutocompleteUIContext(
                         context,
+                        mResourceProvider,
                         mSuggestionHost,
                         null,
                         mImageSupplier,
@@ -169,12 +176,10 @@ public class BasicSuggestionProcessorUnitTest {
                         mActionDelegate);
         mProcessor = new BasicSuggestionProcessor(mUiContext);
         mInput = new AutocompleteInput();
-        OmniboxResourceProvider.disableCachesForTesting();
     }
 
     @After
     public void tearDown() {
-        OmniboxResourceProvider.reenableCachesForTesting();
         mInput.reset();
     }
 
@@ -219,8 +224,7 @@ public class BasicSuggestionProcessorUnitTest {
                                                 0,
                                                 "tab switch",
                                                 "tab switch",
-                                                SuggestTemplateInfo.TemplateAction.ActionType
-                                                        .CHROME_TAB_SWITCH_VALUE,
+                                                ActionType.CHROME_TAB_SWITCH,
                                                 "https://google.com",
                                                 /* tabId= */ 0,
                                                 ActionPresentationMode.BUTTON)))
@@ -360,50 +364,36 @@ public class BasicSuggestionProcessorUnitTest {
     public void getFallbackIconFromIconType_validIconForEachType() {
         var resourceMap =
                 Map.ofEntries(
-                        Map.entry(SuggestTemplateInfo.IconType.ICON_TYPE_UNSPECIFIED, 0),
-                        Map.entry(SuggestTemplateInfo.IconType.HISTORY, R.drawable.ic_history_24dp),
+                        Map.entry(IconType.ICON_TYPE_UNSPECIFIED, 0),
+                        Map.entry(IconType.HISTORY, R.drawable.ic_history_24dp),
+                        Map.entry(IconType.SEARCH_LOOP, R.drawable.ic_suggestion_magnifier),
                         Map.entry(
-                                SuggestTemplateInfo.IconType.SEARCH_LOOP,
-                                R.drawable.ic_suggestion_magnifier),
-                        Map.entry(
-                                SuggestTemplateInfo.IconType.SEARCH_LOOP_WITH_SPARKLE,
+                                IconType.SEARCH_LOOP_WITH_SPARKLE,
                                 R.drawable.search_spark_black_24dp),
-                        Map.entry(
-                                SuggestTemplateInfo.IconType.TRENDING,
-                                R.drawable.trending_up_black_24dp),
-                        Map.entry(
-                                SuggestTemplateInfo.IconType.SUB_ARROW_RIGHT,
-                                R.drawable.ic_suggestion_magnifier),
-                        Map.entry(
-                                SuggestTemplateInfo.IconType.GLOBE_WITH_SEARCH_LOOP,
-                                R.drawable.travel_explore_24dp),
-                        Map.entry(
-                                SuggestTemplateInfo.IconType.BANANA, R.drawable.create_image_24dp),
-                        Map.entry(SuggestTemplateInfo.IconType.FAVICON, R.drawable.ic_globe_24dp),
-                        Map.entry(SuggestTemplateInfo.IconType.NOTES_SPARK, R.drawable.notes_spark),
-                        Map.entry(
-                                SuggestTemplateInfo.IconType.DRAFT_SPARK,
-                                R.drawable.draft_spark_24dp),
-                        Map.entry(
-                                SuggestTemplateInfo.IconType.LIGHTBULB,
-                                R.drawable.ic_lightbulb_24dp),
-                        Map.entry(
-                                SuggestTemplateInfo.IconType.ATTACH_FILE,
-                                R.drawable.ic_attach_file_24dp),
-                        Map.entry(SuggestTemplateInfo.IconType.SCHOOL, R.drawable.ic_school_24dp),
-                        Map.entry(SuggestTemplateInfo.IconType.INK_PEN, R.drawable.ic_ink_pen_24dp),
-                        Map.entry(SuggestTemplateInfo.IconType.TAB, R.drawable.tab),
-                        Map.entry(
-                                SuggestTemplateInfo.IconType.PHOTO_SPARK,
-                                R.drawable.ic_photo_spark_24dp),
-                        Map.entry(SuggestTemplateInfo.IconType.BOLT, R.drawable.bolt_24dp));
+                        Map.entry(IconType.TRENDING, R.drawable.trending_up_black_24dp),
+                        Map.entry(IconType.SUB_ARROW_RIGHT, R.drawable.ic_suggestion_magnifier),
+                        Map.entry(IconType.GLOBE_WITH_SEARCH_LOOP, R.drawable.travel_explore_24dp),
+                        Map.entry(IconType.BANANA, R.drawable.create_image_24dp),
+                        Map.entry(IconType.FAVICON, R.drawable.ic_globe_24dp),
+                        Map.entry(IconType.NOTES_SPARK, R.drawable.notes_spark),
+                        Map.entry(IconType.DRAFT_SPARK, R.drawable.draft_spark_24dp),
+                        Map.entry(IconType.LIGHTBULB, R.drawable.ic_lightbulb_24dp),
+                        Map.entry(IconType.ATTACH_FILE, R.drawable.ic_attach_file_24dp),
+                        Map.entry(IconType.SCHOOL, R.drawable.ic_school_24dp),
+                        Map.entry(IconType.INK_PEN, R.drawable.ic_ink_pen_24dp),
+                        Map.entry(IconType.TAB, R.drawable.tab),
+                        Map.entry(IconType.PHOTO_SPARK, R.drawable.ic_photo_spark_24dp),
+                        Map.entry(IconType.BOLT, R.drawable.bolt_24dp),
+                        Map.entry(IconType.IMAGE_CREATE, R.drawable.image_create_24dp));
 
-        for (var iconType : SuggestTemplateInfo.IconType.values()) {
-            assertTrue(iconType.toString(), resourceMap.containsKey(iconType));
+        for (@IconType int iconType = IconType.MIN_VALUE;
+                iconType <= IconType.MAX_VALUE;
+                iconType++) {
+            assertTrue(String.valueOf(iconType), resourceMap.containsKey(iconType));
             assertEquals(
-                    iconType.toString(),
+                    String.valueOf(iconType),
                     (int) resourceMap.get(iconType),
-                    mProcessor.getFallbackIconFromIconType(iconType.getNumber()));
+                    mProcessor.getFallbackIconFromIconType(iconType));
         }
     }
 
@@ -549,10 +539,54 @@ public class BasicSuggestionProcessorUnitTest {
     public void searchSuggestions_searchQueriesCanWrapAroundWithFeatureEnabled() {
         mProcessor.onNativeInitialized();
         createSearchSuggestion(OmniboxSuggestionType.SEARCH_WHAT_YOU_TYPED, "");
-        assertEquals(true, mModel.get(SuggestionViewProperties.ALLOW_WRAP_AROUND));
+        assertEquals(true, mModel.get(SuggestionViewProperties.TEXT_LINE_1_WRAP));
 
         createUrlSuggestion(OmniboxSuggestionType.URL_WHAT_YOU_TYPED, "");
-        assertEquals(false, mModel.get(SuggestionViewProperties.ALLOW_WRAP_AROUND));
+        assertEquals(false, mModel.get(SuggestionViewProperties.TEXT_LINE_1_WRAP));
+    }
+
+    @Test
+    public void searchSuggestions_primaryTextWrapping() {
+        mProcessor.onNativeInitialized();
+        createSearchSuggestion(OmniboxSuggestionType.SEARCH_SUGGEST, "");
+        assertTrue(mModel.get(SuggestionViewProperties.TEXT_LINE_1_WRAP));
+
+        var templateNoWrap = SuggestTemplateInfo.newBuilder().setWrapPrimaryText(false).build();
+        mSuggestion =
+                createSuggestionBuilder(OmniboxSuggestionType.SEARCH_SUGGEST, "")
+                        .setIsSearch(true)
+                        .setSerializedSuggestTemplate(templateNoWrap.toByteArray())
+                        .build();
+        mModel = mProcessor.createModel();
+        mProcessor.populateModel(mInput, mSuggestion, mModel, 0);
+        assertFalse(mModel.get(SuggestionViewProperties.TEXT_LINE_1_WRAP));
+
+        var templateWrap = SuggestTemplateInfo.newBuilder().setWrapPrimaryText(true).build();
+        mSuggestion =
+                createSuggestionBuilder(OmniboxSuggestionType.URL_WHAT_YOU_TYPED, "")
+                        .setIsSearch(false)
+                        .setSerializedSuggestTemplate(templateWrap.toByteArray())
+                        .build();
+        mModel = mProcessor.createModel();
+        mProcessor.populateModel(mInput, mSuggestion, mModel, 0);
+        assertTrue(mModel.get(SuggestionViewProperties.TEXT_LINE_1_WRAP));
+    }
+
+    @Test
+    public void searchSuggestions_secondaryTextWrapping() {
+        mProcessor.onNativeInitialized();
+        createSearchSuggestion(OmniboxSuggestionType.SEARCH_SUGGEST, "");
+        assertFalse(mModel.get(SuggestionViewProperties.TEXT_LINE_2_WRAP));
+
+        var template = SuggestTemplateInfo.newBuilder().setWrapSecondaryText(true).build();
+        mSuggestion =
+                createSuggestionBuilder(OmniboxSuggestionType.SEARCH_SUGGEST, "")
+                        .setIsSearch(true)
+                        .setSerializedSuggestTemplate(template.toByteArray())
+                        .build();
+        mModel = mProcessor.createModel();
+        mProcessor.populateModel(mInput, mSuggestion, mModel, 0);
+        assertTrue(mModel.get(SuggestionViewProperties.TEXT_LINE_2_WRAP));
     }
 
     @Test
@@ -606,7 +640,7 @@ public class BasicSuggestionProcessorUnitTest {
         mModel = mProcessor.createModel();
         mProcessor.populateModel(mInput, mSuggestion, mModel, 0);
         OmniboxDrawableState icon4 = mModel.get(BaseSuggestionViewProperties.ICON);
-        assertEquals(R.drawable.ic_spark_4c_16dp, shadowOf(icon4.drawable).getCreatedFromResId());
+        assertEquals(R.drawable.ic_spark_24dp, shadowOf(icon4.drawable).getCreatedFromResId());
     }
 
     @Test
@@ -636,7 +670,8 @@ public class BasicSuggestionProcessorUnitTest {
                 "Google, Technology corporation. Search. 2 of 5 in the group Trending"
                         + " Searches.";
         assertEquals(
-                expectedAnnouncement, mModel.get(SuggestionViewProperties.CONTENT_DESCRIPTION));
+                expectedAnnouncement,
+                mModel.get(SuggestionViewProperties.CONTENT_DESCRIPTION_SUPPLIER).get());
     }
 
     @Test
@@ -644,8 +679,7 @@ public class BasicSuggestionProcessorUnitTest {
         mProcessor.onNativeInitialized();
         mSuggestion =
                 createSuggestionBuilder(OmniboxSuggestionType.SEARCH_SUGGEST, "Gemini")
-                        .setSuggestionKind(
-                                org.chromium.components.omnibox.OmniboxSuggestionKind.CONVERSATION)
+                        .setSuggestionKind(OmniboxSuggestionKind.CONVERSATION)
                         .setDescription("AI Mode")
                         .build();
         mModel = mProcessor.createModel();
@@ -660,7 +694,36 @@ public class BasicSuggestionProcessorUnitTest {
         String expectedAnnouncement =
                 "Gemini, AI Mode. Conversation. 3 of 4 in the group AI Suggestions.";
         assertEquals(
-                expectedAnnouncement, mModel.get(SuggestionViewProperties.CONTENT_DESCRIPTION));
+                expectedAnnouncement,
+                mModel.get(SuggestionViewProperties.CONTENT_DESCRIPTION_SUPPLIER).get());
+    }
+
+    @Test
+    public void accessibilityAnnouncements_noDescription() {
+        mProcessor.onNativeInitialized();
+        mSuggestion =
+                createSuggestionBuilder(OmniboxSuggestionType.SEARCH_SUGGEST, "Google")
+                        .setIsSearch(true)
+                        .setDescription("")
+                        .build();
+        mModel = mProcessor.createModel();
+        mModel.set(SuggestionCommonProperties.HEADER_TITLE, "Trending Searches");
+        mModel.set(SuggestionCommonProperties.INDEX_IN_GROUP, 0);
+        mModel.set(SuggestionCommonProperties.TOTAL_IN_GROUP, 3);
+
+        mProcessor.populateModel(mInput, mSuggestion, mModel, 0);
+
+        assertEquals(
+                "Google. Search. 1 of 3 in the group Trending Searches.",
+                mModel.get(SuggestionViewProperties.CONTENT_DESCRIPTION_SUPPLIER).get());
+    }
+
+    @Test
+    public void accessibilityAnnouncements_notSetWithoutGroup() {
+        mProcessor.onNativeInitialized();
+        createSearchSuggestion(OmniboxSuggestionType.SEARCH_SUGGEST, "Google");
+        assertEquals(0, mModel.get(SuggestionCommonProperties.TOTAL_IN_GROUP));
+        assertNull(mModel.get(SuggestionViewProperties.CONTENT_DESCRIPTION_SUPPLIER));
     }
 
     @Test

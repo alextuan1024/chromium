@@ -210,8 +210,8 @@ class CORE_EXPORT EmptyChromeClient : public ChromeClient {
   const display::ScreenInfos& GetScreenInfos(LocalFrame&) const override {
     return empty_screen_infos_;
   }
-  const display::ScreenInfo& GetOriginalScreenInfo(LocalFrame&) const override {
-    return empty_screen_infos_.current();
+  float GetOriginalDeviceScaleFactor(LocalFrame&) const override {
+    return empty_screen_infos_.current().device_scale_factor;
   }
   void ContentsSizeChanged(LocalFrame*, const gfx::Size&) const override {}
   void ShowMouseOverURL(const HitTestResult&) override {}
@@ -376,7 +376,7 @@ class CORE_EXPORT EmptyLocalFrameClient : public LocalFrameClient {
       bool has_rel_opener,
       mojo::PendingReceiver<
           mojom::blink::NavigationResumeDeferredCommitListener>,
-      std::optional<base::UnguessableToken> script_tool_invocation_id,
+      std::optional<ToolInvocationToken> script_tool_invocation_id,
       const String& script_injector_host) override;
 
   void DispatchWillSendSubmitEvent(HTMLFormElement*) override;
@@ -406,11 +406,6 @@ class CORE_EXPORT EmptyLocalFrameClient : public LocalFrameClient {
   void SelectorMatchChanged(const Vector<String>&,
                             const Vector<String>&) override {}
   LocalFrame* CreateFrame(const AtomicString&, HTMLFrameOwnerElement*) override;
-
-  RemoteFrame* CreateFencedFrame(
-      HTMLFencedFrameElement*,
-      mojo::PendingAssociatedReceiver<mojom::blink::FencedFrameOwnerHost>)
-      override;
 
   WebPluginContainerImpl* CreatePlugin(HTMLPlugInElement&,
                                        const KURL&,

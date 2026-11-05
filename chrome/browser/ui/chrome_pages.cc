@@ -68,13 +68,13 @@
 #include "extensions/common/constants.h"
 #include "extensions/common/extension_urls.h"
 #include "net/base/url_util.h"
+#include "third_party/blink/public/public_buildflags.h"
 #include "ui/base/l10n/l10n_util.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
 #include "ui/base/page_transition_types.h"
-#include "ui/base/window_open_disposition.h"
 #include "url/url_util.h"
 
 #if BUILDFLAG(IS_CHROMEOS)
-#include "ash/constants/ash_features.h"
 #include "ash/constants/webui_url_constants.h"
 #include "ash/webui/settings/public/constants/routes_util.h"
 #include "chrome/browser/ui/ash/system_web_apps/system_web_app_ui_utils.h"
@@ -129,9 +129,7 @@ void LaunchReleaseNotesImpl(Profile* profile, apps::LaunchSource source) {
   base::RecordAction(UserMetricsAction("ReleaseNotes.ShowReleaseNotes"));
   ash::SystemAppLaunchParams params;
   params.url =
-      base::FeatureList::IsEnabled(
-          ash::features::kHelpAppOpensInsteadOfReleaseNotesNotification) &&
-              source == apps::LaunchSource::kFromReleaseNotesNotification
+      source == apps::LaunchSource::kFromReleaseNotesNotification
           ? GURL("chrome://help-app/updates?launchSource=version-update")
           : GURL("chrome://help-app/updates");
   params.launch_source = source;
@@ -229,7 +227,7 @@ std::string GenerateContentSettingsExceptionsSubPage(ContentSettingsType type) {
           {ContentSettingsType::ADS, "ads"},
           {ContentSettingsType::HID_CHOOSER_DATA, "hidDevices"},
           {ContentSettingsType::PROTECTED_MEDIA_IDENTIFIER, "protectedContent"},
-#if BUILDFLAG(IS_CHROMEOS)
+#if BUILDFLAG(ENABLE_SMART_CARD)
           {ContentSettingsType::SMART_CARD_GUARD, "smartCardReaders"},
 #endif
           {ContentSettingsType::STORAGE_ACCESS, "storageAccess"},
@@ -281,7 +279,7 @@ void ShowSiteSettingsImpl(BrowserWindowInterface* browser,
         GetSettingsUrl(chrome::kSiteDetailsSubpage), kParamRequest, url_string);
   }
   NavigateParams params(profile, link_destination, ui::PAGE_TRANSITION_TYPED);
-  params.disposition = WindowOpenDisposition::NEW_FOREGROUND_TAB;
+  params.disposition = ui::mojom::WindowOpenDisposition::kNewForegroundTab;
   params.browser = browser;
   Navigate(&params);
 }
@@ -307,7 +305,7 @@ void ShowSiteSettingsFileSystemImpl(BrowserWindowInterface* browser,
                                                  kParamRequest, origin_string);
   }
   NavigateParams params(profile, link_destination, ui::PAGE_TRANSITION_TYPED);
-  params.disposition = WindowOpenDisposition::NEW_FOREGROUND_TAB;
+  params.disposition = ui::mojom::WindowOpenDisposition::kNewForegroundTab;
   params.browser = browser;
   Navigate(&params);
 }
@@ -522,7 +520,7 @@ void ShowSiteSettings(BrowserWindowInterface* browser, const GURL& url) {
 }
 
 void ShowSiteSettings(Profile* profile, const GURL& url) {
-  DCHECK(profile);
+  CHECK(profile, base::NotFatalUntil::M162);
   ShowSiteSettingsImpl(nullptr, profile, url);
 }
 
@@ -532,7 +530,7 @@ void ShowSiteSettingsFileSystem(BrowserWindowInterface* browser,
 }
 
 void ShowSiteSettingsFileSystem(Profile* profile, const GURL& url) {
-  DCHECK(profile);
+  CHECK(profile, base::NotFatalUntil::M162);
   ShowSiteSettingsFileSystemImpl(nullptr, profile, url);
 }
 
@@ -716,7 +714,7 @@ void ShowWebAppSettingsImpl(BrowserWindowInterface* browser,
 #else
   const GURL link_destination(chrome::kChromeUIWebAppSettingsURL + app_id);
   NavigateParams params(profile, link_destination, ui::PAGE_TRANSITION_TYPED);
-  params.disposition = WindowOpenDisposition::NEW_FOREGROUND_TAB;
+  params.disposition = ui::mojom::WindowOpenDisposition::kNewForegroundTab;
   params.browser = browser;
   Navigate(&params);
 #endif  // BUILDFLAG(IS_CHROMEOS)

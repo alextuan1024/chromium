@@ -27,6 +27,7 @@ import org.mockito.junit.MockitoRule;
 
 import org.chromium.base.Token;
 import org.chromium.base.test.BaseRobolectricTestRunner;
+import org.chromium.chrome.browser.actor.background_tabs.OffscreenRenderingManager;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.tab.TabCreationState;
 import org.chromium.chrome.browser.tab.TabDelegateFactory;
@@ -92,7 +93,13 @@ public class LiveBackgroundTabTest {
 
     @Test
     public void testAttachTab_attachesAndRemovesFromPool() {
-        mLiveBackgroundTab = new LiveBackgroundTab(mPool, mTab, PLACEHOLDER_TAB_ID, TASK_ID);
+        mLiveBackgroundTab =
+                new LiveBackgroundTab(
+                        mPool,
+                        mTab,
+                        PLACEHOLDER_TAB_ID,
+                        TASK_ID,
+                        /* originalTabIndex= */ TabModel.INVALID_TAB_INDEX);
 
         Tab attached = mLiveBackgroundTab.attachTab(mTabModel, 2);
 
@@ -106,20 +113,24 @@ public class LiveBackgroundTabTest {
 
     @Test
     public void testAttachTab_withPlaceholderState_destroysContentsStateAndTransfersMetadata() {
-        mLiveBackgroundTab = new LiveBackgroundTab(mPool, mTab, PLACEHOLDER_TAB_ID, TASK_ID);
+        mLiveBackgroundTab =
+                new LiveBackgroundTab(
+                        mPool,
+                        mTab,
+                        PLACEHOLDER_TAB_ID,
+                        TASK_ID,
+                        /* originalTabIndex= */ TabModel.INVALID_TAB_INDEX);
 
         Token placeholderGroupToken = new Token(3L, 4L);
         TabState placeholderState = new TabState();
         placeholderState.contentsState = mPlaceholderContentsState;
         placeholderState.tabGroupId = placeholderGroupToken;
-        placeholderState.rootId = 555;
         placeholderState.isPinned = true;
 
         Tab attached = mLiveBackgroundTab.attachTab(mTabModel, 2, placeholderState);
 
         assertSame(mTab, attached);
         verify(mTab).setTabGroupId(placeholderGroupToken);
-        verify(mTab).setRootId(555);
         verify(mPlaceholderContentsState).destroy();
         assertNull(placeholderState.contentsState);
         verify(mTabModel).pinTab(TAB_ID, /* showUngroupDialog= */ false);
@@ -131,7 +142,13 @@ public class LiveBackgroundTabTest {
 
     @Test
     public void testAttachTab_withPlaceholderInModel_removesPlaceholder() {
-        mLiveBackgroundTab = new LiveBackgroundTab(mPool, mTab, PLACEHOLDER_TAB_ID, TASK_ID);
+        mLiveBackgroundTab =
+                new LiveBackgroundTab(
+                        mPool,
+                        mTab,
+                        PLACEHOLDER_TAB_ID,
+                        TASK_ID,
+                        /* originalTabIndex= */ TabModel.INVALID_TAB_INDEX);
 
         when(mTabModel.getTabById(PLACEHOLDER_TAB_ID)).thenReturn(mPlaceholderTab);
 
@@ -214,7 +231,13 @@ public class LiveBackgroundTabTest {
     @Test
     public void testTabDestruction_evictsFromPool() {
         ArgumentCaptor<TabObserver> captor = ArgumentCaptor.forClass(TabObserver.class);
-        mLiveBackgroundTab = new LiveBackgroundTab(mPool, mTab, PLACEHOLDER_TAB_ID, TASK_ID);
+        mLiveBackgroundTab =
+                new LiveBackgroundTab(
+                        mPool,
+                        mTab,
+                        PLACEHOLDER_TAB_ID,
+                        TASK_ID,
+                        /* originalTabIndex= */ TabModel.INVALID_TAB_INDEX);
 
         verify(mTab).addObserver(captor.capture());
         TabObserver observer = captor.getValue();
@@ -227,7 +250,13 @@ public class LiveBackgroundTabTest {
     @Test
     public void testAttachToForeground_unregistersDestructionObserver() {
         ArgumentCaptor<TabObserver> captor = ArgumentCaptor.forClass(TabObserver.class);
-        mLiveBackgroundTab = new LiveBackgroundTab(mPool, mTab, PLACEHOLDER_TAB_ID, TASK_ID);
+        mLiveBackgroundTab =
+                new LiveBackgroundTab(
+                        mPool,
+                        mTab,
+                        PLACEHOLDER_TAB_ID,
+                        TASK_ID,
+                        /* originalTabIndex= */ TabModel.INVALID_TAB_INDEX);
 
         verify(mTab).addObserver(captor.capture());
         TabObserver observer = captor.getValue();
@@ -269,15 +298,14 @@ public class LiveBackgroundTabTest {
         when(mTabModel.getTabById(PLACEHOLDER_TAB_ID)).thenReturn(mPlaceholderTab);
         when(mTabModel.indexOf(mPlaceholderTab)).thenReturn(1);
         when(mPlaceholderTab.getTabGroupId()).thenReturn(groupId);
-        when(mTabModel.getRelatedTabList(PLACEHOLDER_TAB_ID))
-                .thenReturn(Collections.singletonList(mPlaceholderTab));
+        when(mTabModel.getIndexOfTabInGroup(mPlaceholderTab)).thenReturn(0);
 
         mLiveBackgroundTab.attachToForeground(mTabModel, mWindowAndroid, mTabDelegateFactory);
 
         verify(mTabModel)
-                .mergeListOfTabsToGroup(
+                .mergeListOfTabsToExistingGroup(
                         eq(Collections.singletonList(mTab)),
-                        eq(mPlaceholderTab),
+                        eq(groupId),
                         eq(1),
                         eq(TabGroupMergeNotificationType.DONT_NOTIFY));
     }

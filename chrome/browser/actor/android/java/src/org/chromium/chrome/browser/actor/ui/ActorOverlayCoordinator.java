@@ -16,6 +16,7 @@ import android.widget.FrameLayout;
 
 import org.chromium.base.Callback;
 import org.chromium.base.supplier.MonotonicObservableSupplier;
+import org.chromium.base.supplier.NonNullObservableSupplier;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.actor.ActorKeyedService;
@@ -34,6 +35,7 @@ import org.chromium.chrome.browser.ui.side_ui.SideUiCoordinator;
 import org.chromium.chrome.browser.ui.side_ui.SideUiCoordinator.AnchorSide;
 import org.chromium.chrome.browser.ui.side_ui.SideUiObserver;
 import org.chromium.chrome.browser.ui.side_ui.SideUiStateProvider;
+import org.chromium.components.browser_ui.widget.floating_pill.FloatingPillContainer;
 import org.chromium.components.browser_ui.widget.gesture.BackPressHandler;
 import org.chromium.components.browser_ui.widget.gesture.BackPressHandlerRegistry;
 import org.chromium.ui.base.ViewUtils;
@@ -65,7 +67,7 @@ public class ActorOverlayCoordinator {
     private @Nullable ActorOverlayView mView;
     private @Nullable PropertyModelChangeProcessor mChangeProcessor;
     private @Nullable ViewStub mHandoffButtonStub;
-    private @Nullable ActorHandoffButtonView mHandoffButtonView;
+    private @Nullable FloatingPillContainer mHandoffButtonView;
     private @Nullable PropertyModelChangeProcessor mHandoffButtonChangeProcessor;
     private @Nullable SideUiObserver mSideUiObserver;
     private @Nullable ActorKeyedService mActorKeyedService;
@@ -82,6 +84,7 @@ public class ActorOverlayCoordinator {
      * @param backPressHandlerRegistry The BackPressHandlerRegistry to handle back press.
      * @param layoutManagerSupplier The LayoutManager supplier to observe layout changes.
      * @param profileSupplier The Profile supplier to observe profile changes.
+     * @param omniboxFocusStateSupplier Supplier for whether the omnibox currently has focus.
      * @param sideUiStateProvider The {@link SideUiStateProvider} providing state on the side UI.
      */
     public ActorOverlayCoordinator(
@@ -93,6 +96,7 @@ public class ActorOverlayCoordinator {
             BackPressHandlerRegistry backPressHandlerRegistry,
             MonotonicObservableSupplier<LayoutManager> layoutManagerSupplier,
             MonotonicObservableSupplier<Profile> profileSupplier,
+            NonNullObservableSupplier<Boolean> omniboxFocusStateSupplier,
             @Nullable SideUiStateProvider sideUiStateProvider) {
         mViewStub = viewStub;
         mContext = viewStub.getContext();
@@ -143,6 +147,7 @@ public class ActorOverlayCoordinator {
                         browserControlsVisibilityManager,
                         tabObscuringHandler,
                         layoutManagerSupplier,
+                        omniboxFocusStateSupplier,
                         this::inflateView,
                         this::showInteractionLimitedSnackbar,
                         this::dismissInteractionLimitedSnackbar);
@@ -169,7 +174,7 @@ public class ActorOverlayCoordinator {
 
     private void inflateHandoffButtonView() {
         if (mHandoffButtonView != null || mContainer == null || mHandoffButtonStub == null) return;
-        mHandoffButtonView = (ActorHandoffButtonView) mHandoffButtonStub.inflate();
+        mHandoffButtonView = (FloatingPillContainer) mHandoffButtonStub.inflate();
         mHandoffButtonStub = null;
         mHandoffButtonChangeProcessor =
                 PropertyModelChangeProcessor.create(
@@ -180,7 +185,8 @@ public class ActorOverlayCoordinator {
 
         @Override
         public @Nullable Transition onPreSideUiSpecsChange(
-                SideUiCoordinator.SideUiSpecs sideUiSpecs) {
+                SideUiCoordinator.SideUiSpecs sideUiSpecs,
+                SideUiCoordinator.UiUpdateRequest request) {
             if (mContainer == null || !mModel.get(ActorOverlayProperties.VISIBLE)) {
                 return null;
             }
@@ -198,10 +204,21 @@ public class ActorOverlayCoordinator {
         }
 
         @Override
-        public void onSideUiSpecsChanged(SideUiCoordinator.SideUiSpecs sideUiSpecs) {
-            mModel.set(ActorOverlayProperties.LEFT_MARGIN, sideUiSpecs.getWidth(AnchorSide.LEFT));
-            mModel.set(ActorOverlayProperties.RIGHT_MARGIN, sideUiSpecs.getWidth(AnchorSide.RIGHT));
+        public void onSideUiSpecsChangeStarted(
+                SideUiCoordinator.SideUiSpecs sideUiSpecs,
+                SideUiCoordinator.UiUpdateRequest request) {
+            mModel.set(
+                    ActorOverlayProperties.LEFT_MARGIN,
+                    sideUiSpecs.getReservedWidth(AnchorSide.LEFT));
+            mModel.set(
+                    ActorOverlayProperties.RIGHT_MARGIN,
+                    sideUiSpecs.getReservedWidth(AnchorSide.RIGHT));
         }
+
+        @Override
+        public void onSideUiSpecsChangeCompleted(
+                SideUiCoordinator.SideUiSpecs sideUiSpecs,
+                SideUiCoordinator.UiUpdateRequest request) {}
     }
 
     private void onProfileAdded(Profile profile) {
@@ -271,7 +288,7 @@ public class ActorOverlayCoordinator {
         return mView;
     }
 
-    @Nullable ActorHandoffButtonView getHandoffButtonViewForTesting() {
+    @Nullable FloatingPillContainer getHandoffButtonViewForTesting() {
         return mHandoffButtonView;
     }
 

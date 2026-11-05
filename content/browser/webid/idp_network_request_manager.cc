@@ -30,6 +30,7 @@
 #include "content/browser/webid/mappers.h"
 #include "content/browser/webid/metrics.h"
 #include "content/browser/webid/network_request_manager.h"
+#include "content/browser/webid/url_computations.h"
 #include "content/browser/webid/webid_utils.h"
 #include "content/public/browser/browser_context.h"
 #include "content/public/browser/content_browser_client.h"
@@ -101,6 +102,9 @@ constexpr char kDisconnectEndpoint[] = "disconnect_endpoint";
 constexpr char kTypesKey[] = "types";
 constexpr char kFormatsKey[] = "formats";
 constexpr char kAccountLabelKey[] = "account_label";
+constexpr char kIdpAccountManagementUrlKey[] = "account_management_url";
+constexpr char kIdpPrivacyPolicyKey[] = "privacy_policy_url";
+constexpr char kIdpTermsOfServiceKey[] = "terms_of_service_url";
 
 // Keys in the specific mode dictionary.
 constexpr char kSupportsUseOtherAccountKey[] = "supports_use_other_account";
@@ -235,6 +239,10 @@ GURL FindBestMatchingIconUrl(const base::ListValue* icons_value,
   params.ideal_icon_size_in_px = brand_icon_ideal_size;
   params.minimum_icon_size_in_px = brand_icon_minimum_size;
   params.purpose = blink::mojom::ManifestImageResource_Purpose::MASKABLE;
+  // FedCM icons don't specify a `type`, and some icon URLs (e.g. RP icons
+  // served from image CDNs) have no file extension to infer one from. Don't
+  // reject those; the downloaded bytes are validated by DecodeImageIsolated().
+  params.allow_icons_with_unknown_type = true;
   auto result =
       blink::ManifestIconSelector::FindBestMatchingIcon(icons, params);
   return result ? result->icon_url : GURL();
@@ -368,6 +376,12 @@ void OnConfigParsed(const GURL& provider,
                                   idp_brand_icon_minimum_size, idp_metadata);
   }
   idp_metadata.idp_login_url = ExtractEndpoint(provider, *result, kLoginUrlKey);
+  idp_metadata.account_management_url =
+      ExtractEndpoint(provider, *result, kIdpAccountManagementUrlKey);
+  idp_metadata.privacy_policy_url =
+      ExtractEndpoint(provider, *result, kIdpPrivacyPolicyKey);
+  idp_metadata.terms_of_service_url =
+      ExtractEndpoint(provider, *result, kIdpTermsOfServiceKey);
 
   if (IsDelegationEnabled()) {
     const base::ListValue* formats = result->FindList(kFormatsKey);
@@ -485,31 +499,6 @@ void OnAccountsRequestParsed(
 
   std::move(callback).Run({ParseStatus::kSuccess, fetch_status.response_code},
                           std::move(response));
-}
-
-std::pair<GURL, std::optional<ErrorUrlType>> GetErrorUrlAndType(
-    const std::string* url,
-    const GURL& idp_url) {
-  if (!url || url->empty()) {
-    return std::make_pair(GURL(), std::nullopt);
-  }
-
-  GURL error_url = idp_url.Resolve(*url);
-  if (!error_url.is_valid()) {
-    return std::make_pair(GURL(), std::nullopt);
-  }
-
-  url::Origin error_origin = url::Origin::Create(error_url);
-  url::Origin idp_origin = url::Origin::Create(idp_url);
-  if (error_origin == idp_origin) {
-    return std::make_pair(error_url, ErrorUrlType::kSameOrigin);
-  }
-
-  if (!net::SchemefulSite::IsSameSite(error_origin, idp_origin)) {
-    return std::make_pair(GURL(), ErrorUrlType::kCrossSite);
-  }
-
-  return std::make_pair(error_url, ErrorUrlType::kCrossOriginSameSite);
 }
 
 ErrorDialogType GetErrorDialogType(const std::string& code, const GURL& url) {

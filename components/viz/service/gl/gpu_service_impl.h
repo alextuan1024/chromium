@@ -6,8 +6,11 @@
 #define COMPONENTS_VIZ_SERVICE_GL_GPU_SERVICE_IMPL_H_
 
 #include <memory>
+#include <optional>
 #include <string>
+#include <vector>
 
+#include "base/byte_size.h"
 #include "base/clang_profiling_buildflags.h"
 #include "base/compiler_specific.h"
 #include "base/functional/callback.h"
@@ -58,6 +61,12 @@
 #if BUILDFLAG(IS_WIN)
 #include "ui/gl/direct_composition_support.h"
 #endif  // BUILDFLAG(IS_WIN)
+
+#if BUILDFLAG(IS_ANDROID)
+namespace base::android {
+class ScudoPurgeCoordinator;
+}  // namespace base::android
+#endif  // BUILDFLAG(IS_ANDROID)
 
 namespace gpu {
 class DawnContextProvider;
@@ -169,8 +178,7 @@ class VIZ_SERVICE_EXPORT GpuServiceImpl
   // mojom::GpuService:
   void EstablishGpuChannel(int32_t client_id,
                            uint64_t client_tracing_id,
-                           bool is_gpu_host,
-                           bool enable_extra_handles_validation,
+                           mojom::GpuClientType client_type,
                            mojo::ScopedMessagePipeHandle channel_handle,
                            EstablishGpuChannelCallback callback) override;
   void SetChannelClientPid(int32_t client_id,
@@ -484,6 +492,13 @@ class VIZ_SERVICE_EXPORT GpuServiceImpl
   gfx::mojom::DXGIInfoPtr dxgi_info_;
 #endif
 
+  // Dawn info collection is expensive, as it enumerates adapters on every
+  // backend and creates a device on each of them. The results do not change
+  // over the lifetime of the GPU process, so collect them at most once per
+  // mode. Only accessed on the main thread.
+  std::optional<std::vector<std::string>> dawn_info_list_;
+  bool dawn_metrics_collected_ = false;
+
   // What we would have gotten if we haven't fallen back to SwiftShader or
   // pure software (in the viz case).
   std::optional<gpu::GPUInfo> gpu_info_for_hardware_gpu_;
@@ -540,6 +555,10 @@ class VIZ_SERVICE_EXPORT GpuServiceImpl
 
   gpu::GpuPersistentCacheCollection persistent_caches_;
 
+  // Total size of the persistent cache databases passed to
+  // SetChannelPersistentCachePendingBackend(). Only accessed on the IO thread.
+  base::ByteSize persistent_cache_db_size_;
+
   // An event that will be signalled when we shutdown. On some platforms it
   // comes from external sources.
   std::unique_ptr<base::WaitableEvent> owned_shutdown_event_;
@@ -572,6 +591,12 @@ class VIZ_SERVICE_EXPORT GpuServiceImpl
   // out of the finch experiment as ::LoadedBlob() is not called in the next
   // browser start after the disk cache is cleared.
   const bool clear_shader_cache_;
+
+#if BUILDFLAG(IS_ANDROID)
+  // Owned and accessed exclusively on main_runner_.
+  std::unique_ptr<base::android::ScudoPurgeCoordinator>
+      scudo_purge_coordinator_;
+#endif
 
   base::WeakPtr<GpuServiceImpl> weak_ptr_;
   base::WeakPtrFactory<GpuServiceImpl> weak_ptr_factory_{this};

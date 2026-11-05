@@ -6,14 +6,45 @@
 
 #import <UIKit/UIKit.h>
 
+#import <set>
+
 #import "base/test/metrics/user_action_tester.h"
+#import "ios/chrome/browser/intelligence/bwg/model/gemini_shared_tabs_manager.h"
 #import "ios/chrome/browser/shared/public/commands/snackbar_commands.h"
 #import "ios/chrome/browser/shared/public/commands/tab_picker_commands.h"
 #import "ios/chrome/browser/tab_picker/public/tab_picker_snackbar_presenter.h"
+#import "ios/web/public/web_state_id.h"
 #import "testing/gtest/include/gtest/gtest.h"
 #import "testing/platform_test.h"
 #import "third_party/ocmock/OCMock/OCMock.h"
 #import "third_party/ocmock/gtest_support.h"
+
+// Fake manager for testing `GeminiSharedTabsManager`.
+class FakeGeminiSharedTabsManager : public GeminiSharedTabsManager {
+ public:
+  NSArray<GeminiPageContext*>* GetInactiveSharedTabs() const override {
+    return @[];
+  }
+  void SaveActivePageContextToSharedTabs(
+      GeminiPageContext* active_page_context) override {}
+  void UpdateSharedTabsForActiveWebState(
+      web::WebState* active_web_state) override {}
+  void DetachTabWithID(NSString* tab_id) override {}
+  void UpdateLocalTabAttachmentState(
+      NSString* tab_id,
+      ios::provider::GeminiPageContextAttachmentState new_state) override {}
+  NSUInteger SharedTabsCount() const override { return 0; }
+  void OnTabPickerSelectionChanged(
+      std::set<web::WebStateID> selected_tabs) override {
+    last_selected_tabs = selected_tabs;
+  }
+  std::set<web::WebStateID> GetSelectedTabsForTabPicker() const override {
+    return preselected_tabs;
+  }
+
+  std::set<web::WebStateID> last_selected_tabs;
+  std::set<web::WebStateID> preselected_tabs;
+};
 
 class GeminiTabPickerHandlerTest : public PlatformTest {
  protected:
@@ -31,13 +62,13 @@ class GeminiTabPickerHandlerTest : public PlatformTest {
   id mock_snackbar_handler_;
 };
 
-// Tests that the handler conforms to the GeminiTabPickerDelegate protocol.
+// Tests that the handler conforms to the `GeminiTabPickerDelegate` protocol.
 TEST_F(GeminiTabPickerHandlerTest, TestConformsToProtocol) {
   EXPECT_TRUE([handler_ conformsToProtocol:@protocol(GeminiTabPickerDelegate)]);
 }
 
-// Tests that openTabPickerFromViewController correctly routes the request via
-// command dispatcher.
+// Tests that `openTabPickerFromViewController:` correctly routes the request
+// via command dispatcher.
 TEST_F(GeminiTabPickerHandlerTest, TestOpenTabPicker) {
   UIViewController* mockViewController = OCMClassMock([UIViewController class]);
 
@@ -55,6 +86,42 @@ TEST_F(GeminiTabPickerHandlerTest, TestOpenTabPicker) {
   [handler_ openTabPickerFromViewController:mockViewController];
 
   EXPECT_OCMOCK_VERIFY(mock_tab_picker_handler_);
+}
+
+// Tests that `openTabPickerFromViewController:` queries preselected tabs from
+// `sharedTabsManager` and forwards the completion selection back to
+// `sharedTabsManager`.
+TEST_F(GeminiTabPickerHandlerTest, TestOpenTabPickerWithSharedTabsManager) {
+  UIViewController* mockViewController = OCMClassMock([UIViewController class]);
+  FakeGeminiSharedTabsManager fake_manager;
+  web::WebStateID tabID1 = web::WebStateID::NewUnique();
+  web::WebStateID tabID2 = web::WebStateID::NewUnique();
+  std::set<web::WebStateID> preselected = {tabID1};
+  std::set<web::WebStateID> newlySelected = {tabID1, tabID2};
+  fake_manager.preselected_tabs = preselected;
+  handler_.sharedTabsManager = &fake_manager;
+
+  __block TabPickerCompletionBlock capturedCompletion = nil;
+  OCMExpect([mock_tab_picker_handler_
+      showTabPickerWithParams:[OCMArg checkWithBlock:^BOOL(
+                                          TabPickerParams* params) {
+        EXPECT_EQ(params.preselectedWebStateIDs, preselected);
+        return YES;
+      }]
+                   completion:[OCMArg checkWithBlock:^BOOL(
+                                          TabPickerCompletionBlock completion) {
+                     capturedCompletion = completion;
+                     return YES;
+                   }]]);
+
+  [handler_ openTabPickerFromViewController:mockViewController];
+  EXPECT_OCMOCK_VERIFY(mock_tab_picker_handler_);
+
+  ASSERT_TRUE(capturedCompletion);
+  TabPickerSelection selection;
+  selection.selected_ids = newlySelected;
+  capturedCompletion(selection);
+  EXPECT_EQ(newlySelected, fake_manager.last_selected_tabs);
 }
 
 // Tests that showing error snackbars records the corresponding user actions.

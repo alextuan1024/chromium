@@ -87,8 +87,6 @@ BASE_FEATURE(kSubAppsPerPromptLimit, base::FEATURE_ENABLED_BY_DEFAULT);
 const base::FeatureParam<int> kSubAppsPerPromptLimitParam{
     &kSubAppsPerPromptLimit, "limit", 20};
 
-namespace {
-
 SubAppInstallResult::SubAppInstallResult(
     GURL install_url,
     webapps::ManifestId manifest_id,
@@ -103,6 +101,8 @@ SubAppInstallResult& SubAppInstallResult::operator=(
 SubAppInstallResult::SubAppInstallResult(SubAppInstallResult&&) = default;
 SubAppInstallResult& SubAppInstallResult::operator=(SubAppInstallResult&&) =
     default;
+
+namespace {
 
 constexpr char kSubAppsUninstallNotifierId[] = "sub_apps_service";
 
@@ -311,8 +311,9 @@ IsolatedWebAppMetricsHelper::LogSubAppInstallResult MapAddCallErrorCodeToMetric(
 
 SubAppsServiceImpl::SubAppsServiceImpl(
     content::RenderFrameHost& render_frame_host,
-    mojo::PendingReceiver<SubAppsService> receiver)
-    : DocumentService(render_frame_host, std::move(receiver)) {}
+    mojo::PendingReceiver<SubAppsService> receiver,
+    base::SelfDeletingPassKey key)
+    : DocumentService(render_frame_host, std::move(receiver), key) {}
 
 SubAppsServiceImpl::~SubAppsServiceImpl() = default;
 
@@ -343,7 +344,8 @@ void SubAppsServiceImpl::CreateIfAllowed(
 
   // The object is bound to the lifetime of `render_frame_host` and the mojo
   // connection. See DocumentService for details.
-  new SubAppsServiceImpl(*render_frame_host, std::move(receiver));
+  base::MakeSelfDeleting<SubAppsServiceImpl>(*render_frame_host,
+                                             std::move(receiver));
 }
 
 void SubAppsServiceImpl::Add(const std::vector<std::string>& install_paths,

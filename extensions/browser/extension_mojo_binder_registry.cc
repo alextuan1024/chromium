@@ -4,6 +4,7 @@
 
 #include "extensions/browser/extension_mojo_binder_registry.h"
 
+#include <string_view>
 #include <utility>
 
 #include "base/check.h"
@@ -20,6 +21,7 @@
 #include "mojo/public/cpp/bindings/binder_map.h"
 
 class AimEligibilityExtensionBinderProvider;
+class NewTabPageExtensionBinderProvider;
 
 namespace contextual_tasks {
 class ContextualTasksExtensionBinderProvider;
@@ -62,6 +64,13 @@ void ExtensionMojoBinderRegistry::RegisterProvider(
 
 template <>
 void ExtensionMojoBinderRegistry::RegisterProvider(
+    base::PassKey<NewTabPageExtensionBinderProvider>,
+    std::unique_ptr<ExtensionMojoBinderProvider> provider) {
+  RegisterProviderImpl(std::move(provider));
+}
+
+template <>
+void ExtensionMojoBinderRegistry::RegisterProvider(
     base::PassKey<contextual_tasks::ContextualTasksExtensionBinderProvider>,
     std::unique_ptr<ExtensionMojoBinderProvider> provider) {
   RegisterProviderImpl(std::move(provider));
@@ -90,12 +99,11 @@ void ExtensionMojoBinderRegistry::RegisterProvider(
 
 void ExtensionMojoBinderRegistry::RegisterProviderImpl(
     std::unique_ptr<ExtensionMojoBinderProvider> provider) {
-  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   CHECK(provider);
-  ExtensionId extension_id = provider->extension_id();
-  auto [it, inserted] =
-      providers_.insert({std::move(extension_id), std::move(provider)});
-  CHECK(inserted) << "A provider for component extension '" << it->first
+  std::string_view extension_id = provider->extension_id();
+  auto [_, inserted] =
+      providers_map_.try_emplace(extension_id, std::move(provider));
+  CHECK(inserted) << "A provider for component extension '" << extension_id
                   << "' is already registered.";
 }
 
@@ -103,7 +111,6 @@ void ExtensionMojoBinderRegistry::PopulateFrameBinders(
     mojo::BinderMapWithContext<content::RenderFrameHost*>* binder_map,
     content::RenderFrameHost* render_frame_host,
     const Extension& extension) {
-  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   CHECK(binder_map);
   ExtensionMojoBinderProvider* provider = GetProviderIfAllowed(extension);
   if (!provider) {
@@ -122,7 +129,6 @@ void ExtensionMojoBinderRegistry::PopulateServiceWorkerBinders(
         binder_map,
     content::BrowserContext* browser_context,
     const Extension& extension) {
-  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   CHECK(binder_map);
   ExtensionMojoBinderProvider* provider = GetProviderIfAllowed(extension);
   if (!provider) {
@@ -134,30 +140,26 @@ void ExtensionMojoBinderRegistry::PopulateServiceWorkerBinders(
 
 bool ExtensionMojoBinderRegistry::IsMojoJsEnabledForFrame(
     const Extension& extension) const {
-  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   ExtensionMojoBinderProvider* provider = GetProviderIfAllowed(extension);
   return provider && provider->IsMojoJsEnabledForFrame();
 }
 
 bool ExtensionMojoBinderRegistry::IsMojoJsEnabledForServiceWorker(
     const Extension& extension) const {
-  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   ExtensionMojoBinderProvider* provider = GetProviderIfAllowed(extension);
   return provider && provider->IsMojoJsEnabledForServiceWorker();
 }
 
 void ExtensionMojoBinderRegistry::ClearProvidersForTesting() {
-  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  providers_.clear();
+  providers_map_.clear();
 }
 
 ExtensionMojoBinderProvider* ExtensionMojoBinderRegistry::GetProviderIfAllowed(
     const Extension& extension) const {
-  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   if (!Manifest::IsComponentLocation(extension.location())) {
     return nullptr;
   }
-  return base::FindPtrOrNull(providers_, extension.id());
+  return base::FindPtrOrNull(providers_map_, extension.id());
 }
 
 }  // namespace extensions

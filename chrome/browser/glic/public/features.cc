@@ -4,12 +4,16 @@
 
 #include "chrome/browser/glic/public/features.h"
 
+#include <algorithm>
+#include <string>
+#include <vector>
+
 #include "base/feature.h"
+#include "base/no_destructor.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_split.h"
 #include "build/android_buildflags.h"
 #include "build/build_config.h"
-#include "chrome/browser/pwc/pwc_features.mojom-features.h"
 
 namespace features {
 
@@ -19,15 +23,7 @@ BASE_FEATURE(kGlicDragAndDropFileUploadAndroid,
 
 BASE_FEATURE(kGlicAndroidOffscreenRendering, base::FEATURE_DISABLED_BY_DEFAULT);
 
-BASE_FEATURE(kGlicChromeStatusIcon, base::FEATURE_ENABLED_BY_DEFAULT);
-const base::FeatureParam<int> kGlicChromeStatusIconSizePx{
-    &kGlicChromeStatusIcon, "glic-chrome-status-icon-size-px", 20};
-const base::FeatureParam<bool> kGlicChromeStatusIconUseAltIcon{
-    &kGlicChromeStatusIcon, "glic-chrome-status-icon-use-alt-icon", false};
-const base::FeatureParam<bool> kGlicChromeStatusIconLogOnly{
-    &kGlicChromeStatusIcon, "glic-chrome-status-icon-log-only", true};
-const base::FeatureParam<std::string> kGlicChromeStatusIconOtherAppID{
-    &kGlicChromeStatusIcon, "glic-chrome-status-icon-other-app-id", ""};
+BASE_FEATURE(kGlicChromeStatusIconWin, base::FEATURE_DISABLED_BY_DEFAULT);
 
 BASE_FEATURE(kGlicOSIconVariant,
 #if BUILDFLAG(IS_MAC)
@@ -41,22 +37,14 @@ const base::FeatureParam<int> kGlicOSIconVariantParam{&kGlicOSIconVariant,
 
 BASE_FEATURE(kGlicOrphanedReattachment, base::FEATURE_ENABLED_BY_DEFAULT);
 
-BASE_FEATURE(kGlicSelectionPrompt, base::FEATURE_ENABLED_BY_DEFAULT);
+BASE_FEATURE(kGlicSelectionPrompt, base::FEATURE_DISABLED_BY_DEFAULT);
 
-const base::FeatureParam<bool> kGlicSelectionPromptUpdatesOnly{
-    &kGlicSelectionPrompt, "updates_only", true};
 const base::FeatureParam<bool> kGlicSelectionShowCopyButtons{
     &kGlicSelectionPrompt, "show_copy_buttons", false};
 const base::FeatureParam<bool> kGlicSelectionAutoSendPrompt{
     &kGlicSelectionPrompt, "auto_send_prompt", true};
 const base::FeatureParam<std::string> kGlicSelectionPromptCta{
     &kGlicSelectionPrompt, "cta", kGlicSelectionPromptCtaExplain};
-const base::FeatureParam<bool> kGlicSelectionPromptInlineFulfillment{
-    &kGlicSelectionPrompt, "inline_fulfillment", false};
-const base::FeatureParam<std::string> kGlicSelectionPromptInlinePromptTemplate{
-    &kGlicSelectionPrompt, "inline_prompt_template", ""};
-const base::FeatureParam<bool> kGlicSelectionPromptSkills{&kGlicSelectionPrompt,
-                                                          "skills", true};
 const base::FeatureParam<std::string> kGlicSelectionDefaultBlockedSites{
     &kGlicSelectionPrompt, "GlicSelectionDefaultBlockedSites", ""};
 
@@ -68,10 +56,26 @@ base::flat_set<std::string> GetGlicSelectionDefaultBlockedSites() {
 }
 
 BASE_FEATURE(kGlicSelectionOverlayPrompt, base::FEATURE_DISABLED_BY_DEFAULT);
+BASE_FEATURE(kGlicSelectionOverlayPromptBox, base::FEATURE_DISABLED_BY_DEFAULT);
+BASE_FEATURE(kGlicSelectionOverlayDogfoodFeedback,
+             base::FEATURE_DISABLED_BY_DEFAULT);
+BASE_FEATURE_PARAM(std::string,
+                   kGlicSelectionOverlayDogfoodFeedbackUrl,
+                   &kGlicSelectionOverlayDogfoodFeedback,
+                   "");
+BASE_FEATURE(kGlicSelectionSuggestions, base::FEATURE_DISABLED_BY_DEFAULT);
+BASE_FEATURE_PARAM(std::string,
+                   kGlicSelectionSuggestionsCapabilities,
+                   &kGlicSelectionSuggestions,
+                   "no_override");
+BASE_FEATURE(kQuickAnswersSelectionSuggestions,
+             base::FEATURE_DISABLED_BY_DEFAULT);
 
 BASE_FEATURE(kGlicSelectionSmallChip, base::FEATURE_DISABLED_BY_DEFAULT);
 const base::FeatureParam<bool> kGlicSelectionSmallChipOnTop{
     &kGlicSelectionSmallChip, "on_top", true};
+
+BASE_FEATURE(kGlicSuggestionContextMenu, base::FEATURE_DISABLED_BY_DEFAULT);
 
 BASE_FEATURE(kGlicClearTurnIdOnPanelWillOpen,
              base::FEATURE_DISABLED_BY_DEFAULT);
@@ -89,7 +93,6 @@ const base::FeatureParam<base::TimeDelta> kAutoOpenGlicCooldown({
 });
 
 BASE_FEATURE(kGlicInvoke, base::FEATURE_ENABLED_BY_DEFAULT);
-BASE_FEATURE(kGlicOnboardingMetricsMigration, base::FEATURE_ENABLED_BY_DEFAULT);
 
 BASE_FEATURE(kGlicCreateTabAdjacent, base::FEATURE_ENABLED_BY_DEFAULT);
 
@@ -104,16 +107,7 @@ BASE_FEATURE(kGlicLiveMode,
 
 BASE_FEATURE(kGlicSummarizeVideoSuggestion, base::FEATURE_DISABLED_BY_DEFAULT);
 
-BASE_FEATURE(kGlicFixTimeToFirstQueryKillSwitch,
-             base::FEATURE_ENABLED_BY_DEFAULT);
-
-BASE_FEATURE(kGlicContextMenu,
-#if BUILDFLAG(IS_ANDROID)
-             base::FEATURE_DISABLED_BY_DEFAULT
-#else
-             base::FEATURE_ENABLED_BY_DEFAULT
-#endif
-);
+BASE_FEATURE(kGlicContextMenu, FEATURE_ENABLED_BY_DEFAULT_NON_ANDROID);
 const base::FeatureParam<std::string> kGlicContextMenuArm{&kGlicContextMenu,
                                                           "variant", "arm3"};
 const base::FeatureParam<bool> kGlicContextMenuWithOnboarding{
@@ -123,7 +117,8 @@ BASE_FEATURE(kGlicContextMenuBelowSearch, base::FEATURE_DISABLED_BY_DEFAULT);
 
 BASE_FEATURE(kGlicDynamicChromeTools, base::FEATURE_DISABLED_BY_DEFAULT);
 
-BASE_FEATURE(kGlicTextSelectionContextMenu, base::FEATURE_DISABLED_BY_DEFAULT);
+BASE_FEATURE(kGlicTextSelectionContextMenu,
+             FEATURE_ENABLED_BY_DEFAULT_NON_ANDROID);
 const base::FeatureParam<bool> kGlicTextSelectionContextMenuMessageFirstFre{
     &kGlicTextSelectionContextMenu, "message_first_fre", false};
 const base::FeatureParam<bool> kGlicTextSelectionContextMenuAutoSubmit{
@@ -148,6 +143,43 @@ const base::flat_set<int32_t>& GetGlicTieredRolloutV2EligibleTiers() {
     return tiers;
   }());
   return *eligible_tiers;
+}
+
+BASE_FEATURE(kGlicActorPolicyControlExemption,
+             base::FEATURE_DISABLED_BY_DEFAULT);
+
+namespace {
+
+base::flat_set<std::string> ParseBenefitList(const std::string& benefit_list) {
+  std::vector<std::string> benefits = base::SplitString(
+      benefit_list, ",", base::TRIM_WHITESPACE, base::SPLIT_WANT_NONEMPTY);
+  return base::flat_set<std::string>(std::move(benefits));
+}
+
+}  // namespace
+
+BASE_FEATURE(kGlicSubscriptionBenefitsEligibility,
+             base::FEATURE_DISABLED_BY_DEFAULT);
+const base::FeatureParam<std::string> kGlicEligibleBenefits{
+    &kGlicSubscriptionBenefitsEligibility, "glic-eligible-benefits", ""};
+const base::FeatureParam<std::string> kGlicActorEligibleBenefits{
+    &kGlicSubscriptionBenefitsEligibility, "glic-actor-eligible-benefits", ""};
+
+base::flat_set<std::string> GetGlicEligibleBenefits() {
+  return ParseBenefitList(kGlicEligibleBenefits.Get());
+}
+
+base::flat_set<std::string> GetGlicActorEligibleBenefits() {
+  return ParseBenefitList(kGlicActorEligibleBenefits.Get());
+}
+
+bool HasAnyEligibleGlicBenefit(
+    const base::flat_set<std::string>& profile_benefits,
+    const base::flat_set<std::string>& eligible_benefits) {
+  return std::ranges::any_of(eligible_benefits,
+                             [&profile_benefits](const std::string& benefit) {
+                               return profile_benefits.contains(benefit);
+                             });
 }
 
 BASE_FEATURE(kGlicHorizontalTabToolbarButton,
@@ -183,6 +215,7 @@ const base::FeatureParam<base::TimeDelta> kGlicCookieSyncOnErrorMinInterval{
 BASE_FEATURE(kGlicCookieSyncOnOpenEvenIfNoSyncNeeded,
              base::FEATURE_DISABLED_BY_DEFAULT);
 BASE_FEATURE(kGlicCookieSyncEarlyNoStartup, base::FEATURE_DISABLED_BY_DEFAULT);
+BASE_FEATURE(kGlicReuseCookies, base::FEATURE_DISABLED_BY_DEFAULT);
 
 BASE_FEATURE(kGlicWebClientLoadTimes, base::FEATURE_ENABLED_BY_DEFAULT);
 const base::FeatureParam<int> kGlicPreLoadingTimeMs{
@@ -191,11 +224,13 @@ const base::FeatureParam<int> kGlicMinLoadingTimeMs{
     &kGlicWebClientLoadTimes, "glic-min-loading-time-ms", 1000};
 const base::FeatureParam<int> kGlicMaxLoadingTimeMs{
     &kGlicWebClientLoadTimes, "glic-max-loading-time-ms", 20000};
-const base::FeatureParam<int> kGlicReloadMaxLoadingTimeMs{
-    &kGlicWebClientLoadTimes, "glic-reload-max-loading-time-ms", 30000};
 
 BASE_FEATURE(kGlicContextualCueingV2AutoSubmit,
              base::FEATURE_ENABLED_BY_DEFAULT);
+BASE_FEATURE(kGlicContextualCuesHandleEdu,
+             FEATURE_ENABLED_BY_DEFAULT_ALL_PLATFORMS);
+BASE_FEATURE(kGlicContextualCuesHandleShopping,
+             FEATURE_ENABLED_BY_DEFAULT_ALL_PLATFORMS);
 
 BASE_FEATURE(kGlicContextualCueV2ActiveUserBackoff,
              base::FEATURE_ENABLED_BY_DEFAULT);
@@ -237,12 +272,27 @@ BASE_FEATURE(kGlicShowForSignedOut,
 BASE_FEATURE(kGlicProcessCounterAbuseVerdict,
              base::FEATURE_DISABLED_BY_DEFAULT);
 BASE_FEATURE(kGlicNoWebUiLoader, base::FEATURE_DISABLED_BY_DEFAULT);
+BASE_FEATURE(kGlicNativeLoadingPlaceholder, base::FEATURE_DISABLED_BY_DEFAULT);
 
-BASE_FEATURE(kGlicGeminiEnterpriseSettingsEnabled,
-             base::FEATURE_ENABLED_BY_DEFAULT);
+bool IsGlicNativeLoadingPlaceholderEnabled() {
+  return base::FeatureList::IsEnabled(kGlicNativeLoadingPlaceholder) &&
+         !base::FeatureList::IsEnabled(kGlicNoWebUiLoader);
+}
 
-BASE_FEATURE(kGlicGeminiEnterpriseConsentEnabled,
-             base::FEATURE_DISABLED_BY_DEFAULT);
+BASE_FEATURE(kGeic, FEATURE_ENABLED_BY_DEFAULT_NON_ANDROID);
+
+const base::FeatureParam<bool> kGeicEnabledParam{&kGeic, "enabled", true};
+
+BASE_FEATURE(kGeicActuation, base::FEATURE_DISABLED_BY_DEFAULT);
+
+BASE_FEATURE(kGeicSsr, base::FEATURE_DISABLED_BY_DEFAULT);
+
+BASE_FEATURE(kGeicProviderChangePrompt, base::FEATURE_DISABLED_BY_DEFAULT);
+
+const base::FeatureParam<std::string> kGeicGuestURL{&kGeic, "geic-guest-url",
+                                                    ""};
+
+BASE_FEATURE(kGeicFre, FEATURE_ENABLED_BY_DEFAULT_ALL_PLATFORMS);
 
 BASE_FEATURE(kGlicHotkeyLocalScope,
 #if BUILDFLAG(IS_ANDROID)
@@ -253,12 +303,10 @@ BASE_FEATURE(kGlicHotkeyLocalScope,
 );
 
 BASE_FEATURE(kGlicPasteEligibilityCheck,
-             "GlicPasteEligibilityCheck",
-             base::FEATURE_ENABLED_BY_DEFAULT);
+             FEATURE_ENABLED_BY_DEFAULT_ALL_PLATFORMS);
 
 BASE_FEATURE(kGlicWebPasteEligibilityCheck,
-             "GlicWebPasteEligibilityCheck",
-             base::FEATURE_ENABLED_BY_DEFAULT);
+             FEATURE_ENABLED_BY_DEFAULT_ALL_PLATFORMS);
 
 BASE_FEATURE(kGlicTabGroups, base::FEATURE_DISABLED_BY_DEFAULT);
 BASE_FEATURE(kGlicSparkSettingsAccessibleLabels,
@@ -270,23 +318,28 @@ BASE_FEATURE(kGlicStructuredYieldMetadata, base::FEATURE_ENABLED_BY_DEFAULT);
 // Runs the glic client in a PrivilegedWebContents instead of a webview.
 // This is a work in progress. See b/534807813.
 BASE_FEATURE(kGlicNoWebview, base::FEATURE_DISABLED_BY_DEFAULT);
-bool IsGlicNoWebviewEnabled() {
-  return base::FeatureList::IsEnabled(kGlicNoWebview) &&
-         base::FeatureList::IsEnabled(
-             pwc::mojom::features::kPrivilegedWebContents);
-}
+BASE_FEATURE(kGlicDisableHfcr, base::FEATURE_DISABLED_BY_DEFAULT);
+BASE_FEATURE(kGlicSetAuthUser, FEATURE_ENABLED_BY_DEFAULT_ALL_PLATFORMS);
 // Whether to disallow webview communication directly with the glic host
 // (chrome/browser/resources/glic/glic_api_impl/host). When enabled, some
 // functionality implemented by glic's webview.ts is implemented instead by c++
 // code.
 BASE_FEATURE(kGlicDisconnectedWebview, base::FEATURE_ENABLED_BY_DEFAULT);
-BASE_FEATURE(kGlicShakeTrigger,
-             "GlicShakeTrigger",
-             base::FEATURE_DISABLED_BY_DEFAULT);
+BASE_FEATURE(kGlicGuestInitialSize, FEATURE_ENABLED_BY_DEFAULT_ALL_PLATFORMS);
+BASE_FEATURE(kGlicShakeTrigger, base::FEATURE_DISABLED_BY_DEFAULT);
 const base::FeatureParam<bool> kGlicShakeTriggerOnlyOnSidePanel{
     &kGlicShakeTrigger, "only_on_side_panel", true};
 
 BASE_FEATURE(kGlicAndroidTablet, base::FEATURE_DISABLED_BY_DEFAULT);
+
+BASE_FEATURE(kGlicVoice, base::FEATURE_DISABLED_BY_DEFAULT);
+
+BASE_FEATURE(kGlicExperimentalOptInDialogNonScrollable,
+             base::FEATURE_DISABLED_BY_DEFAULT);
+
+#if BUILDFLAG(IS_ANDROID)
+BASE_FEATURE(kGlicNativeFreAndroid, base::FEATURE_DISABLED_BY_DEFAULT);
+#endif  // BUILDFLAG(IS_ANDROID)
 
 BASE_FEATURE(kGlicMarketingAutoOpen, base::FEATURE_ENABLED_BY_DEFAULT);
 const base::FeatureParam<std::string> kGlicMarketingUrlAllowlist{
@@ -301,17 +354,36 @@ const base::FeatureParam<std::string> kGlicMarketingUrlAllowlist{
 const base::FeatureParam<int> kGlicMarketingAutoOpenMaxCount{
     &kGlicMarketingAutoOpen, "max_impressions", 1};
 
-BASE_FEATURE(kGlicActionFirstFRE,
-             "GlicActionFirstFRE",
-             base::FEATURE_DISABLED_BY_DEFAULT);
+BASE_FEATURE(kGlicActionFirstFRE, base::FEATURE_DISABLED_BY_DEFAULT);
 
 BASE_FEATURE(kGlicWarmOnNudge, base::FEATURE_DISABLED_BY_DEFAULT);
 
 BASE_FEATURE(kGlicWarmOnIph, base::FEATURE_DISABLED_BY_DEFAULT);
+
+BASE_FEATURE(kGlicWarmOnGeminiWeb, base::FEATURE_DISABLED_BY_DEFAULT);
 
 BASE_FEATURE(kGlicBackfillWarmingUsePerformanceManager,
              base::FEATURE_DISABLED_BY_DEFAULT);
 
 BASE_FEATURE(kGlicColdWarmingUsePerformanceManager,
              base::FEATURE_DISABLED_BY_DEFAULT);
+
+BASE_FEATURE(kGlicSsr, base::FEATURE_DISABLED_BY_DEFAULT);
+const base::FeatureParam<bool> kGlicShowLoaderUntilMainPageOnload{
+    &kGlicSsr, "show_loader_until_main_page_onload", false};
+
+BASE_FEATURE(kGlicClientDataStorage, FEATURE_ENABLED_BY_DEFAULT_ALL_PLATFORMS);
+
+BASE_FEATURE(kGlicShowNotTellTutorials, base::FEATURE_DISABLED_BY_DEFAULT);
+const base::FeatureParam<int> kGlicShowNotTellTutorialsArm{
+    &kGlicShowNotTellTutorials, "tutorials_arm", 0};
+
+BASE_FEATURE(kGlicActivityHub, base::FEATURE_DISABLED_BY_DEFAULT);
+
+// TODO(b/55358603): Remove, together with the legacy
+// IDS_ACTOR_EXPERIMENTAL_TRIGGERING_NOTIFICATION_* strings, once launched.
+BASE_FEATURE(kGlicExperimentalTriggeringOsNotificationUpdatedStrings,
+             FEATURE_ENABLED_BY_DEFAULT_NON_ANDROID);
+
+BASE_FEATURE(kGlicWhatsNewLuminous, base::FEATURE_DISABLED_BY_DEFAULT);
 }  // namespace features

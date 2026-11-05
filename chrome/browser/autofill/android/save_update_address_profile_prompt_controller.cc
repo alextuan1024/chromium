@@ -28,6 +28,7 @@
 #include "components/signin/public/base/consent_level.h"
 #include "components/signin/public/identity_manager/identity_manager.h"
 #include "components/strings/grit/components_strings.h"
+#include "third_party/jni_zero/jni_zero.h"
 #include "ui/base/l10n/l10n_util.h"
 
 // Must come after all headers that specialize FromJniType() / ToJniType().
@@ -61,9 +62,9 @@ SaveUpdateAddressProfilePromptController::
     DUMP_WILL_BE_CHECK(!differences_for_ui_.empty());
     std::tie(old_diff_, new_diff_) = GetDiffFromOldToNewProfile();
   }
-  DCHECK(prompt_view_);
-  DCHECK(decision_callback_);
-  DCHECK(dismissal_callback_);
+  CHECK(prompt_view_, base::NotFatalUntil::M161);
+  CHECK(decision_callback_, base::NotFatalUntil::M161);
+  CHECK(dismissal_callback_, base::NotFatalUntil::M161);
 }
 
 SaveUpdateAddressProfilePromptController::
@@ -226,7 +227,7 @@ std::u16string SaveUpdateAddressProfilePromptController::GetPhoneNumber()
 }
 
 std::u16string SaveUpdateAddressProfilePromptController::GetSubtitle() const {
-  DCHECK(original_profile_);
+  CHECK(original_profile_, base::NotFatalUntil::M161);
   const std::string locale = g_browser_process->GetApplicationLocale();
   bool address_updated = std::ranges::contains(
       differences_for_ui_, ADDRESS_HOME_ADDRESS, &ProfileValueDifference::type);
@@ -245,7 +246,7 @@ std::u16string SaveUpdateAddressProfilePromptController::GetNewDiff() const {
 
 std::pair<std::u16string, std::u16string>
 SaveUpdateAddressProfilePromptController::GetDiffFromOldToNewProfile() const {
-  DCHECK(original_profile_);
+  CHECK(original_profile_, base::NotFatalUntil::M161);
 
   std::u16string old_diff;
   std::u16string new_diff;
@@ -273,7 +274,7 @@ base::android::ScopedJavaLocalRef<jobject>
 SaveUpdateAddressProfilePromptController::GetJavaObject() {
   if (!java_object_) {
     java_object_ = Java_SaveUpdateAddressProfilePromptController_create(
-        base::android::AttachCurrentThread(), reinterpret_cast<intptr_t>(this));
+        base::android::AttachCurrentThread(), jni_zero::MakeRaw(this));
   }
   return base::android::ScopedJavaLocalRef<jobject>(java_object_);
 }

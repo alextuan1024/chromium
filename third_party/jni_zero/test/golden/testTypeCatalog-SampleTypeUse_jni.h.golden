@@ -7,6 +7,7 @@
 #define org_jni_1zero_SampleTypeUse_JNI
 
 #include <jni.h>
+#include <utility>
 
 #include "overridden/jni_zero_internal.h"
 #include "extra_include.h"
@@ -20,6 +21,8 @@
 // Example signatures (to be implemented by #including file).
 // * JNIEnv* parameters are optional.
 // * Types do not have to be exact; they must accept rvalues of the examples.
+//
+// void ::my::cpp::Define::DoThing(JNIEnv* env);
 //
 // static ::jni_zero::JniUniquePtr<::my::cpp::Define> JNI_SampleTypeUse_MakeOwned(JNIEnv* env);
 //
@@ -35,12 +38,35 @@ static void YouForgotToCallMacro_DEFINE_JNI_SampleTypeUse() {}
 #define DEFINE_JNI_FOR_SampleTypeUse()                                                             \
   namespace {                                                                                      \
                                                                                                    \
-  JNI_ZERO_BOUNDARY_EXPORT jobject Java_org_jni_1zero_GEN_1JNI_org_1jni_11zero_1SampleTypeUse_1makeOwned( \
+  JNI_ZERO_BOUNDARY_EXPORT void Java_org_jni_1zero_GEN_1JNI_org_1jni_11zero_1SampleTypeUse_1doThing( \
       JNIEnv* env,                                                                                 \
-      jclass jcaller) {                                                                            \
+      jclass jcaller,                                                                              \
+      int64_t self) {                                                                              \
     /* Prevent -Wunused-function warning. */                                                       \
     YouForgotToCallMacro_DEFINE_JNI_SampleTypeUse();                                               \
                                                                                                    \
+    ::my::cpp::Define* _ptr = reinterpret_cast<::my::cpp::Define*>(self);                          \
+    /* Lambda required to make "if constexpr" work properly. */                                    \
+    auto dependent_context = [&](auto) {                                                           \
+      /* Lambda required to disambiguate overloads. */                                             \
+      auto func_wrapper = [&](auto&&... args) ->                                                   \
+      decltype(_ptr->DoThing(std::forward<decltype(args)>(args)...)) {                             \
+        return _ptr->DoThing(std::forward<decltype(args)>(args)...);                               \
+      };                                                                                           \
+      if constexpr (requires { func_wrapper(env); }) {                                             \
+        return func_wrapper(env);                                                                  \
+      } else if constexpr (requires { func_wrapper(); }) {                                         \
+        return func_wrapper();                                                                     \
+      } else {                                                                                     \
+        static_assert(false, "::my::cpp::Define::DoThing() is missing or has incorrect signature.\nIt should accept an optional JNIEnv* parameter as well as rvalues of the given types: ()\nSee SampleTypeUse_jni.h for an example."); \
+      }                                                                                            \
+    };                                                                                             \
+    dependent_context(0);                                                                          \
+  }                                                                                                \
+                                                                                                   \
+  JNI_ZERO_BOUNDARY_EXPORT jobject Java_org_jni_1zero_GEN_1JNI_org_1jni_11zero_1SampleTypeUse_1makeOwned( \
+      JNIEnv* env,                                                                                 \
+      jclass jcaller) {                                                                            \
     /* Lambda required to make "if constexpr" work properly. */                                    \
     auto dependent_context = [&](auto) {                                                           \
       /* Lambda required to disambiguate overloads. */                                             \
@@ -56,12 +82,12 @@ static void YouForgotToCallMacro_DEFINE_JNI_SampleTypeUse() {}
         static_assert(false, "JNI_SampleTypeUse_MakeOwned() is missing or has incorrect signature.\nIt should accept an optional JNIEnv* parameter as well as rvalues of the given types: ()\nSee SampleTypeUse_jni.h for an example."); \
       }                                                                                            \
     };                                                                                             \
-    auto return_value = dependent_context(0);                                                      \
+    ::jni_zero::JniUniquePtr<::my::cpp::Define> return_value = dependent_context(0);               \
     auto _deleter = return_value.deleter_address();                                                \
     return ::jni_zero::internal::CreateJavaJniUniquePtr(env, reinterpret_cast<jlong>(return_value.release()), _deleter).ReleaseLocal(); \
   }                                                                                                \
                                                                                                    \
-  JNI_ZERO_BOUNDARY_EXPORT jobject Java_org_jni_1zero_GEN_1JNI_org_1jni_11zero_1SampleTypeUse_1makeRaw( \
+  JNI_ZERO_BOUNDARY_EXPORT int64_t Java_org_jni_1zero_GEN_1JNI_org_1jni_11zero_1SampleTypeUse_1makeRaw( \
       JNIEnv* env,                                                                                 \
       jclass jcaller) {                                                                            \
     /* Lambda required to make "if constexpr" work properly. */                                    \
@@ -79,8 +105,8 @@ static void YouForgotToCallMacro_DEFINE_JNI_SampleTypeUse() {}
         static_assert(false, "JNI_SampleTypeUse_MakeRaw() is missing or has incorrect signature.\nIt should accept an optional JNIEnv* parameter as well as rvalues of the given types: ()\nSee SampleTypeUse_jni.h for an example."); \
       }                                                                                            \
     };                                                                                             \
-    auto return_value = dependent_context(0);                                                      \
-    return ::jni_zero::internal::CreateJavaJniRawPtr(env, reinterpret_cast<jlong>(return_value.get())).ReleaseLocal(); \
+    ::jni_zero::JniRawPtr<::my::cpp::Define> return_value = dependent_context(0);                  \
+    return ::jni_zero::internal::WrapRawPtr(reinterpret_cast<jlong>(return_value.get()));          \
   }                                                                                                \
                                                                                                    \
   JNI_ZERO_BOUNDARY_EXPORT void Java_org_jni_1zero_GEN_1JNI_org_1jni_11zero_1SampleTypeUse_1useIt( \
@@ -132,7 +158,7 @@ static void Java_SampleTypeUse_bar(JNIEnv* env, ::jni_zero::JniRawPtr<::my::cpp:
       "bar",
       "(Lorg/jni_zero/JniRawPtr;)V",
       &cached_method_id);
-  ::jni_zero::ScopedJavaLocalRef<jobject> converted_ptr = ::jni_zero::internal::CreateJavaJniRawPtr(env, reinterpret_cast<jlong>(ptr.get()));
+  ::jni_zero::ScopedJavaLocalRef<jobject> converted_ptr = ::jni_zero::internal::CreateJavaJniRawPtr(env, reinterpret_cast<jlong>(ptr.get()), JNI_ZERO_SAFE_PTR_CONTEXT("passed to org.jni_zero.SampleTypeUse#bar parameter ptr"));
   env->CallStaticVoidMethod(clazz, call_context.method_id(), converted_ptr.obj());
 }
 
@@ -195,7 +221,7 @@ static void Java_SampleTypeUse_qux(JNIEnv* env, ::jni_zero::JniUniquePtr<::my::c
       "(Lorg/jni_zero/JniUniquePtr;)V",
       &cached_method_id);
   jlong converted_ptr_deleter = ptr.deleter_address();
-  ::jni_zero::ScopedJavaLocalRef<jobject> converted_ptr = ::jni_zero::internal::CreateJavaJniUniquePtr(env, reinterpret_cast<jlong>(ptr.release()), converted_ptr_deleter);
+  ::jni_zero::ScopedJavaLocalRef<jobject> converted_ptr = ::jni_zero::internal::CreateJavaJniUniquePtr(env, reinterpret_cast<jlong>(ptr.release()), converted_ptr_deleter, JNI_ZERO_SAFE_PTR_CONTEXT("passed to org.jni_zero.SampleTypeUse#qux parameter ptr"));
   env->CallStaticVoidMethod(clazz, call_context.method_id(), converted_ptr.obj());
 }
 

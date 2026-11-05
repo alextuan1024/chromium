@@ -1,4 +1,5 @@
 include_rules = [
+  "+device/base/public/cpp",
   "+device/bluetooth",
   "+cc/base/math_util.h",
   "+cc/debug",
@@ -72,7 +73,7 @@ include_rules = [
   "+skia/ext",
   "+third_party/cros_system_api",
   "+third_party/icu",
-  "+third_party/khronos/GLES2",
+  "+third_party/angle/include/GLES2",
   "+third_party/re2",
   "+third_party/rust/fend_core/v1/wrapper/fend_core.h",
   "+third_party/skia",
@@ -232,6 +233,7 @@ specific_include_rules = {
   ".*test\\.cc": [
     # Allowed to access user_manager in test code to set up testing environment
     # close to the production.
+    "+components/session_manager/test/user_session_test_environment.h",
     "+components/user_manager",
   ]
 }

@@ -10,6 +10,7 @@
 #include <string>
 
 #include "base/compiler_specific.h"
+#include "base/containers/flat_map.h"
 #include "base/containers/flat_set.h"
 #include "base/containers/span.h"
 #include "base/memory/scoped_refptr.h"
@@ -97,18 +98,19 @@ class EntityDataManager
   // Adds an entity if it doesn't exist in the database yet; otherwise updates
   // it.
   //
-  // `context_token` is an optional, transient token generated and encrypted by
-  // Google Wallet, certifying that the user was shown the required notice
-  // disclosures before saving a public writable pass. When provided, it is
+  // `legal_message_token` is an optional, single-use token generated and
+  // encrypted by Google Wallet, certifying that the user was shown the required
+  // notice disclosures before saving a public writable pass. When provided, it
+  // is persisted in `EntityTable` until the initial Sync commit completes and
   // forwarded to the sync server via
-  // `AutofillValuableSpecifics::context_token`. It is not persisted in the
-  // local database or stored on `entity`.
+  // `AutofillValuableSpecifics::legal_message_token`. It is not stored on
+  // `entity`.
   //
   // Each call fires Observer::OnEntityInstancesChanged() asynchronously.
   // So beware of calling this in a loop.
   void AddOrUpdateEntityInstance(
       EntityInstance entity,
-      std::optional<std::string> context_token = std::nullopt);
+      std::optional<std::string> legal_message_token = std::nullopt);
 
   // Removes an entity if it exists in the database; otherwise it's a no-op.
   //
@@ -174,9 +176,18 @@ class EntityDataManager
     observers_.RemoveObserver(observer);
   }
 
+  // Minimum interval between re-querying device re-auth availability per
+  // profile across tab creations.
+  static constexpr base::TimeDelta kReauthAvailabilityCacheDuration =
+      base::Seconds(15);
+
   // Updates the re-auth availability and `EnforceEntityReauthRequirements()` if
   // the availability has changed.
   void SetReauthAvailability(bool reauth_available);
+
+  // Returns true if re-auth availability is unset or older than
+  // `kReauthAvailabilityCacheDuration`.
+  bool ShouldUpdateReauthAvailability() const;
 
   std::optional<bool> GetReauthAvailability() const {
     return reauth_availability_;
@@ -218,13 +229,20 @@ class EntityDataManager
 
   // Posts a background task to find any cached `kPersonalContext` entities
   // in `entities_` that represent the same entity as any non-pContext entity
-  // in the cache, based on their merge constraints.
-  void DedupePersonalContextEntities();
+  // in the cache, based on their merge constraints. Logs the prefetch funnel
+  // outcome of the entities in `added_pcontext_entity_types`, which maps the
+  // GUIDs of newly added pContext entities to their types.
+  void DedupePersonalContextEntities(
+      base::flat_map<EntityInstance::EntityId, EntityType>
+          added_pcontext_entity_types);
 
-  // Callback for `DedupePersonalContextEntities()`. Removes the entities
-  // identified by `duplicate_guids` from `entities_` and notifies observers if
-  // any entities were removed.
+  // Callback for `DedupePersonalContextEntities()`. Logs the prefetch funnel
+  // outcome of the entities in `added_pcontext_entity_types`. Removes the
+  // entities identified by `duplicate_guids` from `entities_` and notifies
+  // observers if any entities were removed.
   void RemoveDuplicatePersonalContextEntities(
+      const base::flat_map<EntityInstance::EntityId, EntityType>&
+          added_pcontext_entity_types,
       absl::flat_hash_set<EntityInstance::EntityId> duplicate_guids);
 
   // Becomes true after the response of the initial LoadEntitiesFromDatabase()
@@ -234,6 +252,11 @@ class EntityDataManager
   // Indicates whether the device support biometric or lockscreen re-auth.
   // Nullopt means that the availability of re-auth is unknown.
   std::optional<bool> reauth_availability_;
+
+  // Timestamp of the last `SetReauthAvailability()` call, used to throttle
+  // redundant OS re-auth availability queries across tab creations. Null if
+  // `SetReauthAvailability()` has not been called yet.
+  base::TimeTicks last_reauth_availability_check_;
 
   // Non-null except perhaps in TestEntityDataManager, which overrides all
   // functions that access it.

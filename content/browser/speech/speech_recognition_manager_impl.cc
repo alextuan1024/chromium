@@ -172,6 +172,13 @@ class FrameSessionTracker
 
     RenderFrameHost* render_frame_host = RenderFrameHost::FromID(global_id);
     if (!render_frame_host) {
+#if BUILDFLAG(IS_CHROMEOS)
+      if (!global_id.child_id) {
+        // Browser-initiated speech recognition requests on ChromeOS (such as
+        // Dictation) do not have an associated `RenderFrameHost`.
+        return;
+      }
+#endif
       GetIOThreadTaskRunner({})->PostTask(
           FROM_HERE, base::BindOnce(frame_deleted_callback, session_id));
       return;
@@ -257,7 +264,7 @@ class FrameSessionTracker
 
   void SubscribeToPermissionControllerIfNeeded() {
     CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M159);
-    if (mic_sessions_.empty() || !subscription_id_.is_null()) {
+    if (mic_sessions_.empty() || permission_subscription_) {
       return;
     }
     PermissionController* controller =
@@ -265,7 +272,7 @@ class FrameSessionTracker
     if (!controller) {
       return;
     }
-    subscription_id_ = controller->SubscribeToPermissionResultChange(
+    permission_subscription_ = controller->SubscribeToPermissionResultChange(
         PermissionDescriptorUtil::CreatePermissionDescriptorForPermissionType(
             blink::PermissionType::AUDIO_CAPTURE),
         /*render_process_host=*/nullptr, &render_frame_host(),
@@ -284,15 +291,7 @@ class FrameSessionTracker
 
   void UnsubscribeFromPermissionController() {
     CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M159);
-    if (subscription_id_.is_null()) {
-      return;
-    }
-    PermissionController* controller =
-        render_frame_host().GetBrowserContext()->GetPermissionController();
-    if (controller) {
-      controller->UnsubscribeFromPermissionResultChange(subscription_id_);
-    }
-    subscription_id_ = PermissionController::SubscriptionId();
+    permission_subscription_.reset();
   }
 
   void OnPermissionChanged(PermissionResult permission_result) {
@@ -317,7 +316,8 @@ class FrameSessionTracker
   PermissionRevokedCallback permission_revoked_callback_;
   std::set<int> sessions_;
   std::set<int> mic_sessions_;
-  PermissionController::SubscriptionId subscription_id_;
+  std::unique_ptr<PermissionController::PermissionSubscription>
+      permission_subscription_;
   base::WeakPtrFactory<FrameSessionTracker> weak_ptr_factory_{this};
 };
 
@@ -924,6 +924,10 @@ int SpeechRecognitionManagerImpl::CreateSession(
     remote_engine_config.auth_token = config.auth_token;
     remote_engine_config.auth_scope = config.auth_scope;
     remote_engine_config.preamble = config.preamble;
+    if (delegate_) {
+      remote_engine_config.routing_params =
+          delegate_->GetRoutingParams(config.origin);
+    }
 
     std::unique_ptr<NetworkSpeechRecognitionEngineImpl> google_remote_engine =
         std::make_unique<NetworkSpeechRecognitionEngineImpl>(

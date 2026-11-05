@@ -72,7 +72,8 @@ public class TouchToFillAutofillRenderTest {
     @Rule
     public final ChromeRenderTestRule mRenderTestRule =
             ChromeRenderTestRule.Builder.withPublicCorpus()
-                    .setRevision(2)
+                    .setRevision(4)
+                    .setDescription("Reworded attribution message")
                     .setBugComponent(Component.UI_BROWSER_AUTOFILL)
                     .build();
 
@@ -134,5 +135,19 @@ public class TouchToFillAutofillRenderTest {
 
         View bottomSheetView = mActivityTestRule.getActivity().findViewById(R.id.bottom_sheet);
         mRenderTestRule.render(bottomSheetView, "touch_to_fill_autofill_personal_context_notice");
+    }
+
+    @Test
+    @MediumTest
+    @Feature({"RenderTest"})
+    public void testShowsPrivateInferenceNotice() throws IOException {
+        runOnUiThreadBlocking(
+                () -> {
+                    mCoordinator.showPrivateInferenceNotice();
+                });
+        BottomSheetTestSupport.waitForOpen(mBottomSheetController);
+
+        View bottomSheetView = mActivityTestRule.getActivity().findViewById(R.id.bottom_sheet);
+        mRenderTestRule.render(bottomSheetView, "touch_to_fill_autofill_private_inference_notice");
     }
 }

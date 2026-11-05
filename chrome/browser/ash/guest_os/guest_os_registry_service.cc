@@ -229,8 +229,9 @@ bool EqualsExcludingTimestamps(const base::DictValue& left,
       ++right_iter;
       continue;
     }
-    if (*left_iter != *right_iter)
+    if (*left_iter != *right_iter) {
       return false;
+    }
     ++left_iter;
     ++right_iter;
   }
@@ -239,7 +240,9 @@ bool EqualsExcludingTimestamps(const base::DictValue& left,
 
 void InstallIconFromFileThread(const base::FilePath& icon_path,
                                const std::string& content) {
-  CHECK(!content.empty(), base::NotFatalUntil::M160);
+  // TODO(crbug.com/571847721): CHECK-exclusion: Convert to a CHECK once we are
+  // confident it won't be triggered.
+  DCHECK(!content.empty());
 
   base::CreateDirectory(icon_path.DirName());
 
@@ -535,8 +538,11 @@ GuestOsRegistryService::GetAllRegisteredApps() const {
       prefs_->GetDict(guest_os::prefs::kGuestOsRegistry);
   std::map<std::string, GuestOsRegistryService::Registration> result;
   for (const auto item : apps) {
-    result.emplace(item.first, Registration(application_locale_storage_->Get(),
-                                            item.first, item.second.Clone()));
+    result.emplace(
+        item.first,
+        Registration(
+            std::string(application_locale_storage_->GetTag().tag_string()),
+            item.first, item.second.Clone()));
   }
   return result;
 }
@@ -601,7 +607,7 @@ GuestOsRegistryService::GetRegistration(const std::string& app_id) const {
     return std::nullopt;
   }
   return std::make_optional<Registration>(
-      application_locale_storage_->Get(), app_id,
+      std::string(application_locale_storage_->GetTag().tag_string()), app_id,
       base::Value(pref_registration->Clone()));
 }
 
@@ -805,8 +811,9 @@ void GuestOsRegistryService::ClearApplicationList(
     base::DictValue& apps = update.Get();
 
     for (const auto item : apps) {
-      Registration registration(application_locale_storage_->Get(), item.first,
-                                item.second.Clone());
+      Registration registration(
+          std::string(application_locale_storage_->GetTag().tag_string()),
+          item.first, item.second.Clone());
       if (vm_type != registration.VmType()) {
         continue;
       }
@@ -1145,7 +1152,7 @@ void GuestOsRegistryService::OnContainerAppIcon(
     return;
   }
 
-  if (icons.empty()) {
+  if (icons.empty() || icons[0].content.empty()) {
     VLOG(1) << "No icon in container for app: " << app_id;
     InvokeActiveIconCallbacks(app_id, scale_factor, std::string());
     return;

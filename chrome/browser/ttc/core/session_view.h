@@ -5,6 +5,10 @@
 #ifndef CHROME_BROWSER_TTC_CORE_SESSION_VIEW_H_
 #define CHROME_BROWSER_TTC_CORE_SESSION_VIEW_H_
 
+#include <string>
+
+#include "components/ttc/app/public/error_codes.h"
+
 namespace ttc {
 
 // Interface for the object holding and implementing all UI interaction for a
@@ -19,6 +23,15 @@ class SessionView {
   // Called when the session has finished initializing and audio capture is
   // live.
   virtual void OnSessionInitialized() = 0;
+
+  // Called when the session encounters an error.
+  virtual void OnError(ErrorCode error) = 0;
+
+  // Called when the transcripts of the current exchange change: the user's
+  // turn and the model's reply to it, each the full text so far. Either may be
+  // empty.
+  virtual void OnTranscriptionsUpdated(const std::string& user_transcript,
+                                       const std::string& model_transcript) = 0;
 };
 
 }  // namespace ttc

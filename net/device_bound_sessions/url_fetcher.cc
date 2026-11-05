@@ -68,9 +68,10 @@ URLFetcher::URLFetcher(const URLRequestContext* context,
                        const url::Origin& referring_origin,
                        std::optional<net::NetLogSource> net_log_source,
                        bool is_refresh,
+                       net::RequestPriority priority,
                        base::TimeDelta timeout)
     : request_(context->CreateRequest(url,
-                                      IDLE,
+                                      priority,
                                       this,
                                       kRegistrationTrafficAnnotation,
                                       // TODO(crbug.com/533319700): Support
@@ -91,6 +92,13 @@ URLFetcher::URLFetcher(const URLRequestContext* context,
 }
 
 URLFetcher::~URLFetcher() = default;
+
+void URLFetcher::SetShouldFollowRedirectCallback(
+    ShouldFollowRedirectCallback callback) {
+  // Must be called before `Start()`, which sets `callback_`.
+  CHECK(!callback_);
+  should_follow_redirect_callback_ = std::move(callback);
+}
 
 void URLFetcher::Start(base::OnceClosure complete_callback) {
   callback_ = std::move(complete_callback);
@@ -130,6 +138,15 @@ void URLFetcher::OnReceivedRedirect(URLRequest* request,
   // If `callback_` is null, the watchdog timer has already fired and invoked
   // `OnTimeout()`, which cancelled the request with `ERR_TIMED_OUT`.
   if (!callback_) {
+    return;
+  }
+
+  // Let the owner veto the redirect before anything is sent to the new URL.
+  if (should_follow_redirect_callback_ &&
+      !should_follow_redirect_callback_.Run(redirect_info)) {
+    *defer_redirect = true;
+    Complete(net::ERR_UNSAFE_REDIRECT);
+    // `this` may be deleted.
     return;
   }
 

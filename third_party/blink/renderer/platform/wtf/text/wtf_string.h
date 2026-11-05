@@ -87,7 +87,9 @@ class WTF_EXPORT String {
   // Does not strip BOMs.
   [[nodiscard]] static String FromUtf8(base::span<const uint8_t>);
   [[nodiscard]] static String FromUtf8(std::string_view s) {
-    return FromUtf8(base::as_byte_span(s));
+    // Not `base::as_byte_span(s)`: that is generic and costs several
+    // milliseconds of compile time in every file that includes this header.
+    return FromUtf8(base::as_bytes(base::span<const char>(s)));
   }
 
   // Tries to convert the passed in string to UTF-8, but will fall back to
@@ -95,7 +97,8 @@ class WTF_EXPORT String {
   [[nodiscard]] static String FromUtf8WithLatin1Fallback(
       base::span<const uint8_t>);
   [[nodiscard]] static String FromUtf8WithLatin1Fallback(std::string_view s) {
-    return FromUtf8WithLatin1Fallback(base::as_byte_span(s));
+    return FromUtf8WithLatin1Fallback(
+        base::as_bytes(base::span<const char>(s)));
   }
 
   template <typename CharType>
@@ -160,7 +163,7 @@ class WTF_EXPORT String {
   explicit String(base::span<const LChar> latin1_data);
   explicit String(base::span<const char> latin1_data)
       : String(base::as_bytes(latin1_data)) {}
-  explicit String(const std::string& s) : String(base::as_byte_span(s)) {}
+  explicit String(const std::string& s) : String(base::span<const char>(s)) {}
 
   // Construct a string with latin1 data, from a null-terminated source. The
   // `LChar` constructor is explicit to avoid misinterpreting byte arrays.
@@ -189,8 +192,17 @@ class WTF_EXPORT String {
 
   // `begin()` and `end()` return iterators for `UChar32`, neither `UChar` nor
   // `LChar`. If you'd like to iterate code units, use `[]` and `length()`.
-  CodePointIterator begin() const;
-  CodePointIterator end() const;
+  // Templated with a trailing return type so SFINAE cleanly excludes `begin()`
+  // (e.g. in `std::begin` / `perfetto::WriteIntoTracedValue`) when
+  // `CodePointIterator` is only forward-declared.
+  template <typename Iterator = CodePointIterator>
+  auto begin() const -> decltype(Iterator(*this)) {
+    return Iterator(*this);
+  }
+  template <typename Iterator = CodePointIterator>
+  auto end() const -> decltype(Iterator::End(*this)) {
+    return Iterator::End(*this);
+  }
 
   // [string.capacity] ----------------------------------------------
 
@@ -678,16 +690,6 @@ inline void swap(String& a, String& b) {
 template <wtf_size_t kInlineCapacity>
 String::String(const Vector<UChar, kInlineCapacity>& vector)
     : impl_(vector.size() ? StringImpl::Create(vector) : StringImpl::empty_) {}
-
-
-#ifdef __OBJC__
-// This is for situations in WebKit where the long standing behavior has been
-// "nil if empty", so we try to maintain longstanding behavior for the sake of
-// entrenched clients
-inline NSString* NsStringNilIfEmpty(const String& str) {
-  return str.empty() ? nil : (NSString*)str;
-}
-#endif
 
 // Compare strings using code units, matching Javascript string ordering.  See
 // https://infra.spec.whatwg.org/#code-unit-less-than.

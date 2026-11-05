@@ -22,6 +22,8 @@ import org.chromium.chrome.browser.toolbar.R;
 import org.chromium.chrome.browser.toolbar.account_menu.AccountMenuProperties.ItemType;
 import org.chromium.chrome.browser.ui.signin.BottomSheetSigninAndHistorySyncCoordinator;
 import org.chromium.chrome.browser.ui.signin.SigninAndHistorySyncActivityLauncher;
+import org.chromium.components.signin.SigninFeatureMap;
+import org.chromium.components.signin.SigninFeatures;
 import org.chromium.ui.UiUtils;
 import org.chromium.ui.base.WindowAndroid;
 import org.chromium.ui.listmenu.ListMenuButton;
@@ -44,14 +46,39 @@ public class AccountMenuCoordinator {
     private @Nullable AnchoredPopupWindow mPopupWindow;
     private long mLastDismissTimeMs;
 
+    /**
+     * Creates AccountMenuCoordinator object. Throws {@link java.lang.IllegalStateException} if
+     * profile is off the record.
+     *
+     * @param context {@link Context} for view management.
+     * @param profile {@link Profile} for accessing profile scoped objects. Assumes profile is not
+     *     off the record.
+     * @param windowAndroid {@link WindowAndroid} for view management.
+     * @param signinCoordinator {@link BottomSheetSigninAndHistorySyncCoordinator} for triggering
+     *     sign-in flow.
+     * @param signinLauncher {@link SigninAndHistorySyncActivityLauncher} for launching Signin
+     *     Activity.
+     */
     public AccountMenuCoordinator(
             Context context,
             Profile profile,
             WindowAndroid windowAndroid,
             @Nullable BottomSheetSigninAndHistorySyncCoordinator signinCoordinator,
             SigninAndHistorySyncActivityLauncher signinLauncher) {
+        if (profile.isOffTheRecord()) {
+            throw new IllegalStateException("Profile should not be off the record");
+        }
+
         mContext = context;
-        mContentView = LayoutInflater.from(context).inflate(R.layout.account_menu, null);
+        boolean refinementsEnabled =
+                SigninFeatureMap.isEnabled(SigninFeatures.SIGNIN_BUTTON_PROFILE_MENU_REFINEMENTS);
+        mContentView =
+                LayoutInflater.from(context)
+                        .inflate(
+                                refinementsEnabled
+                                        ? R.layout.account_menu
+                                        : R.layout.account_menu_legacy,
+                                null);
 
         RecyclerView recyclerView = (RecyclerView) mContentView;
         recyclerView.setLayoutManager(new LinearLayoutManager(context));
@@ -61,16 +88,28 @@ public class AccountMenuCoordinator {
         mAdapter = new SimpleRecyclerViewAdapter(modelList);
         mAdapter.registerType(
                 ItemType.PROMO_CARD,
-                new LayoutViewBuilder<>(R.layout.account_menu_promo_card),
+                new LayoutViewBuilder<>(
+                        refinementsEnabled
+                                ? R.layout.account_menu_promo_card
+                                : R.layout.account_menu_promo_card_legacy),
                 AccountMenuViewBinder::bindPromoCard);
         mAdapter.registerType(
                 ItemType.IDENTITY_CARD,
-                new LayoutViewBuilder<>(R.layout.account_menu_identity_card),
+                new LayoutViewBuilder<>(
+                        refinementsEnabled
+                                ? R.layout.account_menu_identity_card
+                                : R.layout.account_menu_identity_card_legacy),
                 AccountMenuViewBinder::bindIdentityCard);
         mAdapter.registerType(
                 ItemType.MENU_ITEM,
                 new LayoutViewBuilder<>(R.layout.account_menu_item),
                 AccountMenuViewBinder::bindMenuItem);
+        mAdapter.registerType(
+                ItemType.ERROR_CARD,
+                new LayoutViewBuilder<>(R.layout.signin_settings_card_view),
+                AccountMenuViewBinder::bindErrorCard);
+        // TODO(crbug.com/565733817): Remove DIVIDER registration and account_menu_divider.xml when
+        // SigninButtonProfileMenuRefinements is launched.
         mAdapter.registerType(
                 ItemType.DIVIDER,
                 new LayoutViewBuilder<>(R.layout.account_menu_divider),
@@ -100,7 +139,7 @@ public class AccountMenuCoordinator {
             return;
         }
 
-        mMediator.updateMenuItems();
+        mMediator.updateMenuItems(/* recordShownMetrics= */ true);
 
         mPopupWindow = createPopupWindow(anchorView);
         mPopupWindow.show();
@@ -126,8 +165,7 @@ public class AccountMenuCoordinator {
         // Ensure mContentView is detached from any previous popup window parent.
         UiUtils.removeViewFromParent(mContentView);
 
-        int maxMenuWidth =
-                mContext.getResources().getDimensionPixelSize(R.dimen.account_menu_max_width);
+        int menuWidth = mContext.getResources().getDimensionPixelSize(R.dimen.account_menu_width);
         return new AnchoredPopupWindow.Builder(
                         mContext,
                         anchorView,
@@ -135,7 +173,7 @@ public class AccountMenuCoordinator {
                         () -> mContentView,
                         MenuBuilderHelper.getRectProvider(anchorView))
                 .addOnDismissListener(() -> onPopupDismissed(anchorView))
-                .setMaxWidth(maxMenuWidth)
+                .setDesiredContentWidth(menuWidth)
                 .setAnimateFromAnchor(true)
                 .setDismissOnScreenSizeChange(true)
                 .setFocusable(true)

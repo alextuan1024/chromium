@@ -89,7 +89,7 @@
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/public/common/features.h"
 #include "third_party/blink/public/common/features_generated.h"
-#include "ui/base/window_open_disposition.h"
+#include "ui/base/mojom/window_open_disposition.mojom.h"
 #include "url/gurl.h"
 #include "url/origin.h"
 
@@ -925,7 +925,7 @@ IN_PROC_BROWSER_TEST_F(BrowsingDataRemoverBrowserTest, HistoryDeletion) {
   GURL url = embedded_test_server()->GetURL("/browsing_data/site_data.html");
   // Create a new tab to avoid confusion from having a NTP navigation entry.
   ui_test_utils::NavigateToURLWithDisposition(
-      GetBrowser(), url, WindowOpenDisposition::NEW_FOREGROUND_TAB,
+      GetBrowser(), url, ui::mojom::WindowOpenDisposition::kNewForegroundTab,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP);
   EXPECT_FALSE(HasDataForType(kType));
   SetDataForType(kType);
@@ -1685,9 +1685,6 @@ IN_PROC_BROWSER_TEST_F(BrowsingDataRemoverBrowserTest,
   ASSERT_THAT(
       settings_map->GetSettingsForOneType(ContentSettingsType::STORAGE_ACCESS),
       UnorderedElementsAre(kExpectedSettingDefault));
-  ASSERT_THAT(settings_map->GetSettingsForOneType(
-                  ContentSettingsType::TOP_LEVEL_STORAGE_ACCESS),
-              UnorderedElementsAre(kExpectedSettingDefault));
 
   // Set RWS grants.
   content_settings::ContentSettingConstraints constraints;
@@ -1695,9 +1692,6 @@ IN_PROC_BROWSER_TEST_F(BrowsingDataRemoverBrowserTest,
   constraints.set_decided_by_related_website_sets(true);
   settings_map->SetContentSettingDefaultScope(
       kPrimaryUrl, kSecondaryUrl, ContentSettingsType::STORAGE_ACCESS,
-      CONTENT_SETTING_ALLOW, constraints);
-  settings_map->SetContentSettingDefaultScope(
-      kPrimaryUrl, kSecondaryUrl, ContentSettingsType::TOP_LEVEL_STORAGE_ACCESS,
       CONTENT_SETTING_ALLOW, constraints);
 
   // Check that the grants were set.
@@ -1716,19 +1710,6 @@ IN_PROC_BROWSER_TEST_F(BrowsingDataRemoverBrowserTest,
               content_settings::ContentSettingToValue(CONTENT_SETTING_ALLOW),
               content_settings::ProviderType::kPrefProvider,
               /*incognito=*/false, expected_metadata.Clone())));
-  EXPECT_THAT(
-      settings_map->GetSettingsForOneType(
-          ContentSettingsType::TOP_LEVEL_STORAGE_ACCESS),
-      UnorderedElementsAre(
-          kExpectedSettingDefault,
-          ContentSettingPatternSource(
-              ContentSettingsPattern::FromURLNoWildcard(
-                  GURL(kPrimaryUrl)),  // https://subdomain.example.com:112
-              ContentSettingsPattern::FromURLToSchemefulSitePattern(
-                  GURL(kSecondaryUrl)),
-              content_settings::ContentSettingToValue(CONTENT_SETTING_ALLOW),
-              content_settings::ProviderType::kPrefProvider,
-              /*incognito=*/false, expected_metadata.Clone())));
 
   // Remove Related Website Sets storage grants.
   std::unique_ptr<BrowsingDataFilterBuilder> filter_builder =
@@ -1743,9 +1724,6 @@ IN_PROC_BROWSER_TEST_F(BrowsingDataRemoverBrowserTest,
   EXPECT_THAT(
       settings_map->GetSettingsForOneType(ContentSettingsType::STORAGE_ACCESS),
       UnorderedElementsAre(kExpectedSettingDefault));
-  EXPECT_THAT(settings_map->GetSettingsForOneType(
-                  ContentSettingsType::TOP_LEVEL_STORAGE_ACCESS),
-              UnorderedElementsAre(kExpectedSettingDefault));
 }
 
 // Some storage backend use a different code path for full deletions and

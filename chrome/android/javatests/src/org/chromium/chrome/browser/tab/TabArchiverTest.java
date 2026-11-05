@@ -57,6 +57,7 @@ import org.chromium.chrome.browser.tab.TabArchiverImpl.Clock;
 import org.chromium.chrome.browser.tab.state.ArchivePersistedTabData;
 import org.chromium.chrome.browser.tabmodel.TabClosureParams;
 import org.chromium.chrome.browser.tabmodel.TabCreator;
+import org.chromium.chrome.browser.tabmodel.TabGroupMergeNotificationType;
 import org.chromium.chrome.browser.tabmodel.TabModel;
 import org.chromium.chrome.browser.tabmodel.TabModelSelector;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
@@ -69,6 +70,7 @@ import org.chromium.components.tab_group_sync.TabGroupSyncService;
 
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.List;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -222,11 +224,6 @@ public class TabArchiverTest {
                 () ->
                         assertEquals(
                                 Tab.INVALID_TAB_ID, mArchivedTabModel.getTabAt(0).getParentId()));
-        runOnUiThreadBlocking(
-                () ->
-                        assertEquals(
-                                mArchivedTabModel.getTabAt(0).getId(),
-                                mArchivedTabModel.getTabAt(0).getRootId()));
 
         watcher =
                 HistogramWatcher.newBuilder()
@@ -282,11 +279,6 @@ public class TabArchiverTest {
                 () ->
                         assertEquals(
                                 Tab.INVALID_TAB_ID, mArchivedTabModel.getTabAt(0).getParentId()));
-        runOnUiThreadBlocking(
-                () ->
-                        assertEquals(
-                                mArchivedTabModel.getTabAt(0).getId(),
-                                mArchivedTabModel.getTabAt(0).getRootId()));
 
         watcher =
                 HistogramWatcher.newBuilder()
@@ -706,12 +698,15 @@ public class TabArchiverTest {
                     // Set the timestamp for the second and third tabs sharing the same URL (not
                     // fourth since it
                     // will be the new active tab), tab 2 at 0 and tab 3 at 1.
-                    TabImpl tab1 = ((TabImpl) mRegularTabModel.getTabAt(0));
+                    TabImpl tab1 = ((TabImpl) mRegularTabModel.getTabAtChecked(0));
                     tab1.setTimestampMillisForTesting(0);
-                    TabImpl tab2 = ((TabImpl) mRegularTabModel.getTabAt(1));
+                    TabImpl tab2 = ((TabImpl) mRegularTabModel.getTabAtChecked(1));
                     tab2.setTimestampMillisForTesting(0);
                     TabModel tabModel = mRegularTabModelSelector.getModel(false);
-                    tabModel.mergeTabsToGroup(tab2.getId(), tab1.getId());
+                    tabModel.mergeListOfTabsToGroup(
+                            List.of(tab2),
+                            tab1,
+                            TabGroupMergeNotificationType.NOTIFY_IF_NOT_NEW_GROUP);
                 });
 
         assertEquals(4, getTabCountOnUiThread(mRegularTabModel));
@@ -1021,14 +1016,11 @@ public class TabArchiverTest {
                 () -> {
                     Tab archivedTab = mArchivedTabModel.getTabAt(0);
                     assertEquals(Tab.INVALID_TAB_ID, archivedTab.getParentId());
-                    assertEquals(archivedTab.getId(), archivedTab.getRootId());
 
-                    archivedTab.setRootId(7);
                     archivedTab.setParentId(7);
 
                     mTabArchiver.ensureArchivedTabsHaveCorrectFields();
                     assertEquals(Tab.INVALID_TAB_ID, archivedTab.getParentId());
-                    assertEquals(archivedTab.getId(), archivedTab.getRootId());
                 });
     }
 

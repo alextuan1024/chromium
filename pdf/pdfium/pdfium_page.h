@@ -31,6 +31,7 @@
 #include "third_party/skia/include/core/SkBitmap.h"
 #include "ui/gfx/geometry/point_f.h"
 #include "ui/gfx/geometry/rect.h"
+#include "ui/gfx/geometry/rect_f.h"
 
 #if BUILDFLAG(ENABLE_PDF_INK2)
 #include "ui/gfx/geometry/size.h"
@@ -38,7 +39,6 @@
 
 namespace gfx {
 class Point;
-class RectF;
 }  // namespace gfx
 
 namespace chrome_pdf {
@@ -47,8 +47,10 @@ class PDFiumEngine;
 class PdfRect;
 class Thumbnail;
 struct AccessibilityCharInfo;
+struct AccessibilityFormGraphicInfo;
 struct AccessibilityHighlightInfo;
 struct AccessibilityImageInfo;
+struct AccessibilityLineSegment;
 struct AccessibilityLinkInfo;
 struct AccessibilityStructureElement;
 struct AccessibilityTextFieldInfo;
@@ -180,6 +182,20 @@ class PDFiumPage {
   // For all the highlights on the page, get their underlying text ranges and
   // bounding boxes.
   std::vector<AccessibilityHighlightInfo> GetHighlightInfo();
+
+  // For all the graphics (diagrams containing both graphical primitives and
+  // text) on the page, get their underlying text ranges and bounding boxes,
+  // sorted by text run index.
+  std::vector<AccessibilityFormGraphicInfo> GetFormGraphicInfo();
+
+  // Returns the straight line segments stroked by the page's top-level path
+  // objects, such as table borders.
+  std::vector<AccessibilityLineSegment> GetLineSegmentInfo();
+
+  // Returns the bounds of the axis-aligned rectangles filled by the page's
+  // top-level fill-only path objects, such as table borders drawn as thin
+  // filled rectangles, in the same pixel coordinates as text runs.
+  std::vector<gfx::RectF> GetFilledRectInfo();
 
   // Traverses the entire struct tree of the page recursively and extracts the
   // text run type or the alt text from struct tree elements corresponding to
@@ -343,12 +359,6 @@ class PDFiumPage {
   // Value: Index of the image in the `images_` vector.
   using MarkedContentIdToImageMap = std::map<int, size_t>;
 
-  // Track which text run indices have been associated with a structured node in
-  // order to discover which text runs are unassociated with structured
-  // elements. This information is used to determine how to interleave
-  // structured and unstructured content in the final AXTree.
-  std::set<size_t> associated_text_run_indices_;
-
   struct Link {
     Link();
     Link(const Link& that);
@@ -397,6 +407,15 @@ class PDFiumPage {
     std::string note_text;
   };
 
+  // Represents a graphic containing both graphical primitives and text.
+  struct Graphic {
+    int32_t start_char_index = -1;
+    int32_t char_count = 0;
+
+    // The bounding rect of the graphic in screen coordinates.
+    gfx::Rect bounding_rect;
+  };
+
   // Returns a link index if the given character index is over a link, or -1
   // otherwise.
   int GetLink(int char_index, LinkTarget* target);
@@ -408,6 +427,12 @@ class PDFiumPage {
   void PopulateAnnotationLinks();
   // Calculate the locations of images on the page.
   void CalculateImages();
+  // Calculate the locations and character ranges of graphics on the page.
+  void CalculateGraphics();
+  // Returns the straight line segments on the page.
+  std::vector<AccessibilityLineSegment> CalculateLineSegments();
+  // Returns the filled axis-aligned rectangles on the page.
+  std::vector<gfx::RectF> CalculateFilledRects();
   // Populate annotations like highlight and text field on the page.
   void PopulateAnnotations();
   // Populate `highlights_` with `annot`.
@@ -465,14 +490,25 @@ class PDFiumPage {
   int preventing_text_page_unload_count_ = 0;
   gfx::Rect rect_;
   bool calculated_text_runs_ = false;
-  MarkedContentIdToTextRunInfoMap marked_content_id_to_text_runs_map_;
   // Text runs are sorted by character index.
   std::vector<AccessibilityTextRunInfo> text_runs_;
+  MarkedContentIdToTextRunInfoMap marked_content_id_to_text_runs_map_;
+  // Track which text run indices have been associated with a structured node in
+  // order to discover which text runs are unassociated with structured
+  // elements. This information is used to determine how to interleave
+  // structured and unstructured content in the final AXTree.
+  std::set<size_t> associated_text_run_indices_;
   bool calculated_links_ = false;
   std::vector<Link> links_;
   bool calculated_images_ = false;
   MarkedContentIdToImageMap marked_content_id_to_images_map_;
   std::vector<Image> images_;
+  bool calculated_graphics_ = false;
+  std::vector<Graphic> graphics_;
+  // Null until calculated, since a page may have no line segments.
+  std::optional<std::vector<AccessibilityLineSegment>> line_segments_;
+  // Null until calculated, since a page may have no filled rectangles.
+  std::optional<std::vector<gfx::RectF>> filled_rects_;
   bool calculated_annotations_ = false;
   std::vector<Highlight> highlights_;
   bool calculated_page_object_text_run_breaks_ = false;

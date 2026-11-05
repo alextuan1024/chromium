@@ -976,7 +976,8 @@ shared_gpu.ci.linux_builder(
             "amd64-generic-vm",
             "ozone_headless",
             "release_builder",
-            "try_builder",
+            "dcheck_always_on",
+            "minimal_symbols",
             "remoteexec",
             "dcheck_off",
             "no_symbols",
@@ -1067,7 +1068,8 @@ shared_gpu.ci.linux_builder(
             "android_builder",
             "android_with_static_analysis",
             "release_builder",
-            "try_builder",
+            "dcheck_always_on",
+            "minimal_symbols",
             "remoteexec",
             "static_angle",
             "arm",
@@ -1113,7 +1115,8 @@ shared_gpu.ci.linux_builder(
             "android_builder",
             "android_with_static_analysis",
             "release_builder",
-            "try_builder",
+            "dcheck_always_on",
+            "minimal_symbols",
             "remoteexec",
             "arm64",
             "static_angle",
@@ -1149,7 +1152,8 @@ shared_gpu.ci.linux_builder(
             "gpu_tests",
             "linux_native_wayland",
             "release_builder",
-            "try_builder",
+            "dcheck_always_on",
+            "minimal_symbols",
             "remoteexec",
             "linux",
             "x64",
@@ -1186,7 +1190,8 @@ shared_gpu.ci.linux_builder(
         configs = [
             "gpu_fyi_tests",
             "release_builder",
-            "try_builder",
+            "dcheck_always_on",
+            "minimal_symbols",
             "remoteexec",
             "linux",
             "x64",
@@ -1256,7 +1261,8 @@ shared_gpu.ci.linux_builder(
         configs = [
             "gpu_fyi_tests",
             "release_builder",
-            "try_builder",
+            "dcheck_always_on",
+            "minimal_symbols",
             "remoteexec",
             "tsan",
             "linux",
@@ -1311,7 +1317,8 @@ shared_gpu.ci.mac_builder(
         configs = [
             "gpu_fyi_tests",
             "release_builder",
-            "try_builder",
+            "dcheck_always_on",
+            "minimal_symbols",
             "remoteexec",
             "x64",
             "mac",
@@ -1381,7 +1388,8 @@ shared_gpu.ci.mac_builder(
         configs = [
             "gpu_fyi_tests",
             "release_builder",
-            "try_builder",
+            "dcheck_always_on",
+            "minimal_symbols",
             "remoteexec",
             "arm64",
             "mac",
@@ -1419,7 +1427,8 @@ shared_gpu.ci.mac_builder(
             "mac",
             "release_builder",
             "remoteexec",
-            "try_builder",
+            "dcheck_always_on",
+            "minimal_symbols",
         ],
     ),
     targets = targets.bundle(),
@@ -1736,9 +1745,9 @@ ci.thin_tester(
 )
 
 ci.thin_tester(
-    name = "Linux FYI Release (NVIDIA RTX 4070 Super)",
-    description_html = "Runs release GPU tests on stable Linux/NVIDIA RTX 4070 Super configs",
-    parent = "GPU FYI Linux Builder",
+    name = "Linux Wayland FYI Release (NVIDIA RTX 4070 Super)",
+    description_html = "Runs release GPU tests with Wayland enabled on stable Linux/NVIDIA RTX 4070 Super configs",
+    parent = "GPU FYI Linux Wayland Builder",
     builder_spec = gpu_fyi_thin_tester_builder_spec(
         gclient_config = builder_config.gclient_config(
             config = "chromium",
@@ -1756,18 +1765,28 @@ ci.thin_tester(
     targets = targets.bundle(
         targets = [
             "gpu_all_linux_release_gtests",
-            "gpu_all_linux_release_telemetry_tests",
+            "gpu_all_linux_wayland_release_telemetry_tests",
         ],
         mixins = [
-            "linux_nvidia_rtx_4070_super_stable",
+            "linux_nvidia_rtx_4070_super_wayland_stable",
         ],
+        per_test_modifications = {
+            "gl_tests_passthrough": targets.mixin(
+                args = [
+                    "--test-launcher-filter-file=../../testing/buildbot/filters/linux.rtx_4070_super.wayland.gl_tests_passthrough.filter",
+                ],
+            ),
+            "vulkan_pixel_skia_gold_test": targets.remove(
+                reason = "TODO(crbug.com/571913992): Re-enable once vulkan_pixel_skia_gold_test passes on Wayland",
+            ),
+        },
     ),
     targets_settings = targets.settings(
         browser_config = targets.browser_config.RELEASE,
         os_type = targets.os_type.LINUX,
     ),
     console_view_entry = consoles.console_view_entry(
-        category = "Linux|Nvidia",
+        category = "Linux|Wayland|Nvidia",
         short_name = "4070",
     ),
 )
@@ -1986,8 +2005,8 @@ ci.thin_tester(
 
 ci.thin_tester(
     name = "Linux FYI Release (Intel UHD 770)",
-    description_html = "Runs release GPU tests on stable Linux/Intel UHD 630 configs",
-    parent = "GPU FYI Linux Builder",
+    description_html = "Runs release GPU tests with Wayland enabled on stable Linux/Intel UHD 770 configs",
+    parent = "GPU FYI Linux Wayland Builder",
     builder_spec = gpu_fyi_thin_tester_builder_spec(
         gclient_config = builder_config.gclient_config(
             config = "chromium",
@@ -2005,10 +2024,10 @@ ci.thin_tester(
     targets = targets.bundle(
         targets = [
             "gpu_all_linux_release_gtests",
-            "gpu_all_linux_release_telemetry_tests",
+            "gpu_all_linux_wayland_release_telemetry_tests",
         ],
         mixins = [
-            "linux_intel_uhd_770_stable",
+            "linux_intel_uhd_770_wayland_stable",
         ],
         per_test_modifications = {
             "gl_tests_passthrough": targets.mixin(
@@ -2026,7 +2045,7 @@ ci.thin_tester(
         os_type = targets.os_type.LINUX,
     ),
     console_view_entry = consoles.console_view_entry(
-        category = "Linux|Intel",
+        category = "Linux|Wayland|Intel",
         short_name = "770",
     ),
 )
@@ -2513,11 +2532,6 @@ ci.thin_tester(
                     "--extra-browser-args=--disable-metal-shader-cache",
                 ],
             ),
-            "gl_tests_passthrough": targets.mixin(
-                args = [
-                    "--test-launcher-filter-file=../../testing/buildbot/filters/mac.m2.asan.gl_tests_passthrough.filter",
-                ],
-            ),
         },
     ),
     targets_settings = targets.settings(
@@ -2674,13 +2688,6 @@ ci.thin_tester(
                 reason = [
                     "TODO(crbug.com/40912267): Enable Media Foundation browser tests on NVIDIA",
                     "gpu bots once the Windows OS supports HW secure decryption.",
-                ],
-            ),
-
-            # TODO(crbug.com/380431384): Re-enable when fixed
-            "webgl_conformance_vulkan_passthrough_tests": targets.remove(
-                reason = [
-                    "crbug.com/380431384 flaky crashes in random tests",
                 ],
             ),
         },
@@ -2992,9 +2999,6 @@ ci.thin_tester(
             "screenshot_sync_passthrough_graphite_tests": targets.remove(
                 reason = "crbug.com/541312843 enable these tests after the test bundle standardization lands",
             ),
-            "webgl_conformance_vulkan_passthrough_tests": targets.remove(
-                reason = "crbug.com/541312843 enable these tests after the test bundle standardization lands",
-            ),
         },
     ),
     targets_settings = targets.settings(
@@ -3207,12 +3211,6 @@ ci.thin_tester(
                     "gpu bots once the Windows OS supports HW secure decryption.",
                 ],
             ),
-            # TODO(crbug.com/380431384): Re-enable when fixed
-            "webgl_conformance_vulkan_passthrough_tests": targets.remove(
-                reason = [
-                    "crbug.com/380431384 flaky crashes in random tests",
-                ],
-            ),
             "pixel_skia_gold_passthrough_graphite_test": targets.per_test_modification(
                 mixins = targets.mixin(
                     args = [
@@ -3337,9 +3335,6 @@ ci.thin_tester(
                 reason = "crbug.com/541312843 enable these tests after the test bundle standardization lands",
             ),
             "screenshot_sync_passthrough_graphite_tests": targets.remove(
-                reason = "crbug.com/541312843 enable these tests after the test bundle standardization lands",
-            ),
-            "webgl_conformance_vulkan_passthrough_tests": targets.remove(
                 reason = "crbug.com/541312843 enable these tests after the test bundle standardization lands",
             ),
         },
@@ -3500,9 +3495,6 @@ ci.thin_tester(
                 reason = "crbug.com/541312843 enable these tests after the test bundle standardization lands",
             ),
             "screenshot_sync_passthrough_graphite_tests": targets.remove(
-                reason = "crbug.com/541312843 enable these tests after the test bundle standardization lands",
-            ),
-            "webgl_conformance_vulkan_passthrough_tests": targets.remove(
                 reason = "crbug.com/541312843 enable these tests after the test bundle standardization lands",
             ),
         },
@@ -3708,12 +3700,6 @@ ci.thin_tester(
                     "gpu bots once the Windows OS supports HW secure decryption.",
                 ],
             ),
-            # TODO(crbug.com/380431384): Re-enable when fixed
-            "webgl_conformance_vulkan_passthrough_tests": targets.remove(
-                reason = [
-                    "crbug.com/380431384 flaky crashes in random tests",
-                ],
-            ),
             "pixel_skia_gold_passthrough_graphite_test": targets.per_test_modification(
                 mixins = targets.mixin(
                     args = [
@@ -3784,12 +3770,6 @@ ci.thin_tester(
             "win11_qualcomm_snapdragon_x_elite_stable",
         ],
         per_test_modifications = {
-            "context_lost_passthrough_graphite_tests": targets.remove(
-                reason = "Graphite on ARM is currently not supported.",
-            ),
-            "expected_color_pixel_passthrough_graphite_test": targets.remove(
-                reason = "Graphite on ARM is currently not supported.",
-            ),
             "gl_tests_passthrough": targets.mixin(
                 args = [
                     "--test-launcher-filter-file=../../testing/buildbot/filters/win.qualcomm.snapdragon_x_elite.gl_tests_passthrough.filter",
@@ -3799,12 +3779,6 @@ ci.thin_tester(
                 args = [
                     "--test-launcher-filter-file=../../testing/buildbot/filters/win.qualcomm.snapdragon_x_elite.gl_unittests.filter",
                 ],
-            ),
-            "pixel_skia_gold_passthrough_graphite_test": targets.remove(
-                reason = "Graphite on ARM is currently not supported.",
-            ),
-            "screenshot_sync_passthrough_graphite_tests": targets.remove(
-                reason = "Graphite on ARM is currently not supported.",
             ),
             "services_webnn_unittests": targets.mixin(
                 args = [
@@ -3866,7 +3840,8 @@ gpu_fyi_windows_builder(
             "arm64",
             "gpu_fyi_tests",
             "release_builder",
-            "try_builder",
+            "dcheck_always_on",
+            "minimal_symbols",
             "remoteexec",
             "win",
         ],
@@ -3899,7 +3874,8 @@ gpu_fyi_windows_builder(
         configs = [
             "gpu_fyi_tests",
             "release_builder",
-            "try_builder",
+            "dcheck_always_on",
+            "minimal_symbols",
             "remoteexec",
             "x86",
             "win",
@@ -3934,7 +3910,8 @@ gpu_fyi_windows_builder(
         configs = [
             "gpu_fyi_tests",
             "release_builder",
-            "try_builder",
+            "dcheck_always_on",
+            "minimal_symbols",
             "remoteexec",
             # Remove this once the decision to use cross-compilation or not in
             # crbug.com/1510985 is made.
@@ -4004,7 +3981,8 @@ gpu_fyi_windows_builder(
             "gpu_fyi_tests",
             "dx12vk",
             "release_builder",
-            "try_builder",
+            "dcheck_always_on",
+            "minimal_symbols",
             "remoteexec",
             "win",
             "x64",
@@ -4079,7 +4057,8 @@ gpu_fyi_windows_builder(
         configs = [
             "gpu_fyi_tests",
             "release_builder",
-            "try_builder",
+            "dcheck_always_on",
+            "minimal_symbols",
             "remoteexec",
             "win",
             "x64",

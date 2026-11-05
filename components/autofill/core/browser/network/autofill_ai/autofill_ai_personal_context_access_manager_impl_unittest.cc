@@ -7,6 +7,7 @@
 #include <memory>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #include "base/scoped_observation.h"
@@ -14,11 +15,12 @@
 #include "base/test/gmock_callback_support.h"
 #include "base/test/gmock_move_support.h"
 #include "base/test/metrics/histogram_tester.h"
+#include "base/test/run_until.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/test/task_environment.h"
 #include "base/test/test_future.h"
 #include "base/time/time.h"
-#include "components/autofill/core/browser/data_manager/autofill_ai/in_memory_entity_suppression_manager.h"
+#include "components/autofill/core/browser/data_manager/autofill_ai/personal_context_entity_metadata_manager.h"
 #include "components/autofill/core/browser/data_model/autofill_ai/entity_type.h"
 #include "components/autofill/core/browser/data_model/autofill_ai/entity_type_names.h"
 #include "components/autofill/core/browser/data_model/data_model_util.h"
@@ -28,6 +30,8 @@
 #include "components/autofill/core/browser/network/autofill_ai/personal_context_conversion_util.h"
 #include "components/autofill/core/browser/test_utils/entity_data_test_util.h"
 #include "components/autofill/core/browser/test_utils/personal_context_test_util.h"
+#include "components/autofill/core/browser/webdata/personal_context/personal_context_entity_metadata_sync_bridge.h"
+#include "components/autofill/core/browser/webdata/personal_context/personal_context_entity_metadata_sync_bridge_test_util.h"
 #include "components/autofill/core/common/autofill_features.h"
 #include "components/personal_context/core/mock_personal_context_eligibility_service.h"
 #include "components/personal_context/core/mock_personal_context_service.h"
@@ -38,8 +42,6 @@
 #include "components/personal_context/proto/features/ambient_autofill.pb.h"
 #include "components/prefs/pref_registry_simple.h"
 #include "components/prefs/testing_pref_service.h"
-#include "components/subscription_eligibility/subscription_eligibility_prefs.h"
-#include "components/subscription_eligibility/subscription_eligibility_service.h"
 #include "components/sync_device_info/fake_device_info_sync_service.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -195,16 +197,17 @@ class AutofillAiPersonalContextAccessManagerImplTest : public testing::Test {
         {{features::kAutofillAmbientAutofillSupportedEntityTypes.name,
           kSupportedEntityTypes}});
     personal_context::prefs::RegisterProfilePrefs(pref_service_.registry());
-    pref_service_.registry()->RegisterIntegerPref(
-        subscription_eligibility::prefs::kAiSubscriptionTier, 0);
-    subscription_eligibility_service_ = std::make_unique<
-        subscription_eligibility::SubscriptionEligibilityService>(
-        &pref_service_);
+    std::unique_ptr<PersonalContextEntityMetadataSyncBridge> bridge =
+        CreateTestPersonalContextEntityMetadataSyncBridge();
+    EXPECT_TRUE(base::test::RunUntil([&]() { return bridge->IsLoaded(); }));
+    entity_metadata_manager_ =
+        std::make_unique<PersonalContextEntityMetadataManager>(
+            std::move(bridge));
     access_manager_ =
         std::make_unique<AutofillAiPersonalContextAccessManagerImpl>(
             &mock_personal_context_service_, &mock_eligibility_service_,
-            subscription_eligibility_service_.get(), &pref_service_,
-            &fake_device_info_sync_service_, &suppression_manager_);
+            &pref_service_, &fake_device_info_sync_service_,
+            entity_metadata_manager_.get());
     ON_CALL(mock_eligibility_service_, GetEligibilityState)
         .WillByDefault(Return(
             personal_context::PersonalContextEligibilityState::kEligible));
@@ -219,8 +222,8 @@ class AutofillAiPersonalContextAccessManagerImplTest : public testing::Test {
     return *access_manager_;
   }
 
-  EntitySuppressionManager& suppression_manager() {
-    return suppression_manager_;
+  PersonalContextEntityMetadataManager& entity_metadata_manager() {
+    return *entity_metadata_manager_;
   }
 
   syncer::FakeDeviceInfoSyncService& fake_device_info_sync_service() {
@@ -358,10 +361,9 @@ class AutofillAiPersonalContextAccessManagerImplTest : public testing::Test {
       base::test::TaskEnvironment::TimeSource::MOCK_TIME};
   MockPersonalContextService mock_personal_context_service_;
   MockPersonalContextEligibilityService mock_eligibility_service_;
-  std::unique_ptr<subscription_eligibility::SubscriptionEligibilityService>
-      subscription_eligibility_service_;
   syncer::FakeDeviceInfoSyncService fake_device_info_sync_service_;
-  InMemoryEntitySuppressionManager suppression_manager_;
+  std::unique_ptr<PersonalContextEntityMetadataManager>
+      entity_metadata_manager_;
   std::unique_ptr<AutofillAiPersonalContextAccessManagerImpl> access_manager_;
   MockAutofillAiPersonalContextAccessManagerObserver mock_observer_;
   base::ScopedObservation<AutofillAiPersonalContextAccessManagerImpl,
@@ -393,6 +395,8 @@ TEST_F(AutofillAiPersonalContextAccessManagerImplTest, PrefetchContextSuccess) {
                   HasAttributeWithValue(AttributeTypeName::kOrderId, u"12345"),
                   HasAttributeWithValue(AttributeTypeName::kOrderMerchantName,
                                         u"Amazon"))));
+  histogram_tester().ExpectUniqueSample(
+      "Autofill.Ai.Suppression.EntitiesFilteredPerPrefetch", 0, 1);
 }
 
 // Tests that PrefetchContext ignores entity types in the response that were
@@ -1198,6 +1202,28 @@ TEST_F(AutofillAiPersonalContextAccessManagerImplTest, WipeStateOnDisablement) {
   EXPECT_FALSE(access_manager().IsTypePrefetched(kPassportType));
 }
 
+// Tests that when OnContextSourceDisabled is called, all cached state is wiped.
+TEST_F(AutofillAiPersonalContextAccessManagerImplTest,
+       WipeStateOnContextSourceDisabled) {
+  EntityInstance::EntityId passport_guid = PrefetchMaskedPassportAndGetGuid();
+  EntityInstance passport_unmasked =
+      test::GetPassportEntityInstance(
+          {.record_type = EntityInstance::RecordType::kPersonalContext})
+          .CopyWithNewEntityId(passport_guid);
+  test_api(access_manager()).CacheUnmaskedSpiiEntity(passport_unmasked);
+
+  ASSERT_TRUE(access_manager().IsTypePrefetched(kPassportType));
+  ASSERT_TRUE(access_manager().ServerHasSpiiPresenceSignal(kPassportType));
+  ASSERT_EQ(GetUnmaskedSpiiEntitySync(passport_guid), passport_unmasked);
+
+  EXPECT_CALL(mock_observer(), OnMaskedEntityTypeEvicted(_, kPassportType));
+  access_manager().OnContextSourceDisabled();
+
+  EXPECT_FALSE(access_manager().IsTypePrefetched(kPassportType));
+  EXPECT_FALSE(access_manager().ServerHasSpiiPresenceSignal(kPassportType));
+  EXPECT_EQ(GetUnmaskedSpiiEntitySync(passport_guid), std::nullopt);
+}
+
 // Tests that a pending request blocks subsequent requests for the same type.
 TEST_F(AutofillAiPersonalContextAccessManagerImplTest,
        PendingRequestBlocksSubsequent) {
@@ -1525,12 +1551,6 @@ TEST_F(AutofillAiPersonalContextAccessManagerImplTest,
 // a 30-second startup delay.
 TEST_F(AutofillAiPersonalContextAccessManagerImplTest,
        LogsAmbientNonEligibilityReasonAfterStartupDelay) {
-  base::test::ScopedFeatureList feature_list;
-  feature_list.InitWithFeaturesAndParameters(
-      {{features::kAutofillAmbientAutofill,
-        {{features::kAutofillAmbientAutofillEligibleTiers.name, "1,2"}}}},
-      {});
-
   // Before the startup delay, startup logging should not have occurred.
   histogram_tester().ExpectTotalCount(
       "Autofill.Ai.PersonalContext.NonEligibilityReason", 0);
@@ -1543,49 +1563,9 @@ TEST_F(AutofillAiPersonalContextAccessManagerImplTest,
 }
 
 // Tests that `Autofill.Ai.PersonalContext.NonEligibilityReason` is logged on
-// subscription tier updates after the startup delay has elapsed.
-TEST_F(AutofillAiPersonalContextAccessManagerImplTest,
-       LogsAmbientNonEligibilityReasonOnTierChange) {
-  base::test::ScopedFeatureList feature_list;
-  feature_list.InitWithFeaturesAndParameters(
-      {{features::kAutofillAmbientAutofill,
-        {{features::kAutofillAmbientAutofillEligibleTiers.name, "1,2"}}}},
-      {});
-
-  // Set tier to an eligible tier (1) before startup logging triggers.
-  pref_service_.SetInteger(subscription_eligibility::prefs::kAiSubscriptionTier,
-                           1);
-
-  // Fast forward past the startup delay to complete startup logging (records
-  // kEligible).
-  FastForwardBy(kNonEligibilityLoggingDelayOnStartup + base::Seconds(1));
-
-  histogram_tester().ExpectBucketCount(
-      "Autofill.Ai.PersonalContext.NonEligibilityReason",
-      personal_context::PersonalContextNonEligibilityReason::kEligible, 1);
-
-  // Then change tier to an ineligible tier (99).
-  pref_service_.SetInteger(subscription_eligibility::prefs::kAiSubscriptionTier,
-                           99);
-  histogram_tester().ExpectBucketCount(
-      "Autofill.Ai.PersonalContext.NonEligibilityReason",
-      personal_context::PersonalContextNonEligibilityReason::
-          kNotG1SubscriberOrAndroidPremiumDevice,
-      1);
-}
-
-// Tests that `Autofill.Ai.PersonalContext.NonEligibilityReason` is logged on
 // settings toggle updates after the startup delay has elapsed.
 TEST_F(AutofillAiPersonalContextAccessManagerImplTest,
        LogsAmbientNonEligibilityReasonOnToggleChange) {
-  base::test::ScopedFeatureList feature_list;
-  feature_list.InitWithFeaturesAndParameters(
-      {{features::kAutofillAmbientAutofill,
-        {{features::kAutofillAmbientAutofillEligibleTiers.name, "1,2"}}}},
-      {});
-
-  pref_service_.SetInteger(subscription_eligibility::prefs::kAiSubscriptionTier,
-                           1);
   FastForwardBy(kNonEligibilityLoggingDelayOnStartup + base::Seconds(1));
 
   histogram_tester().ExpectBucketCount(
@@ -1609,29 +1589,6 @@ TEST_F(AutofillAiPersonalContextAccessManagerImplTest,
       personal_context::PersonalContextNonEligibilityReason::kEligible, 2);
 }
 
-// Tests that `PrefetchContext` populates the `client_id` field of
-// `ContextMemoryAmbientAutofillRequest` using the cache GUID retrieved from
-// `DeviceInfoSyncService`.
-TEST_F(AutofillAiPersonalContextAccessManagerImplTest,
-       PrefetchContext_PopulatesClientIdFromCacheGuid) {
-  EXPECT_CALL(
-      mock_personal_context_service(),
-      FetchContext(
-          personal_context::proto::CONTEXT_MEMORY_FEATURE_AMBIENT_AUTOFILL,
-          MatchContextFetchRequestWithClientId(
-              std::vector<personal_context::proto::EntityType>{
-                  AutofillEntityTypeToPersonalContextEntityType(kOrderType)},
-              /*expected_presence=*/false,
-              /*expected_client_id=*/
-              fake_device_info_sync_service()
-                  .GetLocalDeviceInfoProvider()
-                  ->GetLocalDeviceInfo()
-                  ->guid()),
-          _, _));
-
-  access_manager().PrefetchContext({kOrderType});
-}
-
 // Tests that `PrefetchContext` populates an empty `client_id` when local device
 // info is unavailable.
 TEST_F(AutofillAiPersonalContextAccessManagerImplTest,
@@ -1653,7 +1610,8 @@ TEST_F(AutofillAiPersonalContextAccessManagerImplTest,
 }
 
 // Tests that prefetched personal context entities that are suppressed in the
-// `EntitySuppressionManager` are filtered out before notifying observers.
+// `PersonalContextEntityMetadataManager` are filtered out before notifying
+// observers.
 TEST_F(AutofillAiPersonalContextAccessManagerImplTest,
        PrefetchContext_SuppressedEntitiesAreFiltered) {
   personal_context::proto::ContextMemoryAmbientAutofillResponse response;
@@ -1669,7 +1627,7 @@ TEST_F(AutofillAiPersonalContextAccessManagerImplTest,
   order2->set_merchant_name("Merchant2");
   *order2->mutable_order_date() = TodayWithDelta();
 
-  suppression_manager().SuppressEntity(
+  entity_metadata_manager().SuppressEntity(
       *PersonalContextEntityToEntityInstance(response.entities(0)));
 
   EXPECT_CALL(mock_observer(),
@@ -1678,6 +1636,9 @@ TEST_F(AutofillAiPersonalContextAccessManagerImplTest,
                          AttributeTypeName::kOrderId, u"ORD2")))));
 
   PrefetchContextSync({kOrderType}, {}, response);
+
+  histogram_tester().ExpectUniqueSample(
+      "Autofill.Ai.Suppression.EntitiesFilteredPerPrefetch", 1, 1);
 }
 
 // Tests that suppressing an entity evicts cached masked entities and re-emits
@@ -1708,7 +1669,7 @@ TEST_F(AutofillAiPersonalContextAccessManagerImplTest,
                   _, Optional(ElementsAre(HasAttributeWithValue(
                          AttributeTypeName::kOrderId, u"ORD2")))));
 
-  suppression_manager().SuppressEntity(
+  entity_metadata_manager().SuppressEntity(
       *PersonalContextEntityToEntityInstance(response.entities(0)));
 }
 
@@ -1731,7 +1692,7 @@ TEST_F(AutofillAiPersonalContextAccessManagerImplTest,
 
   EntityInstance order1_instance =
       *PersonalContextEntityToEntityInstance(response.entities(0));
-  suppression_manager().SuppressEntity(order1_instance);
+  entity_metadata_manager().SuppressEntity(order1_instance);
 
   EXPECT_CALL(mock_observer(), OnPrefetchContextComplete);
   PrefetchContextSync({kOrderType}, {}, response);
@@ -1747,7 +1708,8 @@ TEST_F(AutofillAiPersonalContextAccessManagerImplTest,
               HasAttributeWithValue(AttributeTypeName::kOrderId, u"ORD1"),
               HasAttributeWithValue(AttributeTypeName::kOrderId, u"ORD2")))));
 
-  suppression_manager().UnsuppressEntity(order1_instance);
+  entity_metadata_manager().UndoInSessionSuppressedEntity(
+      order1_instance.guid());
 }
 
 // Tests that OnEntitySuppressionsChanged is a no-op when the proto cache is
@@ -1758,7 +1720,7 @@ TEST_F(AutofillAiPersonalContextAccessManagerImplTest,
   EXPECT_CALL(mock_observer(), OnPrefetchContextComplete).Times(0);
 
   EntityInstance passport = test::GetPassportEntityInstance();
-  suppression_manager().SuppressEntity(passport);
+  entity_metadata_manager().SuppressEntity(passport);
 }
 
 class AutofillAiPersonalContextAccessManagerImplSpiiCacheTest
@@ -1855,6 +1817,29 @@ class AutofillAiPersonalContextAccessManagerImplSpiiCacheTest
   base::test::ScopedFeatureList feature_list_{
       features::kAutofillAmbientAutofillSpiiCache};
 };
+
+// Tests that `PrefetchContext` populates the `client_id` field of
+// `ContextMemoryAmbientAutofillRequest` using the cache GUID retrieved from
+// `DeviceInfoSyncService`.
+TEST_F(AutofillAiPersonalContextAccessManagerImplSpiiCacheTest,
+       PrefetchContext_PopulatesClientIdFromCacheGuid) {
+  EXPECT_CALL(
+      mock_personal_context_service(),
+      FetchContext(
+          personal_context::proto::CONTEXT_MEMORY_FEATURE_AMBIENT_AUTOFILL,
+          MatchContextFetchRequestWithClientId(
+              std::vector<personal_context::proto::EntityType>{
+                  AutofillEntityTypeToPersonalContextEntityType(kOrderType)},
+              /*expected_presence=*/false,
+              /*expected_client_id=*/
+              fake_device_info_sync_service()
+                  .GetLocalDeviceInfoProvider()
+                  ->GetLocalDeviceInfo()
+                  ->guid()),
+          _, _));
+
+  access_manager().PrefetchContext({kOrderType});
+}
 
 // Tests that when `kAutofillAmbientAutofillSpiiCache` is enabled, prefetching
 // SPII types sends a single request that does not ask for SPII presence, and
@@ -2455,13 +2440,29 @@ TEST_F(AutofillAiPersonalContextAccessManagerImplTest,
   drive_order.add_source_references()->mutable_drive();
   *response.add_entities() = std::move(drive_order);
 
-  // 3. Order with a valid Gmail source reference -> kValid
+  // 3. Order with an invalid source URL -> kFailedMissingSource
+  personal_context::proto::Entity invalid_url_order =
+      CreateOrderProto({.id = u"INVALID_URL_SOURCE",
+                        .date = u"2025-06-01",
+                        .merchant_name = u"Store"});
+  personal_context::proto::GmailReference* invalid_gmail =
+      invalid_url_order.add_source_references()->mutable_gmail();
+  invalid_gmail->mutable_message_urls()->set_desktop_web_url("invalid_url");
+  invalid_gmail->mutable_message_urls()->set_mobile_web_url("invalid_url");
+  *response.add_entities() = std::move(invalid_url_order);
+
+  // 4. Order with a valid Gmail source reference -> kValid
   personal_context::proto::Entity valid_order =
       CreateOrderProto({.id = u"VALID_SOURCE",
                         .date = u"2025-06-01",
                         .merchant_name = u"Store"});
-  valid_order.add_source_references()->mutable_gmail()->set_message_url(
-      "https://mail.google.com/mail/u/0/#inbox/123");
+  personal_context::proto::GmailReference* valid_gmail =
+      valid_order.add_source_references()->mutable_gmail();
+  valid_gmail->mutable_message_urls()->set_desktop_web_url(
+      "https://mail.google.com/mail/#inbox/123");
+  valid_gmail->mutable_message_urls()->set_mobile_web_url(
+      "https://mail.google.com/mail/mu/mp/#cv/Inbox/123");
+  valid_gmail->set_subject("Order Confirmation");
   *response.add_entities() = std::move(valid_order);
 
   std::vector<EntityInstance> entities;
@@ -2481,14 +2482,192 @@ TEST_F(AutofillAiPersonalContextAccessManagerImplTest,
 
   histogram_tester().ExpectBucketCount(kBaseMetric, Result::kValid, 1);
   histogram_tester().ExpectBucketCount(kBaseMetric,
-                                       Result::kFailedMissingSource, 2);
-  histogram_tester().ExpectTotalCount(kBaseMetric, 3);
+                                       Result::kFailedMissingSource, 3);
+  histogram_tester().ExpectTotalCount(kBaseMetric, 4);
 
   histogram_tester().ExpectBucketCount(base::StrCat({kBaseMetric, ".Order"}),
                                        Result::kValid, 1);
   histogram_tester().ExpectBucketCount(base::StrCat({kBaseMetric, ".Order"}),
-                                       Result::kFailedMissingSource, 2);
-  histogram_tester().ExpectTotalCount(base::StrCat({kBaseMetric, ".Order"}), 3);
+                                       Result::kFailedMissingSource, 3);
+  histogram_tester().ExpectTotalCount(base::StrCat({kBaseMetric, ".Order"}), 4);
+}
+
+TEST_F(AutofillAiPersonalContextAccessManagerImplTest,
+       Prefetch_RecordsEntitySourceCountMetrics) {
+  SetClockToDate("2025-06-01 12:00:00");
+
+  personal_context::proto::ContextMemoryAmbientAutofillResponse response;
+
+  // 1. Valid Order with 2 valid sources (Gmail + Photos) and 1 invalid source
+  // (Drive).
+  personal_context::proto::Entity order_with_two_sources = CreateOrderProto(
+      {.id = u"ORDER_1", .date = u"2025-06-01", .merchant_name = u"Store"});
+  personal_context::proto::GmailReference* gmail =
+      order_with_two_sources.add_source_references()->mutable_gmail();
+  gmail->mutable_message_urls()->set_desktop_web_url(
+      "https://mail.google.com/mail/#inbox/123");
+  gmail->mutable_message_urls()->set_mobile_web_url(
+      "https://mail.google.com/mail/mu/mp/#cv/Inbox/123");
+  gmail->set_subject("Order Confirmation");
+
+  personal_context::proto::PhotosReference* photos =
+      order_with_two_sources.add_source_references()->mutable_photos();
+  photos->set_photos_url("https://photos.google.com/photo/abc");
+  photos->mutable_timestamp()->set_year(2025);
+  photos->mutable_timestamp()->set_month(6);
+  photos->mutable_timestamp()->set_day(1);
+  photos->mutable_timestamp()->set_hours(12);
+
+  order_with_two_sources.add_source_references()->mutable_drive();
+  *response.add_entities() = std::move(order_with_two_sources);
+
+  // 2. Expired (invalid) Order with 1 valid source -> should not be recorded.
+  personal_context::proto::Entity expired_order = CreateOrderProto(
+      {.id = u"EXPIRED", .date = u"2025-01-01", .merchant_name = u"Store"});
+  personal_context::proto::GmailReference* expired_gmail =
+      expired_order.add_source_references()->mutable_gmail();
+  expired_gmail->mutable_message_urls()->set_desktop_web_url(
+      "https://mail.google.com/mail/#inbox/456");
+  expired_gmail->mutable_message_urls()->set_mobile_web_url(
+      "https://mail.google.com/mail/mu/mp/#cv/Inbox/456");
+  expired_gmail->set_subject("Old Order");
+  *response.add_entities() = std::move(expired_order);
+
+  // 3. Suppressed Order with 1 valid source -> should not be recorded.
+  personal_context::proto::Entity suppressed_order = CreateOrderProto(
+      {.id = u"SUPPRESSED", .date = u"2025-06-01", .merchant_name = u"Store"});
+  personal_context::proto::GmailReference* suppressed_gmail =
+      suppressed_order.add_source_references()->mutable_gmail();
+  suppressed_gmail->mutable_message_urls()->set_desktop_web_url(
+      "https://mail.google.com/mail/#inbox/789");
+  suppressed_gmail->mutable_message_urls()->set_mobile_web_url(
+      "https://mail.google.com/mail/mu/mp/#cv/Inbox/789");
+  suppressed_gmail->set_subject("Suppressed Order");
+  entity_metadata_manager().SuppressEntity(
+      *PersonalContextEntityToEntityInstance(suppressed_order));
+  *response.add_entities() = std::move(suppressed_order);
+
+  // 4. Valid Vehicle with 0 sources.
+  *response.add_entities() =
+      CreateVehicleProto({.plate = u"VALID", .number = nullptr});
+
+  EXPECT_CALL(mock_observer(),
+              OnPrefetchContextComplete(_, Optional(Not(IsEmpty()))));
+
+  PrefetchContextSync({kOrderType, kVehicleType}, /*expected_spii_types=*/{},
+                      response);
+
+  static constexpr std::string_view kSourceCountMetric =
+      "Autofill.Ai.PersonalContext.Prefetch.EntitySourceCount";
+  histogram_tester().ExpectBucketCount(kSourceCountMetric, 0, 1);
+  histogram_tester().ExpectBucketCount(kSourceCountMetric, 2, 1);
+  histogram_tester().ExpectTotalCount(kSourceCountMetric, 2);
+
+  histogram_tester().ExpectUniqueSample(
+      base::StrCat({kSourceCountMetric, ".Order"}), 2, 1);
+  histogram_tester().ExpectUniqueSample(
+      base::StrCat({kSourceCountMetric, ".Vehicle"}), 0, 1);
+}
+
+// Tests that entities that cannot be parsed are recorded in the aggregate
+// entity funnel metric only, since their type is unknown.
+TEST_F(AutofillAiPersonalContextAccessManagerImplTest,
+       Prefetch_RecordsParsingFailedEntityFunnelOutcome) {
+  personal_context::proto::ContextMemoryAmbientAutofillResponse response;
+  // An entity without a known entity case cannot be parsed.
+  response.add_entities();
+
+  EXPECT_CALL(mock_observer(),
+              OnPrefetchContextComplete(_, Optional(IsEmpty())));
+  PrefetchContextSync({kOrderType}, /*expected_spii_types=*/{}, response);
+
+  histogram_tester().ExpectUniqueSample(
+      "Autofill.Ai.PersonalContext.Prefetch.EntityFunnel",
+      PersonalContextPrefetchEntityFunnelOutcome::kParsingFailed, 1);
+  EXPECT_THAT(histogram_tester().GetTotalCountsForPrefix(
+                  "Autofill.Ai.PersonalContext.Prefetch.EntityFunnel."),
+              IsEmpty());
+}
+
+// Tests that entities that do not satisfy the requirements of Ambient Autofill
+// are recorded as invalid in the entity funnel metric.
+TEST_F(AutofillAiPersonalContextAccessManagerImplTest,
+       Prefetch_RecordsInvalidEntityFunnelOutcome) {
+  SetClockToDate("2025-06-01 12:00:00");
+  personal_context::proto::ContextMemoryAmbientAutofillResponse response;
+  *response.add_entities() =
+      CreateOrderProto({.date = u"2025-01-01"});  // Expired.
+
+  EXPECT_CALL(mock_observer(),
+              OnPrefetchContextComplete(_, Optional(IsEmpty())));
+  PrefetchContextSync({kOrderType}, /*expected_spii_types=*/{}, response);
+
+  histogram_tester().ExpectUniqueSample(
+      "Autofill.Ai.PersonalContext.Prefetch.EntityFunnel",
+      PersonalContextPrefetchEntityFunnelOutcome::kInvalid, 1);
+  histogram_tester().ExpectUniqueSample(
+      "Autofill.Ai.PersonalContext.Prefetch.EntityFunnel.Order",
+      PersonalContextPrefetchEntityFunnelOutcome::kInvalid, 1);
+}
+
+// Tests that entities of a type that was not requested are recorded as invalid
+// in the entity funnel metric.
+TEST_F(AutofillAiPersonalContextAccessManagerImplTest,
+       Prefetch_RecordsUnrequestedTypeAsInvalidEntityFunnelOutcome) {
+  personal_context::proto::ContextMemoryAmbientAutofillResponse response;
+  *response.add_entities() = CreateVehicleProto();
+
+  EXPECT_CALL(mock_observer(),
+              OnPrefetchContextComplete(_, Optional(IsEmpty())));
+  PrefetchContextSync({kOrderType}, /*expected_spii_types=*/{}, response);
+
+  // The vehicle is valid and only dropped because its type was not requested.
+  histogram_tester().ExpectUniqueSample(
+      "Autofill.Ai.PersonalContext.Prefetch.EntityValidationResult",
+      PersonalContextPrefetchEntityValidationResult::kValid, 1);
+  histogram_tester().ExpectUniqueSample(
+      "Autofill.Ai.PersonalContext.Prefetch.EntityFunnel",
+      PersonalContextPrefetchEntityFunnelOutcome::kInvalid, 1);
+  histogram_tester().ExpectUniqueSample(
+      "Autofill.Ai.PersonalContext.Prefetch.EntityFunnel.Vehicle",
+      PersonalContextPrefetchEntityFunnelOutcome::kInvalid, 1);
+}
+
+// Tests that suppressed entities are recorded in the entity funnel metric.
+TEST_F(AutofillAiPersonalContextAccessManagerImplTest,
+       Prefetch_RecordsSuppressedEntityFunnelOutcome) {
+  SetClockToDate("2025-06-01 12:00:00");
+  personal_context::proto::ContextMemoryAmbientAutofillResponse response;
+  *response.add_entities() = CreateOrderProto({.date = u"2025-06-01"});
+  ASSERT_TRUE(entity_metadata_manager().SuppressEntity(
+      *PersonalContextEntityToEntityInstance(response.entities(0))));
+
+  EXPECT_CALL(mock_observer(),
+              OnPrefetchContextComplete(_, Optional(IsEmpty())));
+  PrefetchContextSync({kOrderType}, /*expected_spii_types=*/{}, response);
+
+  histogram_tester().ExpectUniqueSample(
+      "Autofill.Ai.PersonalContext.Prefetch.EntityFunnel",
+      PersonalContextPrefetchEntityFunnelOutcome::kSuppressed, 1);
+  histogram_tester().ExpectUniqueSample(
+      "Autofill.Ai.PersonalContext.Prefetch.EntityFunnel.Order",
+      PersonalContextPrefetchEntityFunnelOutcome::kSuppressed, 1);
+}
+
+// Tests that valid entities are not recorded in the entity funnel metric, since
+// their outcome is recorded by the `EntityDataManager` after deduplication.
+TEST_F(AutofillAiPersonalContextAccessManagerImplTest,
+       Prefetch_DoesNotRecordEntityFunnelOutcomeForValidEntities) {
+  SetClockToDate("2025-06-01 12:00:00");
+  personal_context::proto::ContextMemoryAmbientAutofillResponse response;
+  *response.add_entities() = CreateOrderProto({.date = u"2025-06-01"});
+
+  EXPECT_CALL(mock_observer(),
+              OnPrefetchContextComplete(_, Optional(Not(IsEmpty()))));
+  PrefetchContextSync({kOrderType}, /*expected_spii_types=*/{}, response);
+
+  histogram_tester().ExpectTotalCount(
+      "Autofill.Ai.PersonalContext.Prefetch.EntityFunnel", 0);
 }
 
 }  // namespace

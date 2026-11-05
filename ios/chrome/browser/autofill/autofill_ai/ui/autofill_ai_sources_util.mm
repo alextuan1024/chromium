@@ -6,6 +6,7 @@
 
 #import <algorithm>
 
+#import "base/i18n/time_formatting.h"
 #import "base/strings/string_number_conversions.h"
 #import "base/strings/sys_string_conversions.h"
 #import "components/autofill/core/browser/data_model/autofill_ai/entity_instance.h"
@@ -47,10 +48,7 @@ BOOL EntityHasValidSources(const autofill::EntityInstance& entity) {
     return NO;
   }
   return std::ranges::any_of(payload->sources, [](const auto& source) {
-    return source.type !=
-               autofill::EntityInstance::PersonalContextRecordTypePayload::
-                   Source::Type::kUnspecified &&
-           GURL(source.url).is_valid();
+    return source.url.is_valid();
   });
 }
 
@@ -70,42 +68,52 @@ NSArray<AutofillAiSourceGroup*>* ExtractSourcesFromEntity(
   size_t photo_index = 1;
 
   for (const auto& source : payload->sources) {
-    GURL url(source.url);
-    if (!url.is_valid()) {
+    if (!source.url.is_valid()) {
       continue;
     }
-    switch (source.type) {
+    switch (source.type()) {
       case autofill::EntityInstance::PersonalContextRecordTypePayload::Source::
           Type::kGmail: {
-        NSString* title = l10n_util::GetNSStringF(
-            IDS_IOS_AUTOFILL_AI_SOURCES_FALLBACK_GMAIL_MESSAGE,
-            base::NumberToString16(gmail_index++));
+        const auto& gmail_metadata =
+            std::get<autofill::EntityInstance::
+                         PersonalContextRecordTypePayload::GmailSourceMetadata>(
+                source.metadata);
+        NSString* title =
+            !gmail_metadata.title.empty()
+                ? base::SysUTF8ToNSString(gmail_metadata.title)
+                : l10n_util::GetNSStringF(
+                      IDS_IOS_AUTOFILL_AI_SOURCES_FALLBACK_GMAIL_MESSAGE,
+                      base::NumberToString16(gmail_index++));
         AutofillAiSourceItem* item =
             [[AutofillAiSourceItem alloc] initWithTitle:title
                                                subtitle:nil
-                                                    URL:url
-                                                   type:source.type
+                                                    URL:source.url
+                                                   type:source.type()
                                                    icon:GetGmailSourceIcon()];
         [gmail_items addObject:item];
         break;
       }
       case autofill::EntityInstance::PersonalContextRecordTypePayload::Source::
           Type::kPhotos: {
-        NSString* title = l10n_util::GetNSStringF(
-            IDS_IOS_AUTOFILL_AI_SOURCES_FALLBACK_SAVED_PHOTO,
-            base::NumberToString16(photo_index++));
+        const auto& photos_metadata = std::get<
+            autofill::EntityInstance::PersonalContextRecordTypePayload::
+                PhotosSourceMetadata>(source.metadata);
+        NSString* title =
+            !photos_metadata.timestamp.is_null()
+                ? base::SysUTF16ToNSString(
+                      base::TimeFormatShortDate(photos_metadata.timestamp))
+                : l10n_util::GetNSStringF(
+                      IDS_IOS_AUTOFILL_AI_SOURCES_FALLBACK_SAVED_PHOTO,
+                      base::NumberToString16(photo_index++));
         AutofillAiSourceItem* item =
             [[AutofillAiSourceItem alloc] initWithTitle:title
                                                subtitle:nil
-                                                    URL:url
-                                                   type:source.type
+                                                    URL:source.url
+                                                   type:source.type()
                                                    icon:GetPhotosSourceIcon()];
         [photos_items addObject:item];
         break;
       }
-      case autofill::EntityInstance::PersonalContextRecordTypePayload::Source::
-          Type::kUnspecified:
-        break;
     }
   }
 

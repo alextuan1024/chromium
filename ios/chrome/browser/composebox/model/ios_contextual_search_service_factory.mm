@@ -4,6 +4,10 @@
 
 #import "ios/chrome/browser/composebox/model/ios_contextual_search_service_factory.h"
 
+#import <optional>
+#import <utility>
+#import <vector>
+
 #import "base/functional/bind.h"
 #import "components/application_locale_storage/application_locale_storage.h"
 #import "components/contextual_search/contextual_search_service.h"
@@ -24,51 +28,56 @@
 #import "ios/public/provider/chrome/browser/lens/lens_api.h"
 #import "services/network/public/mojom/cookie_manager.mojom.h"
 
-// static
-contextual_search::ContextualSearchService*
-ContextualSearchServiceFactory::GetForProfile(ProfileIOS* profile) {
-  return static_cast<contextual_search::ContextualSearchService*>(
-      GetInstance()
-          ->GetServiceForProfileAs<contextual_search::ContextualSearchService>(
-              profile, /*create=*/true));
+namespace {
+
+void FetchIdentityDelegationHeadersForProfile(
+    base::WeakPtr<ProfileIOS> weak_profile,
+    std::optional<size_t> auth_user_index,
+    base::OnceCallback<void(std::vector<std::string>)> callback) {
+  ProfileIOS* profile = weak_profile.get();
+  if (!profile) {
+    std::move(callback).Run({});
+    return;
+  }
+  lens::FetchIdentityDelegationHeaders(
+      profile->GetCookieManager(),
+      IdentityManagerFactory::GetForProfile(profile),
+      google_util::kGoogleHomepageURL,
+      base::BindRepeating(&ios::provider::GenerateLensSapisidHash),
+      auth_user_index, std::move(callback));
 }
 
-// static
-ContextualSearchServiceFactory* ContextualSearchServiceFactory::GetInstance() {
-  static base::NoDestructor<ContextualSearchServiceFactory> instance;
-  return instance.get();
-}
+}  // namespace
 
-ContextualSearchServiceFactory::ContextualSearchServiceFactory()
-    : ProfileKeyedServiceFactoryIOS("ContextualSearchService",
-                                    ProfileSelection::kOwnInstanceInIncognito,
-                                    TestingCreation::kCreateService) {
+ContextualSearchServiceFactory::ContextualSearchServiceFactory(PassKey key)
+    : TypedProfileKeyedServiceFactoryIOS(
+          std::move(key),
+          "ContextualSearchService",
+          ProfileSelection::kOwnInstanceInIncognito,
+          TestingCreation::kCreateService) {
   DependsOn(ios::TemplateURLServiceFactory::GetInstance());
   DependsOn(IdentityManagerFactory::GetInstance());
   DependsOn(VariationsClientServiceFactory::GetInstance());
 }
 
-ContextualSearchServiceFactory::~ContextualSearchServiceFactory() = default;
-
 std::unique_ptr<KeyedService>
 ContextualSearchServiceFactory::BuildServiceInstanceFor(
-    ProfileIOS* profile) const {
-  if (auto service = tests_hook::CreateContextualSearchService(profile)) {
+    ProfileIOS& profile) const {
+  if (auto service = tests_hook::CreateContextualSearchService(&profile)) {
     return service;
   }
   auto* variations_client_service =
       VariationsClientServiceFactory::GetForProfile(profile);
   return std::make_unique<IOSContextualSearchService>(
       IdentityManagerFactory::GetForProfile(profile),
-      profile->GetSharedURLLoaderFactory(),
+      profile.GetSharedURLLoaderFactory(),
       ios::TemplateURLServiceFactory::GetForProfile(profile),
       static_cast<variations::VariationsClient*>(variations_client_service),
       ::GetChannel(),
-      GetApplicationContext()->GetApplicationLocaleStorage()->Get(),
-      base::BindRepeating(
-          &lens::FetchIdentityDelegationHeaders,
-          base::Unretained(profile->GetCookieManager()),
-          IdentityManagerFactory::GetForProfile(profile),
-          google_util::kGoogleHomepageURL,
-          base::BindRepeating(&ios::provider::GenerateLensSapisidHash)));
+      std::string(GetApplicationContext()
+                      ->GetApplicationLocaleStorage()
+                      ->GetTag()
+                      .tag_string()),
+      base::BindRepeating(&FetchIdentityDelegationHeadersForProfile,
+                          profile.AsWeakPtr()));
 }

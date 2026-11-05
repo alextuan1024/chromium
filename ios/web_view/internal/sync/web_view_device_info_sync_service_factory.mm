@@ -46,9 +46,6 @@ class DeviceInfoSyncClient : public syncer::DeviceInfoSyncClient {
   }
 
   // syncer::DeviceInfoSyncClient:
-  bool GetSendTabToSelfReceivingEnabled() const override { return false; }
-
-  // syncer::DeviceInfoSyncClient:
   syncer::DeviceInfo::SendTabReceivingType GetSendTabToSelfReceivingType()
       const override {
     return syncer::DeviceInfo::SendTabReceivingType::kChromeOrUnspecified;
@@ -118,9 +115,9 @@ class DeviceInfoSyncClient : public syncer::DeviceInfoSyncClient {
   }
 
   // syncer::DeviceInfoSyncClient:
-  std::optional<syncer::DeviceInfo::PersonalContextInfo>
+  syncer::DeviceInfo::PersonalContextInfo::StatusOrInfo
   GetLocalPersonalContextInfo() const override {
-    return std::nullopt;
+    return syncer::DeviceInfo::PersonalContextInfo::NotEligible();
   }
 
  private:

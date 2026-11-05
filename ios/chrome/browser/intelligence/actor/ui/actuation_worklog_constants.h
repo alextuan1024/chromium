@@ -25,6 +25,31 @@ inline constexpr NSString* const kCompactWorklogAccessibilityIdentifier =
 inline constexpr NSString* const kFullWorklogScrollViewAccessibilityIdentifier =
     @"FullWorklogScrollViewAccessibilityIdentifier";
 
+// Accessibility identifier for the actuation intervention card view.
+inline constexpr NSString* const
+    kActuationInterventionCardAccessibilityIdentifier =
+        @"ActuationInterventionCardAccessibilityIdentifier";
+
+// Accessibility identifier for the stack holding the intervention buttons.
+inline constexpr NSString* const
+    kActuationInterventionButtonStackAccessibilityIdentifier =
+        @"ActuationInterventionButtonStackAccessibilityIdentifier";
+
+// Accessibility identifier for the text field of the actor input plate.
+inline constexpr NSString* const
+    kActorInputPlateTextFieldAccessibilityIdentifier =
+        @"ActorInputPlateTextFieldAccessibilityIdentifier";
+
+// Accessibility identifier for the send button of the actor input plate.
+inline constexpr NSString* const
+    kActorInputPlateSendButtonAccessibilityIdentifier =
+        @"ActorInputPlateSendButtonAccessibilityIdentifier";
+
+// Returns the accessibility identifier of the button displaying the action at
+// `index` of `ActuationInterventionData.actions`.
+NSString* ActuationInterventionActionButtonAccessibilityIdentifier(
+    NSUInteger index);
+
 // TODO(crbug.com/553535673): Remove C++ namespace for UI constants.
 namespace intelligence::actor {
 

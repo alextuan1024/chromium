@@ -54,16 +54,15 @@ class BrowserDelegateImpl : public BrowserDelegate {
   void Close() override;
   void CloseAllTabs() override;
   void SetSkipWarningUserOnClose(bool skip) override;
-  void AddTab(const GURL& url,
-              std::optional<size_t> index,
-              TabDisposition disposition) override;
+  content::WebContents* AddTab(const GURL& url,
+                               std::optional<size_t> index,
+                               TabDisposition disposition,
+                               ui::PageTransition transition) override;
   void CloseWebContentsAt(size_t index, UserGesture user_gesture) override;
   void ForceCloseWebContentsAt(size_t index) override;
-  content::WebContents* NavigateWebApp(
-      const GURL& url,
-      TabPinning pin_tab,
-      std::optional<webapps::LaunchParams> launch_params =
-          std::nullopt) override;
+  content::WebContents* LoadUrl(const GURL& url,
+                                ui::PageTransition transition,
+                                LoadUrlParams params) override;
   void CreateTabGroup(const tab_groups::TabGroupInfo& tab_group) override;
   std::vector<tab_groups::TabGroupInfo> GetTabGroupInfos() const override;
   void PinTab(size_t tab_index) override;
@@ -72,6 +71,7 @@ class BrowserDelegateImpl : public BrowserDelegate {
   void ResetLocationBar() override;
   void SetOnTaskState(OnTaskState state) override;
   bool IsOnTaskState(OnTaskState state) const override;
+  void SetImmersiveAllowedWhileTrustedPinned(bool allowed) override;
   void ActivateWebContentsAt(size_t index) override;
   void SetContentsBackgroundVisible(bool visible) override;
   void EnterLockedFullscreen() override;

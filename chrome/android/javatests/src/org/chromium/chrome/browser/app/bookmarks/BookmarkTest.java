@@ -35,6 +35,7 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 
 import static org.chromium.base.ThreadUtils.runOnUiThreadBlocking;
+import static org.chromium.base.test.transit.ViewFinder.waitForView;
 import static org.chromium.chrome.browser.url_constants.UrlConstantResolver.getOriginalNativeBookmarksUrl;
 import static org.chromium.components.browser_ui.widget.highlight.ViewHighlighterTestUtils.checkHighlightOff;
 import static org.chromium.components.browser_ui.widget.highlight.ViewHighlighterTestUtils.checkHighlightPulse;
@@ -54,7 +55,6 @@ import androidx.annotation.Nullable;
 import androidx.recyclerview.widget.RecyclerView;
 import androidx.recyclerview.widget.RecyclerView.ViewHolder;
 import androidx.test.espresso.Espresso;
-import androidx.test.espresso.matcher.ViewMatchers;
 import androidx.test.filters.MediumTest;
 import androidx.test.filters.SmallTest;
 import androidx.test.platform.app.InstrumentationRegistry;
@@ -153,7 +153,6 @@ import org.chromium.ui.listmenu.ListMenuButton;
 import org.chromium.ui.modelutil.MVCListAdapter.ListItem;
 import org.chromium.ui.modelutil.MVCListAdapter.ModelList;
 import org.chromium.ui.test.util.DeviceRestriction;
-import org.chromium.ui.test.util.ViewUtils;
 import org.chromium.url.GURL;
 
 import java.util.ArrayList;
@@ -173,6 +172,7 @@ import java.util.stream.IntStream;
     ChromeFeatureList.ANDROID_DESKTOP_BOOKMARK_LAYOUT,
     ChromeFeatureList.ANDROID_DESKTOP_BOOKMARK_DIALOG
 })
+@DisableIf.Device(DeviceFormFactor.AUTOMOTIVE) // crbug.com/462590301
 public class BookmarkTest {
     private static final String TEST_PAGE_URL_GOOGLE = "/chrome/test/data/android/google.html";
     private static final String TEST_PAGE_TITLE_GOOGLE = "The Google";
@@ -714,7 +714,6 @@ public class BookmarkTest {
 
     @Test
     @MediumTest
-    @EnableFeatures(ChromeFeatureList.ENABLE_ESCAPE_HANDLING_FOR_SECONDARY_ACTIVITIES)
     @Restriction({DeviceFormFactor.PHONE})
     public void testSearchBookmarks_pressEscape() throws Exception {
         BookmarkId folder = addFolder(TEST_FOLDER_TITLE);
@@ -763,7 +762,6 @@ public class BookmarkTest {
 
     @Test
     @MediumTest
-    @EnableFeatures(ChromeFeatureList.ENABLE_ESCAPE_HANDLING_FOR_SECONDARY_ACTIVITIES)
     @Restriction({DeviceFormFactor.ONLY_TABLET})
     public void testTabletSearch_EscapeKeyClearsSearch() throws Exception {
         // Setup: Add a bookmark so the folder isn't empty.
@@ -805,6 +803,45 @@ public class BookmarkTest {
                             false,
                             mBookmarkManagerCoordinator.handleEscPress());
                 });
+    }
+
+    @Test
+    @MediumTest
+    @Restriction({DeviceFormFactor.TABLET_OR_DESKTOP})
+    public void testSearchBookmarks_Tablet_MoveDownReproAndShowInFolder() throws Exception {
+        // Regression test for https://crbug.com/566206510 where reordering filtered search results
+        // via the overflow menu on tablets triggered a native CHECK failure in
+        // BookmarkBridge::ReorderChildren.
+        BookmarkId folder = addFolder(TEST_FOLDER_TITLE);
+        addBookmark(TEST_TITLE_A, mTestUrlA, folder);
+        addBookmark(TEST_PAGE_TITLE_GOOGLE2, mTestPageFoo, folder);
+        addBookmark(TEST_PAGE_TITLE_GOOGLE, mTestPage, folder);
+        openBookmarkManager();
+        openFolder(folder);
+
+        assertEquals(BookmarkUiMode.FOLDER, mDelegate.getCurrentUiMode());
+        assertEquals("Wrong number of items before starting search.", 3, getBookmarkCount());
+
+        // Search for "Google" so 2 out of the 3 bookmarks in the folder are shown.
+        BookmarkTestUtil.getSearchBoxViewInteraction().perform(replaceText("Google"));
+        RecyclerViewTestUtils.waitForStableMvcRecyclerView(mItemsContainer);
+        assertEquals("Wrong number of items after searching.", 2, getBookmarkCount());
+
+        // Open the 3-dot overflow menu on the first search result.
+        ImprovedBookmarkRow firstRow = getNthBookmarkRow(1);
+        ListMenuButton more = firstRow.findViewById(R.id.more);
+        runOnUiThreadBlocking(more::callOnClick);
+
+        // During tablet search, Move up and Move down must be omitted, and Show in folder must be
+        // shown instead.
+        onView(withText("Move up")).check(doesNotExist());
+        onView(withText("Move down")).check(doesNotExist());
+        onView(withText("Show in folder")).check(matches(isDisplayed())).perform(click());
+
+        // Selecting "Show in folder" should clear the search filter and restore all 3 bookmarks in
+        // the folder.
+        CriteriaHelper.pollUiThread(() -> Criteria.checkThat(getBookmarkCount(), is(3)));
+        BookmarkTestUtil.getSearchBoxViewInteraction().check(matches(withText("")));
     }
 
     @Test
@@ -2063,9 +2100,7 @@ public class BookmarkTest {
                                     InstrumentationRegistry.getInstrumentation(),
                                     mActivityTestRule.getActivity(),
                                     R.id.all_bookmarks_menu_id));
-            ViewUtils.waitForView(
-                    (ViewGroup) mBookmarkActivity.getWindow().getDecorView().getRootView(),
-                    ViewMatchers.withId(R.id.selectable_list));
+            waitForView(mBookmarkActivity, withId(R.id.selectable_list));
             ThreadUtils.runOnUiThreadBlocking(
                     () -> {
                         mItemsContainer =

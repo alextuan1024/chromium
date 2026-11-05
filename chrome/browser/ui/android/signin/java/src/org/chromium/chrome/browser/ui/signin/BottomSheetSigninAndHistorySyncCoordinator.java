@@ -47,8 +47,6 @@ import org.chromium.components.browser_ui.device_lock.DeviceLockActivityLauncher
 import org.chromium.components.browser_ui.styles.SemanticColorUtils;
 import org.chromium.components.browser_ui.widget.gesture.BackPressHandler.BackPressResult;
 import org.chromium.components.signin.AccountManagerFacadeProvider;
-import org.chromium.components.signin.SigninFeatureMap;
-import org.chromium.components.signin.SigninFeatures;
 import org.chromium.components.signin.base.AccountInfo;
 import org.chromium.components.signin.base.CoreAccountInfo;
 import org.chromium.components.signin.identitymanager.IdentityManager;
@@ -181,6 +179,9 @@ public class BottomSheetSigninAndHistorySyncCoordinator extends SigninAndHistory
         default @Nullable Function<Bundle, DelegateContext> getDelegateContextFactory() {
             return null;
         }
+
+        /** Called when the coordinator is destroyed. */
+        default void onSigninCoordinatorDestroyed() {}
     }
 
     /**
@@ -218,7 +219,6 @@ public class BottomSheetSigninAndHistorySyncCoordinator extends SigninAndHistory
             Supplier<ModalDialogManager> modalDialogManagerSupplier,
             Supplier<@Nullable SnackbarManager> snackbarManagerSupplier,
             @SigninAccessPoint int signinAccessPoint) {
-        assert SigninFeatureMap.isEnabled(SigninFeatures.ENABLE_SEAMLESS_SIGNIN);
         return new BottomSheetSigninAndHistorySyncCoordinator(
                 windowAndroid,
                 activity,
@@ -352,8 +352,6 @@ public class BottomSheetSigninAndHistorySyncCoordinator extends SigninAndHistory
     private void startSigninFlowInternal(
             BottomSheetSigninAndHistorySyncConfig config,
             @Nullable DelegateContext delegateContext) {
-        assert SigninFeatureMap.isEnabled(SigninFeatures.ENABLE_SEAMLESS_SIGNIN);
-
         // Assert that the previous flow finished properly.
         assert !mDidShowSigninStep;
         assert mDialogModel == null;
@@ -394,9 +392,15 @@ public class BottomSheetSigninAndHistorySyncCoordinator extends SigninAndHistory
         }
 
         if (!mIsLegacyFlow) {
-            assert SigninFeatureMap.isEnabled(SigninFeatures.ENABLE_SEAMLESS_SIGNIN);
             mActivityResultTracker.unregister(this);
         }
+
+        mDelegate.onSigninCoordinatorDestroyed();
+    }
+
+    /** Returns the delegate provided to this coordinator. */
+    public Delegate getDelegate() {
+        return mDelegate;
     }
 
     /**
@@ -446,7 +450,6 @@ public class BottomSheetSigninAndHistorySyncCoordinator extends SigninAndHistory
     @Override
     public void addAccount() {
         if (mActivityDelegate == null) {
-            assert SigninFeatureMap.isEnabled(SigninFeatures.ENABLE_SEAMLESS_SIGNIN);
             SigninMetricsUtils.logAddAccountStateHistogram(State.REQUESTED);
             AccountManagerFacadeProvider.getInstance()
                     .createAddAccountIntent(
@@ -606,8 +609,7 @@ public class BottomSheetSigninAndHistorySyncCoordinator extends SigninAndHistory
     }
 
     private void validateProfile(Profile profile) {
-        if (profile.isOffTheRecord()
-                && SigninFeatureMap.isEnabled(SigninFeatures.ENABLE_SEAMLESS_SIGNIN)) {
+        if (profile.isOffTheRecord()) {
             throw new IllegalStateException(
                     "This sign-in flow should not be initiated with an incognito profile.");
         }
@@ -769,9 +771,7 @@ public class BottomSheetSigninAndHistorySyncCoordinator extends SigninAndHistory
                 mDidShowSigninStep
                         && mConfig.historyOptInMode == HistorySyncConfig.OptInMode.REQUIRED;
         boolean showEmailInFooter =
-                !mDidShowSigninStep
-                        || (SigninFeatureMap.isEnabled(SigninFeatures.ENABLE_SEAMLESS_SIGNIN)
-                                && mSigninAccessPoint == SigninAccessPoint.RECENT_TABS);
+                !mDidShowSigninStep || mSigninAccessPoint == SigninAccessPoint.RECENT_TABS;
         mHistorySyncCoordinator =
                 new HistorySyncCoordinator(
                         mActivity,
